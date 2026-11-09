@@ -23,6 +23,7 @@ PORT_GIVEN="${PORT:+1}"
 PORT="${PORT:-8080}"
 ADMIN_USER="${FROGBOT_USER:-admin}"
 ROOT="${FROGBOT_ROOT:-}"
+WORK_DIR=""
 APP_DIR="$ROOT/opt/frogbot"
 DATA_ROOT="$ROOT/var/lib/frogbot"
 ETC_DIR="$ROOT/etc/frogbot"
@@ -266,7 +267,7 @@ uninstall() {
     rm -rf "$DATA_ROOT" "$ETC_DIR"
     sandbox || userdel "$SVC_USER" 2>/dev/null || true
   else
-    say "数据保留在 $DATA_ROOT，配置在 $ETC_DIR（彻底删除：sudo bash install.sh uninstall --purge）"
+    say "数据保留在 $DATA_ROOT，配置在 $ETC_DIR（彻底删除：curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | sudo bash -s uninstall --purge）"
   fi
   [ -n "${DOMAIN:-}" ] && warn "Caddy 配置没有自动删除：/etc/caddy/Caddyfile"
   say "已卸载"
@@ -280,14 +281,14 @@ main() {
   have tar || die "需要 tar"
   if ! sandbox; then have systemctl && [ -d /run/systemd/system ] || die "需要 systemd（这台机器没有运行 systemd）"; fi
 
-  local arch ver tmp src upgrade=""
+  local arch ver src upgrade=""
   arch="$(detect_arch)"
   ver="${VERSION:-$(latest_version)}"
   [ -x "$APP_DIR/frogbot" ] && upgrade=1
   say "$( [ -n "$upgrade" ] && echo 升级 || echo 安装 ) frog bot $ver（linux/$arch）"
 
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-  src="$(download "$ver" "$arch" "$tmp" | tail -n1)"
+  WORK_DIR="$(mktemp -d)"; trap 'rm -rf "${WORK_DIR:-}"' EXIT
+  src="$(download "$ver" "$arch" "$WORK_DIR" | tail -n1)"
 
   ensure_user
   mkdir -p "$APP_DIR" "$DATA_ROOT/data" "$DATA_ROOT/workspace"
