@@ -1,6 +1,13 @@
 # frog bot —— 单个 AI 助理（Onefrog 的 AI 功能单独拆出来）
 
-frog bot 是一个能聊天、也能在后台干活的 AI 助理。它就是我们讨论过的那套架构，做成了一个能跑起来的独立项目：
+frog bot 是一个能聊天、也能在后台干活的 AI 助理。它就是我们讨论过的那套架构，做成了一个能跑起来的独立项目。
+
+交流讨论：[Telegram 群](https://t.me/+pKQYEaxzidU4ZjZh)（与 [OneFrog](https://github.com/llc370219/onefrog) 同一交流群）
+
+<p align="center"><img src="docs/images/architecture-minimal.png" alt="frog bot / OneFrog 目标架构示意" width="720"></p>
+
+<p align="center"><em>目标架构示意，部分功能仍在规划中</em>（可编辑矢量图见 <a href="docs/images/architecture-minimal.svg">architecture-minimal.svg</a>）</p>
+
 
 ```
 浏览器（React）
