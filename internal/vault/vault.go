@@ -161,6 +161,15 @@ func (v *Vault) now() time.Time {
 	return time.Now()
 }
 
+// The API credential is not part of the tool-accessible secret catalog.
+func (v *Vault) SealAPIKey(key string) (string, error) {
+	return v.encrypt("settings:api-key", key)
+}
+
+func (v *Vault) OpenAPIKey(sealed string) (string, error) {
+	return v.decrypt("settings:api-key", sealed)
+}
+
 func (v *Vault) encrypt(name, plain string) (string, error) {
 	nonce := make([]byte, v.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {

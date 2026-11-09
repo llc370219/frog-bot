@@ -1,6 +1,10 @@
-# frog bot —— 单个 AI 助理（Onefrog 的 AI 功能单独拆出来）
+# frog bot —— 多个独立 AI 助理
 
 frog bot 是一个能聊天、也能在后台干活的 AI 助理。它就是我们讨论过的那套架构，做成了一个能跑起来的独立项目。
+
+点左侧 Bots 旁的「＋」创建助理，填写名称和可选职责，例如代码审查或资料整理。点头像所在的行切换助理，点行内的铅笔编辑或删除。默认 Bot 可以编辑，不能删除。删除其他 Bot 会停止它的任务和定时计划，已有记录和工作区文件仍保留在本机。每个 Bot 有独立的对话、任务队列、审批、记忆、密钥和定时计划；切换时，原 Bot 的后台任务继续运行。
+
+所有 Bot 共用「设置 → 模型连接」。原有单 Bot 数据继续由默认 Bot 使用。新 Bot 的记录保存在 `DATA_DIR/bots/<id>/`，独立工作区在 `WORKSPACE-bots/<id>/`（默认 `./workspace-bots/<id>/`）。备份时请保留数据目录和两个工作区目录。
 
 交流讨论：[Telegram 群](https://t.me/+pKQYEaxzidU4ZjZh)（与 [OneFrog](https://github.com/llc370219/onefrog) 同一交流群）
 
@@ -26,10 +30,10 @@ Go 后端
 
 ## 一句话说清各部分
 
-- **聊天层**（`internal/bot/chat.go`、`chattools.go`）：用快模型（`CHAT_MODEL`）。它不只是回话和派活，
+- **聊天层**（`internal/bot/chat.go`、`chattools.go`）：使用「应用设置 → 模型连接」中的模型。它不只是回话和派活，
   还有一组**快速读写工具**，简单的问题自己就能查清楚再回答（见下面"聊天层能做什么"）。
   **它没有"批准"工具，也不能执行命令。**
-- **后台 agent**（`internal/onefrog`）：用强模型（`AGENT_MODEL`），能读写文件、执行命令。它的每一步都通过 SSE
+- **后台 agent**（`internal/onefrog`）：与聊天层共用 API 和模型，能读写文件、执行命令。它的每一步都通过 SSE
   **直接**推给前端的"工作卡片"，不经过聊天层。
 - **监工**（`internal/bot/supervisor.go`）：
   - 任务完成或失败时，往对话里塞一条系统通知，叫醒聊天层用自己的话汇报。**每个任务只汇报一次**（汇报标记也写进事件日志）。
@@ -184,14 +188,14 @@ API Key、token、密码这类东西不应该出现在聊天里。frog bot 内�
 | 断线 / 出错的平和提示 | ✅ |
 | 快捷键、无障碍 | ✅ |
 | 消息里的"正在输入"实时流 | ✅ |
-| **跳过**：语音输入、多会话、消息全文搜索界面、任意历史消息编辑 | 太重，或者和"单 Bot 单对话"的设计冲突；编辑只支持最后一条，避免改写已经派出任务的历史 |
+| **跳过**：语音输入、同一 Bot 的多个会话、消息全文搜索界面、任意历史消息编辑 | 每个 Bot 保留一条独立对话，只能编辑最后一条消息 |
 
 ## 界面
 
 视觉沿用 Onefrog **v0.1.31 正式版**（最新的非 beta 版本）：暖色中性底色、青蛙绿强调色、Inter + IBM Plex Mono 字体、
 衬线标题、猫咪 logo，复用了它的安全 Markdown 渲染器。在这个基础上重新整理了布局和组件：
 
-- 单个 Bot，所以去掉侧边栏，只留顶栏（头像、名字、实时状态，比如"正在处理 2 个任务""等你确认 1 个操作"）。
+- 左侧栏可创建和切换 Bot，头像使用 OneFrog 的简笔画；自动调度器显示所选 Bot 的定时计划。
 - 对话均采用气泡式呈现：用户与助理回复均为独立气泡，助理回复按句/段拆分为自然对话气泡，告别大段文字堆砌，更符合日常聊天习惯；聊天层回复支持流式打字。
 - **工作卡片**：每个后台任务一张卡片。运行时展开，实时显示每一步（查看目录 / 执行 / 写入……）、agent 的思考文字、耗时。
   任务完成后自动收起，变成一行总结（"已完成 · 3 步 · 2 秒 · 结论第一行"），点一下可以重新展开，查看每一步的输出。
@@ -210,26 +214,26 @@ API Key、token、密码这类东西不应该出现在聊天里。frog bot 内�
 # 1. 构建前端（只需一次，改了前端再跑）
 cd web && npm install && npm run build && cd ..
 
-# 2. 启动（任何 OpenAI 兼容接口都可以：xAI、OpenAI、DeepSeek、OpenRouter……）
-export BASE_URL=https://api.x.ai/v1
-export API_KEY=你的key
-export CHAT_MODEL=快而便宜的模型
-export AGENT_MODEL=强模型
+# 2. 启动
 go run ./cmd/frogbot
-# 打开 http://127.0.0.1:8080
+# 打开 http://127.0.0.1:8080，在「应用设置 → 模型连接」填写接口地址、密钥和模型。
 ```
+
+已有多渠道配置时，默认载入原聊天所用的渠道和模型。「应用设置 → 版本更新」可以检查 GitHub 上的正式发布；发布构建可用 `go build -ldflags "-X frogbot/internal/bot.Version=vX.Y.Z" ./cmd/frogbot` 注入版本号。
 
 ### 不用 API Key 先看效果（演示模式）
 
 ```bash
 go run ./cmd/fakeai &        # 假的模型服务，回复是写死的剧本
-BASE_URL=http://127.0.0.1:9911 API_KEY=x CHAT_MODEL=fake-chat AGENT_MODEL=fake-agent FROGBOT_DEMO=1 go run ./cmd/frogbot
+BASE_URL=http://127.0.0.1:9911 CHAT_MODEL=fake-model FROGBOT_DEMO=1 go run ./cmd/frogbot
 ```
 
 试着发「看看工作区里有什么，写一份 notes.md 总结」，等它完成后再问「刚才那个任务做完了吗？」「notes.md 里写了什么」
 「在 todo.md 里记一行：周五前交报告」（聊天层直接改，会弹审批卡片），或者「清理 build 目录」（后台任务的审批卡片）。顶栏会显示「演示 · 假模型」。
 
 ### 前端开发
+
+Windows 可运行 `dev.cmd`，一次构建前端并启动后端。服务启动后会打开浏览器；如果浏览器没弹出，请打开窗口里显示的地址（默认 `http://127.0.0.1:8080`）。启动失败时，脚本会保留窗口供查看错误。需要前端热更新时，可分两个终端启动：
 
 ```bash
 go run ./cmd/frogbot          # 后端跑在 8080
@@ -240,19 +244,18 @@ cd web && npm run dev         # 打开 http://localhost:5173，/api 会自动转
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `BASE_URL` | `https://api.x.ai/v1` | OpenAI 兼容接口地址 |
+| `BASE_URL` | — | 初始 API 地址；只提供环境变量中的模型或密钥时，默认 `https://api.x.ai/v1` |
 | `API_KEY` | — | 也认 `FROGBOT_API_KEY` / `XAI_API_KEY` / `OPENAI_API_KEY` |
-| `CHAT_MODEL` | 同 `AGENT_MODEL` | 聊天层模型（建议用快的） |
-| `AGENT_MODEL` | 必填 | 后台 agent 模型（建议用强的） |
+| `CHAT_MODEL` | 同 `AGENT_MODEL` | 聊天和后台任务共用的初始模型；网页保存的设置优先 |
+| `AGENT_MODEL` | 空 | 未提供 `CHAT_MODEL` 时的初始模型 |
 | `REVIEWER_MODEL` | 空 | 审核模型，只在 `POLICY=auto` 时用 |
-| `CHAT_BASE_URL` / `CHAT_API_KEY` | 同上 | 聊天层要用别家模型时单独设置 |
 | `POLICY` | `on-request` | 后台任务的审批模式：`untrusted` / `on-request` / `auto` / `never` |
 | `CHAT_POLICY` | `untrusted` | 聊天层直接写文件的审批模式（默认每次都要你确认） |
 | `WORKSPACE` | `./workspace` | agent 能读写的目录 |
 | `DATA_DIR` | `./data` | 事件日志和记忆 |
 | `ADDR` | `127.0.0.1:8080` | 监听地址 |
 | `BOT_NAME` | `Frog` | Bot 名字 |
-| `MAX_CONCURRENT` | `4` | 最多同时运行的任务数，多出来的排队 |
+| `MAX_CONCURRENT` | `4` | 每个 Bot 最多同时运行的后台任务数，多出来的排队 |
 | `TASK_MAX_MINUTES` | `30` | 单个任务最长时间 |
 | `WEB_DIR` | `web/dist` | 前端构建产物目录 |
 | `FROGBOT_DEMO` | 空 | 设为 1 时顶栏显示"演示"标记 |
@@ -274,7 +277,7 @@ cd web && npm run dev         # 打开 http://localhost:5173，/api 会自动转
 | `weekly` | `hour` / `minute` + `weekdays`（0=周日…6=周六） | 每周若干天 |
 
 聊天层工具：`list_schedules` / `get_schedule` / `create_schedule` / `update_schedule` / `pause_schedule` / `resume_schedule` / `delete_schedule` / `run_schedule_now`。
-**创建、修改、删除、暂停、恢复都要你在审批卡片上点确认**；聊天里说「同意」不算数。界面托盘上的暂停/恢复/立刻执行/删除是你点的按钮，算用户确认。
+**在对话中创建、修改、删除、暂停、恢复计划时，需要在审批卡片上点确认**。也可以在侧栏「设置」上方打开「自动调度器」，查看计划并直接暂停、恢复、立即执行或删除。
 
 到点后：唤醒器**不调用模型**，只把一条普通后台任务放进现有队列（带确定性任务 ID）。任务进度、审批、完成汇报与手动 `start_task` 完全一样。空闲的未来计划**不会**让工作条动画。
 
@@ -289,7 +292,7 @@ cd web && npm run dev         # 打开 http://localhost:5173，/api 会自动转
 ### 例子
 
 > 「帮我建一个每天上午 9 点的提醒：整理 README」  
-> → 聊天层调用 `create_schedule` → 你点审批 → 计划出现在定时托盘，显示下次触发时间（含时区）。
+> → 聊天层调用 `create_schedule` → 你点审批 → 计划出现在「自动调度器」，显示下次触发时间（含时区）。
 
 > 「把那个计划暂停」→ `pause_schedule` → 再确认。  
 > 「现在先跑一次」→ `run_schedule_now`（不消耗正规触发点）。
@@ -380,7 +383,7 @@ web/src/
 - 并行的任务可能同时改同一个文件，目前没有加锁，靠聊天层判断该排队还是并行。
 - `shell` 工具不是真沙箱（详见 onefrog 的说明）；生产环境请放进容器里跑。
 - 只用假模型测试过，**没有用真实 API Key 跑过**；真实模型下聊天层的表现取决于提示词，需要再调。
-- 没有多会话、语音输入；只能编辑最后一条消息。
+- 每个 Bot 保留一条对话；没有语音输入，只能编辑最后一条消息。
 - 上传的附件放在工作区 `uploads/`，不会自动清理；单个最大 25MB。
 - 系统通知需要浏览器允许，且只在页面打开（可以在后台标签页）时有效，没有离线推送。
 - 任务"改动的文件"只统计 write_file / edit_file；通过 shell 命令改的文件统计不到（read_task 里会注明）。

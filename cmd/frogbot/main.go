@@ -1,14 +1,14 @@
-// frogbot：单个 AI 助理 Bot。所有配置都来自环境变量，见 README。
+// frogbot：支持多个独立 AI 助理，可在网页中配置模型 API。
 package main
 
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -28,45 +28,42 @@ func env(def string, keys ...string) string {
 }
 
 func main() {
-	baseURL := env("https://api.x.ai/v1", "BASE_URL")
+	addr := env("127.0.0.1:8080", "ADDR")
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("无法监听 %s: %v", addr, err)
+	}
+	defer listener.Close()
+
+	baseURL := env("", "BASE_URL")
 	key := env("", "API_KEY", "FROGBOT_API_KEY", "XAI_API_KEY", "OPENAI_API_KEY")
 	agentModel := env("", "AGENT_MODEL")
 	chatModel := env(agentModel, "CHAT_MODEL")
-	if agentModel == "" || chatModel == "" {
-		log.Fatal("请设置 AGENT_MODEL 和 CHAT_MODEL（以及 API_KEY、BASE_URL），见 README")
-	}
-	agentP := onefrog.NewOpenAI(baseURL, key)
-	chatP := onefrog.NewOpenAI(env(baseURL, "CHAT_BASE_URL"), env(key, "CHAT_API_KEY"))
-	var reviewer onefrog.Reviewer
-	if m := env("", "REVIEWER_MODEL"); m != "" {
-		reviewer = &onefrog.LLMReviewer{Provider: agentP, Model: m}
+	if baseURL == "" && (key != "" || chatModel != "") {
+		baseURL = "https://api.x.ai/v1"
 	}
 	maxConc, _ := strconv.Atoi(env("4", "MAX_CONCURRENT"))
 	taskMin, _ := strconv.Atoi(env("30", "TASK_MAX_MINUTES"))
 
-	b, err := bot.New(bot.Config{
-		Name:          env("Frog", "BOT_NAME"),
-		DataDir:       env("./data", "DATA_DIR"),
-		Workspace:     env("./workspace", "WORKSPACE"),
-		ChatProvider:  chatP,
-		ChatModel:     chatModel,
-		AgentProvider: agentP,
-		AgentModel:    agentModel,
-		Reviewer:      reviewer,
-		Policy:        onefrog.Policy(env("on-request", "POLICY")),
-		ChatPolicy:    onefrog.Policy(env("untrusted", "CHAT_POLICY")),
-		MaxConcurrent: maxConc,
-		TaskMaxTime:   time.Duration(taskMin) * time.Minute,
-		MasterKey:     os.Getenv("FROGBOT_MASTER_KEY"),
-				Demo:          env("", "FROGBOT_DEMO") != "",
+	b, err := bot.OpenBots(bot.Config{
+		Name:           env("Frog", "BOT_NAME"),
+		DataDir:        env("./data", "DATA_DIR"),
+		Workspace:      env("./workspace", "WORKSPACE"),
+		ChatModel:      chatModel,
+		AgentModel:     agentModel,
+		ReviewerModel:  env("", "REVIEWER_MODEL"),
+		Policy:         onefrog.Policy(env("on-request", "POLICY")),
+		ChatPolicy:     onefrog.Policy(env("untrusted", "CHAT_POLICY")),
+		MaxConcurrent:  maxConc,
+		TaskMaxTime:    time.Duration(taskMin) * time.Minute,
+		MasterKey:      os.Getenv("FROGBOT_MASTER_KEY"),
+		Demo:           env("", "FROGBOT_DEMO") != "",
 		InitialBaseURL: baseURL,
 		InitialKey:     key,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	b.Start()
-	addr := env("127.0.0.1:8080", "ADDR")
 	webDir := env("", "WEB_DIR")
 	if webDir == "" {
 		if _, err := os.Stat("web/dist"); err == nil {
@@ -77,31 +74,36 @@ func main() {
 			webDir = "web/dist"
 		}
 	}
-	srv := &http.Server{Addr: addr, Handler: b.Handler(webDir, web.DistFS)}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	srv := &http.Server{Addr: addr, Handler: b.Handler(webDir, web.DistFS),
+		BaseContext: func(net.Listener) context.Context { return ctx }}
 	go func() {
-		log.Printf("frog bot 已启动：http://%s （聊天模型 %s，agent 模型 %s）", addr, chatModel, agentModel)
-		time.Sleep(300 * time.Millisecond)
-		openBrowser("http://" + addr)
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
 	}()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	host, port, _ := net.SplitHostPort(listener.Addr().String())
+	switch host {
+	case "0.0.0.0":
+		host = "127.0.0.1"
+	case "::":
+		host = "::1"
+	}
+	page := (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String()
+	log.Printf("Frog Bot 已启动：%s", page)
+	if env("", "FROGBOT_NO_BROWSER") == "" {
+		go func() {
+			if err := openBrowser(page); err != nil {
+				log.Printf("无法自动打开浏览器：%v。请手动打开 %s", err, page)
+			}
+		}()
+	}
 	<-ctx.Done()
 	sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(sctx)
-	b.Close()
-}
-
-func openBrowser(url string) {
-	switch runtime.GOOS {
-	case "windows":
-		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	case "darwin":
-		_ = exec.Command("open", url).Start()
-	case "linux":
-		_ = exec.Command("xdg-open", url).Start()
+	if err := srv.Shutdown(sctx); err != nil {
+		_ = srv.Close()
 	}
+	b.Close()
 }

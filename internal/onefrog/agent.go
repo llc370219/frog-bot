@@ -19,6 +19,7 @@ var (
 type Agent struct {
 	Provider      Provider
 	Model         string
+	ResolveModel  func() (Provider, string) // 可选；每次任务启动时读取一次配置
 	Tools         *Registry
 	Guard         *Guard
 	Store         Store          // 可选
@@ -172,6 +173,14 @@ func (a *Agent) Run(ctx context.Context, t Task) (Result, error) {
 		return finish(StatusFailed, "", err)
 	}
 
+	provider, model := a.Provider, a.Model
+	if a.ResolveModel != nil {
+		provider, model = a.ResolveModel()
+	}
+	if provider == nil {
+		return fail(errors.New("请先在「应用设置 → 模型连接」保存接口地址和模型"))
+	}
+
 	msgs, err := a.initialMessages(ctx, t)
 	if err != nil {
 		return fail(err)
@@ -203,7 +212,7 @@ func (a *Agent) Run(ctx context.Context, t Task) (Result, error) {
 		if pc.isRequested() { // Pause 恰好发生在上面检查之后
 			lcancel()
 		}
-		reply, err := a.Provider.Chat(lctx, ChatRequest{Model: a.Model, Messages: msgs, Tools: tools.Specs(),
+		reply, err := provider.Chat(lctx, ChatRequest{Model: model, Messages: msgs, Tools: tools.Specs(),
 			OnReasoning: func(d string) { em.emit(EvThinkingDelta, map[string]any{"text": d}) }},
 			func(d string) { em.emit(EvTextDelta, map[string]any{"text": d}) })
 		pc.setLLM(nil)

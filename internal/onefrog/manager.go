@@ -119,6 +119,19 @@ func (m *Manager) CancelAll() {
 	}
 }
 
+// Drain waits for registered tasks and their event sinks. Stop dispatching first.
+func (m *Manager) Drain() {
+	m.mu.Lock()
+	done := make([]<-chan struct{}, 0, len(m.tasks))
+	for _, task := range m.tasks {
+		done = append(done, task.done)
+	}
+	m.mu.Unlock()
+	for _, ch := range done {
+		<-ch
+	}
+}
+
 func (m *Manager) Status(id string) (TaskInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

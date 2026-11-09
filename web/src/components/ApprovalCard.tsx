@@ -1,6 +1,6 @@
 import { Check, ShieldAlert, ShieldCheck, ShieldX, TimerOff } from 'lucide-react';
 import { useState } from 'react';
-import { api, type Approval } from '../api';
+import { useActiveBot, type Approval } from '../api';
 
 const riskLabel: Record<string, string> = { danger: '高风险', exec: '执行命令', write: '写入文件', read: '只读' };
 const toolLabel: Record<string, string> = { shell: '执行命令', write_file: '写入文件', edit_file: '修改文件', read_file: '读取文件', list_dir: '查看目录', grep: '搜索', delete_secret: '删除密钥' };
@@ -31,6 +31,7 @@ function Detail({ a }: { a: Approval }) {
 }
 
 export default function ApprovalCard({ a, taskTitle, fromChat }: { a: Approval; taskTitle?: string; fromChat?: boolean }) {
+  const { api } = useActiveBot();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const decide = async (d: 'once' | 'session' | 'deny') => {

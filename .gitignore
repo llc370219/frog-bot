@@ -11,6 +11,7 @@ secrets.json
 master.key
 data/
 workspace/
+workspace-bots/
 uploads/
 checkpoints/
 /demo/

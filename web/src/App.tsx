@@ -1,16 +1,17 @@
 import { Eye, FolderSearch, ListTodo, SquareTerminal, WifiOff } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { api, isImage, isOpen, useBot, type Attachment, type Info, type Msg, type State } from './api';
+import { api, BotContext, createBotAPI, isImage, isOpen, useActiveBot, useBot, type Attachment, type BotProfile, type Info, type Msg, type State } from './api';
 import ApprovalCard from './components/ApprovalCard';
 import Artifact from './components/Artifact';
 import Composer from './components/Composer';
-import { Avatar } from './components/Header';
+import { BotAvatar, botAvatarById } from './components/BotAvatar';
+import BotEditor from './components/BotEditor';
 import { AssistantBubbles } from './components/Markdown';
 import MessageActions, { Reactions } from './components/MessageActions';
 import OptionCard from './components/OptionCard';
 import SecretCard from './components/SecretCard';
 import TaskDock from './components/TaskDock';
-import ScheduleDock, { useSchedules } from './components/ScheduleDock';
+import Scheduler from './components/Scheduler';
 import ThinkingBlock from './components/ThinkingBlock';
 import WorkingCard from './components/WorkingCard';
 import Sidebar from './components/Sidebar';
@@ -20,32 +21,81 @@ import TopActions from './components/TopActions';
 const NOTIFY_KEY = 'frogbot-notify';
 
 export default function App() {
-  const s = useBot();
-  const [schedules, setSchedules] = useSchedules(s.ready);
-  // SSE 里的计划变更合并进本地列表
-  useEffect(() => {
-    const list = Object.values(s.schedules);
-    if (list.length) setSchedules(list);
-  }, [s.schedules, setSchedules]);
-  const [info, setInfo] = useState<Info>({ name: 'Frog', chat_model: '', agent_model: '', policy: '', demo: false });
+  const [bots, setBots] = useState<BotProfile[]>([]);
+  const [loadError, setLoadError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  const [editor, setEditor] = useState<BotProfile | 'new' | null>(null);
+  const [schedulerOpen, setSchedulerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activeBotId, setActiveBotId] = useState(() => localStorage.getItem('frogbot-active-bot') || 'grok-ref');
-  const [activeBotName, setActiveBotName] = useState(() => localStorage.getItem('frogbot-active-bot-name') || 'Grok Bot项目借鉴');
+  const [activeBotId, setActiveBotId] = useState(() => localStorage.getItem('frogbot-active-bot'));
+  const activeBot = bots.find((bot) => bot.id === activeBotId) ?? bots[0];
+  useEffect(() => {
+    const request = new AbortController();
+    api.bots(request.signal).then((profiles) => {
+      if (!Array.isArray(profiles) || !profiles.length) throw new Error('未读到 Bot 列表，请检查后端版本');
+      setBots(profiles);
+    }).catch((error: Error) => { if (!request.signal.aborted) setLoadError(error.message); });
+    return () => request.abort();
+  }, [attempt]);
 
-  const handleSelectBot = (id: string, name: string) => {
+  const handleSelectBot = (id: string) => {
+    setSchedulerOpen(false);
     setActiveBotId(id);
-    setActiveBotName(name);
     localStorage.setItem('frogbot-active-bot', id);
-    localStorage.setItem('frogbot-active-bot-name', name);
   };
-  const handleNewChat = () => {
-    document.getElementById('composer')?.focus();
-  };
+  return (
+    <div className="flex h-dvh w-full overflow-hidden bg-canvas text-fg">
+      <Sidebar bots={bots} activeBotId={activeBot?.id} schedulerActive={schedulerOpen}
+        onSelectBot={handleSelectBot} onOpenScheduler={() => setSchedulerOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)} onCreateBot={() => setEditor('new')}
+        onEditBot={setEditor} />
+      {activeBot ? (
+        <BotView key={activeBot.id} bot={activeBot} schedulerOpen={schedulerOpen}
+          settingsOpen={settingsOpen} onCloseSettings={() => setSettingsOpen(false)} modalOpen={editor !== null} />
+      ) : (
+        <main className="grid flex-1 place-content-center gap-3 px-4 text-center text-sm text-fg3" role="status">
+          {loadError || '正在加载 Bot…'}
+          {loadError && <button className="underline" onClick={() => { setLoadError(''); setAttempt((n) => n + 1); }}>重试</button>}
+        </main>
+      )}
+      {editor && <BotEditor profile={editor === 'new' ? undefined : editor} onClose={() => setEditor(null)}
+        onDeleted={(id) => {
+          const remaining = bots.filter((b) => b.id !== id);
+          setBots(remaining);
+          if (activeBot?.id === id && remaining[0]) handleSelectBot(remaining[0].id);
+          setEditor(null);
+        }}
+        onSaved={(profile) => {
+          setBots((list) => editor === 'new' ? [...list, profile] : list.map((b) => b.id === profile.id ? profile : b));
+          if (editor === 'new') handleSelectBot(profile.id);
+          setEditor(null);
+        }} />}
+    </div>
+  );
+}
 
+function BotView({ bot, ...props }: {
+  bot: BotProfile; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+}) {
+  const botAPI = useMemo(() => createBotAPI(bot.id), [bot.id]);
+  return <BotContext.Provider value={{ bot, api: botAPI }}><ChatView {...props} /></BotContext.Provider>;
+}
+
+function ChatView({ schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
+  schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+}) {
+  const { bot, api } = useActiveBot();
+  const activeBotName = bot.name;
+  const s = useBot(bot.id);
+  const [info, setInfo] = useState<Info | null>(null);
   const [error, setError] = useState('');
   const [notify, setNotify] = useState(() => localStorage.getItem(NOTIFY_KEY) === '1' && typeof Notification !== 'undefined' && Notification.permission === 'granted');
   const [unread, setUnread] = useState(0);
-  useEffect(() => { api.info().then(setInfo).catch(() => {}); }, []);
+  useEffect(() => {
+    const request = new AbortController();
+    api.info(request.signal).then(setInfo).catch(() => {});
+    return () => request.abort();
+  }, [api]);
 
   const tasks = Object.values(s.tasks);
   const running = tasks.filter((t) => t.status === 'running');
@@ -53,19 +103,19 @@ export default function App() {
   const pos = useMemo(() => Object.fromEntries(queued.map((t, i) => [t.id, i + 1])), [queued.map((t) => t.id).join()]); // eslint-disable-line react-hooks/exhaustive-deps
   const waiting = Object.values(s.approvals).filter((a) => a.status === 'pending').length;
   const working = running.length + queued.length > 0;
-  const stallMs = Math.min(((info.stall_sec || 720) * 1000) / 2, 180_000);
+  const stallMs = Math.min(((info?.stall_sec || 720) * 1000) / 2, 180_000);
 
   // 标签页标题：在工作时带一个标记；页面在后台时累计未读
   useEffect(() => {
-    document.title = `${unread ? `(${unread}) ` : ''}${waiting ? '⚠ ' : working || s.busy ? '● ' : ''}${activeBotName || info.name}`;
-  }, [unread, working, s.busy, waiting, activeBotName, info.name]);
+    document.title = `${unread ? `(${unread}) ` : ''}${waiting ? '⚠ ' : working || s.busy ? '● ' : ''}${activeBotName}`;
+  }, [unread, working, s.busy, waiting, activeBotName]);
   const seen = useRef(0);
   useEffect(() => {
     const delta = s.news - seen.current;
     seen.current = s.news;
     if (delta <= 0 || !document.hidden) return;
     setUnread((n) => n + delta);
-    if (notify) try { new Notification(activeBotName || info.name, { body: s.lastNews.slice(0, 140), icon: '/frog.png', tag: 'frogbot' }); } catch { /* 浏览器不支持 */ }
+    if (notify) try { new Notification(activeBotName, { body: s.lastNews.slice(0, 140), icon: botAvatarById(bot.id, bot.avatarSlot), tag: `frogbot-${bot.id}` }); } catch { /* 浏览器不支持 */ }
   }, [s.news]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const v = () => { if (!document.hidden) setUnread(0); };
@@ -82,19 +132,20 @@ export default function App() {
   // 快捷键：Esc 停止回复，Ctrl/⌘+K 聚焦输入框
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      if (settingsOpen || schedulerOpen || modalOpen) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); document.getElementById('composer')?.focus(); }
       else if (e.key === 'Escape' && s.busy) { e.preventDefault(); api.stopReply().catch(() => {}); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [s.busy]);
+  }, [api, s.busy, settingsOpen, schedulerOpen, modalOpen]);
 
   // 新内容出现时，如果用户本来就在底部，就跟着滚到底
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (el && !schedulerOpen && stick.current) el.scrollTop = el.scrollHeight;
   });
 
   const wrap = async <T,>(p: Promise<T>) => {
@@ -117,15 +168,7 @@ export default function App() {
   const editId = !s.busy && lastUser ? lastUser.id : '';
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-canvas text-fg">
-      {/* 只有左侧状态栏：参考图一样式，图标使用 onefrog bot 库，只留 Bots 列表，设置在左下角 */}
-      <Sidebar
-        activeBotId={activeBotId}
-        onSelectBot={handleSelectBot}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onNewChat={handleNewChat}
-      />
-
+    <>
       {/* 右侧主工作区：删除了上面的状态栏，只有右上角黑白切换与通知图标 */}
       <div className="flex flex-1 flex-col h-full min-w-0 overflow-hidden relative">
         <TopActions notify={notify} onNotify={toggleNotify} />
@@ -136,9 +179,10 @@ export default function App() {
           </div>
         )}
 
-        <div ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} className="flex-1 overflow-y-auto">
+        {schedulerOpen && <Scheduler revision={s.scheduleRevision} />}
+        <div ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} className={schedulerOpen ? 'hidden' : 'flex-1 overflow-y-auto'}>
           <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pb-8 pt-8" aria-live="off">
-            {s.ready && s.items.length === 0 && <Welcome name={activeBotName || info.name} onPick={(t) => send(t).catch(() => {})} />}
+            {s.ready && s.items.length === 0 && <Welcome name={activeBotName} onPick={(t) => send(t).catch(() => {})} />}
             {!s.ready && <div className="flex justify-center pt-[20vh]"><span className="typing"><i /><i /><i /></span></div>}
             <Timeline s={s} pos={pos} stallMs={stallMs} regenId={regenId} editId={editId} onError={setError} />
             {s.busy && (
@@ -151,27 +195,23 @@ export default function App() {
           </main>
         </div>
 
-        <div className="dock relative">
-          <ScheduleDock schedules={schedules} onChange={setSchedules} onError={setError} />
+        <div className={schedulerOpen ? 'hidden' : 'dock relative'}>
           <TaskDock tasks={tasks} pos={pos} />
           {error && <p className="mx-auto mb-1.5 max-w-3xl px-4 text-center text-xs text-danger" role="alert">{error}<button onClick={() => setError('')} className="ml-2 text-fg4 underline">知道了</button></p>}
-          <Composer name={activeBotName || info.name} connected={s.connected} chatBusy={s.busy} working={working}
+          <Composer name={activeBotName} connected={s.connected && s.ready} chatBusy={s.busy} working={working}
             lastUser={editId && lastUser ? { id: lastUser.id, text: lastUser.text } : undefined}
             onSend={send} onEdit={edit} onStopReply={() => api.stopReply().catch(() => {})} onStopAll={stopAll} />
         </div>
       </div>
 
-      <SettingsDialog
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        info={info}
-        notify={notify}
-        onToggleNotify={toggleNotify}
+      {settingsOpen && <SettingsDialog
+        onClose={onCloseSettings}
+        version={info?.version}
         onSettingsSaved={() => {
           api.info().then(setInfo).catch(() => {});
         }}
-      />
-    </div>
+      />}
+    </>
   );
 }
 
@@ -212,31 +252,39 @@ function Message({ m, canRegenerate, canEdit, onError }: { m: Msg; canRegenerate
       </div>
     );
   }
+  const details = (
+    <>
+      {m.files && m.files.length > 0 && <div className="mt-2"><Files files={m.files} /></div>}
+      {m.tools && m.tools.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {m.tools.map((t) => <span key={t} className="inline-flex items-center gap-1 rounded-full bg-s2 px-2 py-0.5 text-[11.5px] text-fg3"><Eye size={11} className="text-fg4" />{t}</span>)}
+        </div>
+      )}
+      {m.card && <div className={m.text ? 'mt-3' : ''}><OptionCard card={m.card} /></div>}
+      {m.secret && <div className={m.text ? 'mt-3' : ''}><SecretCard req={m.secret} /></div>}
+    </>
+  );
   return (
-    <AssistantRow>
-      <div className="group">
-        {m.thinking && <ThinkingBlock text={m.thinking} ms={m.thinking_ms} />}
-        {m.text && <AssistantBubbles text={m.text} />}
-        {m.files && m.files.length > 0 && <div className="mt-2"><Files files={m.files} /></div>}
-        {m.tools && m.tools.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {m.tools.map((t) => <span key={t} className="inline-flex items-center gap-1 rounded-full bg-s2 px-2 py-0.5 text-[11.5px] text-fg3"><Eye size={11} className="text-fg4" />{t}</span>)}
-          </div>
-        )}
-        {m.card && <div className={m.text ? 'mt-3' : ''}><OptionCard card={m.card} /></div>}
-        {m.secret && <div className={m.text ? 'mt-3' : ''}><SecretCard req={m.secret} /></div>}
+    <AssistantRow footer={
+      <>
+        {m.text && details}
         <Reactions m={m} />
         {(m.text || m.card) && <MessageActions m={m} canRegenerate={canRegenerate} onError={onError} />}
-      </div>
+      </>
+    }>
+      {m.thinking && <ThinkingBlock text={m.thinking} ms={m.thinking_ms} />}
+      {m.text ? <AssistantBubbles text={m.text} /> : details}
     </AssistantRow>
   );
 }
 
-function AssistantRow({ children }: { children: ReactNode }) {
+function AssistantRow({ children, footer }: { children: ReactNode; footer?: ReactNode }) {
+  const { bot } = useActiveBot();
   return (
-    <div className="rise flex gap-3">
-      <div className="pt-0.5"><Avatar size={28} /></div>
-      <div className="min-w-0 flex-1 pt-0.5">{children}</div>
+    <div className="rise group grid grid-cols-[auto_minmax(0,1fr)] gap-x-3">
+      <div className="self-end pt-0.5"><BotAvatar id={bot.id} slotIndex={bot.avatarSlot} /></div>
+      <div className="pt-0.5">{children}</div>
+      {footer && <div className="col-start-2">{footer}</div>}
     </div>
   );
 }
@@ -244,6 +292,7 @@ function AssistantRow({ children }: { children: ReactNode }) {
 const Indented = ({ children }: { children: ReactNode }) => <div className="sm:pl-10">{children}</div>;
 
 function Welcome({ name, onPick }: { name: string; onPick: (t: string) => void }) {
+  const { bot } = useActiveBot();
   const ideas = [
     { icon: FolderSearch, title: '整理工作区', text: '看看工作区里有什么，写一份 notes.md 总结' },
     { icon: SquareTerminal, title: '写代码并运行', text: '写一个 hello.go 并运行它' },
@@ -252,7 +301,7 @@ function Welcome({ name, onPick }: { name: string; onPick: (t: string) => void }
   ];
   return (
     <div className="rise flex flex-col items-center px-2 pt-[9vh] text-center">
-      <Avatar size={72} />
+      <BotAvatar id={bot.id} slotIndex={bot.avatarSlot} size={72} />
       <h1 className="mt-5 font-serif text-[30px] font-semibold tracking-tight">你好，我是 {name}</h1>
       <p className="mt-2 max-w-md text-[14.5px] leading-relaxed text-fg3">
         一个能直接在工作区里写代码、跑命令、管服务器的 AI 助理。你可以随便提要求，复杂的事我会拆成任务后台做。

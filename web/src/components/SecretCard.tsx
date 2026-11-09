@@ -1,10 +1,11 @@
 import { Eye, EyeOff, KeyRound, Lock, ShieldCheck, X } from 'lucide-react';
 import { useState } from 'react';
-import { api, type SecretReq } from '../api';
+import { useActiveBot, type SecretReq } from '../api';
 
 // SecretCard：请用户保存一个密钥。值只通过 POST /api/secrets 发给后端加密保存，
 // 不会进入聊天记录、事件流或模型上下文；卡片里也不会再显示它。
 export default function SecretCard({ req }: { req: SecretReq }) {
+  const { api } = useActiveBot();
   const [value, setValue] = useState('');
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);

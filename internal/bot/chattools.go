@@ -241,7 +241,7 @@ func (b *Bot) chatWrite(tool onefrog.Tool, args json.RawMessage) (string, error)
 	if len(args) > quickMaxWrite {
 		return "", errors.New("改动太大，聊天层只做小改动，请用 start_task")
 	}
-	task := onefrog.Task{ID: onefrog.NewID("chat"), BotID: b.cfg.Name, Input: "聊天层直接修改文件",
+	task := onefrog.Task{ID: onefrog.NewID("chat"), BotID: b.botProfile().ID, Input: "聊天层直接修改文件",
 		Workspace: b.cfg.Workspace, Policy: b.cfg.ChatPolicy}
 	v, _ := b.guard.Classify(task, tool, args)
 	switch v.Decision {
@@ -250,7 +250,7 @@ func (b *Bot) chatWrite(tool onefrog.Tool, args json.RawMessage) (string, error)
 	case onefrog.Allow:
 		return b.execWrite(tool, args)
 	}
-	go func() {
+	b.runBackground(func() {
 		emit := func(typ onefrog.EventType, data any) {
 			b.store.Append("agent", onefrog.Event{TaskID: task.ID, Type: typ, Time: time.Now(), Data: data}, false)
 		}
@@ -269,7 +269,7 @@ func (b *Bot) chatWrite(tool onefrog.Tool, args json.RawMessage) (string, error)
 			return
 		}
 		b.notify(fmt.Sprintf("你请求的 %s 已被批准并执行：%s。用一句话告诉用户已完成。", desc, out))
-	}()
+	})
 	return "这个修改需要用户确认，审批卡片已经显示给用户。用户批准后会自动执行，结果会以系统通知告诉你。现在用一句话告诉用户需要他在卡片上确认，然后结束本轮。不要说已经改好了。", nil
 }
 

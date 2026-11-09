@@ -28,16 +28,22 @@ type Event struct {
 }
 
 type Message struct {
-	ID        string       `json:"id"`
-	Role      string       `json:"role"` // user | assistant | notice（系统通知，只给聊天层看）
-	Text      string       `json:"text"`
-	Card      *Card        `json:"card,omitempty"`
-	Tools     []string     `json:"tools,omitempty"`  // 聊天层这一轮用过的工具（界面上显示成小标签）
-	Secret    *SecretReq   `json:"secret,omitempty"` // request_secret 发出的密钥卡片（永远不含值）
-	Files     []Attachment `json:"files,omitempty"`
-	Reactions []Reaction   `json:"reactions,omitempty"`
-	Hidden    bool         `json:"hidden,omitempty"` // 被"重新生成 / 编辑重发"替换掉的消息
-	Silent    bool         `json:"silent,omitempty"` // 只记进上下文、不叫醒聊天层的通知
+	ID           string       `json:"id"`
+	Role         string       `json:"role"` // user | assistant | notice（系统通知，只给聊天层看）
+	Text         string       `json:"text"`
+	FromBotID    string       `json:"from_bot_id,omitempty"`
+	ToBotID      string       `json:"to_bot_id,omitempty"`
+	RequestID    string       `json:"request_id,omitempty"`
+	ReplyTo      string       `json:"reply_to,omitempty"`
+	MessageState string       `json:"message_state,omitempty"` // pending | handled | replied
+	Hop          int          `json:"hop,omitempty"`
+	Card         *Card        `json:"card,omitempty"`
+	Tools        []string     `json:"tools,omitempty"`  // 聊天层这一轮用过的工具（界面上显示成小标签）
+	Secret       *SecretReq   `json:"secret,omitempty"` // request_secret 发出的密钥卡片（永远不含值）
+	Files        []Attachment `json:"files,omitempty"`
+	Reactions    []Reaction   `json:"reactions,omitempty"`
+	Hidden       bool         `json:"hidden,omitempty"` // 被"重新生成 / 编辑重发"替换掉的消息
+	Silent       bool         `json:"silent,omitempty"` // 只记进上下文、不叫醒聊天层的通知
 	// 聊天层这一轮的思考过程（只用于展示，不会喂回模型）
 	Thinking   string    `json:"thinking,omitempty"`
 	ThinkingMs int64     `json:"thinking_ms,omitempty"`
@@ -88,6 +94,7 @@ type TaskRec struct {
 	Steps        int       `json:"steps,omitempty"`
 	StopReason   string    `json:"stop_reason,omitempty"` // 结束：user | stall | restart；暂停：user | chat | restart | held（待办，还没开始过）
 	CreatedAt    time.Time `json:"created_at"`
+	createdSeq   int64     // event order breaks ties on clocks with coarse resolution
 	EndedAt      time.Time `json:"ended_at,omitempty"`
 	LastActivity time.Time `json:"-"`
 	Awaiting     int       `json:"-"` // 正在等待的审批数
@@ -364,6 +371,13 @@ func (s *Store) apply(e Event) {
 				m.handled = true
 			}
 		}
+	case "message.state":
+		var p struct{ ID, State string }
+		if json.Unmarshal(e.Data, &p) == nil {
+			if m := s.byID[p.ID]; m != nil {
+				m.MessageState = p.State
+			}
+		}
 	case "card":
 		var c Card
 		if json.Unmarshal(e.Data, &c) == nil {
@@ -375,6 +389,7 @@ func (s *Store) apply(e Event) {
 		var t TaskRec
 		if json.Unmarshal(e.Data, &t) == nil {
 			t.LastActivity = e.Time
+			t.createdSeq = e.Seq
 			s.tasks[t.ID] = &t
 		}
 	case "task.updated":
@@ -632,6 +647,19 @@ func (s *Store) Unhandled() []Message {
 	return out
 }
 
+// Inbox returns durable Bot-to-Bot messages, including completed items when requested.
+func (s *Store) Inbox(includeCompleted bool) []Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Message
+	for _, m := range s.msgs {
+		if m.FromBotID != "" && m.ToBotID != "" && (includeCompleted || m.MessageState == "pending") {
+			out = append(out, *m)
+		}
+	}
+	return out
+}
+
 // History 返回已处理过的最近 n 条消息，作为聊天层的上下文。
 func (s *Store) History(n int) []Message {
 	s.mu.Lock()
@@ -708,6 +736,9 @@ func (s *Store) Queue() []TaskRec {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Prio != out[j].Prio {
 			return out[i].Prio < out[j].Prio
+		}
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].createdSeq < out[j].createdSeq
 		}
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})

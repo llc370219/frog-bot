@@ -107,8 +107,12 @@ func (b *Bot) schedule() {
 		if b.sch.launched[t.ID] {
 			continue
 		}
-		task := onefrog.Task{ID: t.ID, BotID: b.cfg.Name, Input: t.Input, Workspace: b.cfg.Workspace,
+		profile := b.botProfile()
+		task := onefrog.Task{ID: t.ID, BotID: profile.ID, Input: t.Input, Workspace: b.cfg.Workspace,
 			Policy: b.cfg.Policy, MaxDuration: b.cfg.TaskMaxTime, Instructions: b.secretsBrief()}
+		if profile.Instructions != "" {
+			task.Instructions += "\n\n职责与工作偏好：\n" + profile.Instructions
+		}
 		if cp, ok := b.loadCheckpoint(t.ID); ok {
 			task.Resume, task.StartStep = cp.Messages, cp.Steps
 		}
@@ -338,10 +342,10 @@ func (b *Bot) onAgentEvent(e onefrog.Event) {
 			}
 			b.sched.MarkTaskFinished(e.TaskID, st)
 		}
-		go func() { b.report(e.TaskID); b.schedule() }() // 不在 agent 的 goroutine 里做重活
+		b.runBackground(func() { b.report(e.TaskID); b.schedule() }) // 不在 agent 的 goroutine 里做重活
 	case e.Type == onefrog.EvTaskPaused:
 		b.landed(e.TaskID)
-		go func() {
+		b.runBackground(func() {
 			t, _ := b.store.Task(e.TaskID)
 			if t.StopReason == "chat" {
 				b.notify(fmt.Sprintf("任务「%s」(%s) 已在安全点暂停，进度已保存（第 %d 步）。之后可以用 resume_task 继续。", t.Title, t.ID, t.Steps))
@@ -349,7 +353,7 @@ func (b *Bot) onAgentEvent(e onefrog.Event) {
 				b.contextNote(fmt.Sprintf("用户在界面上暂停了任务「%s」(%s)，进度已保存。", t.Title, t.ID))
 			}
 			b.schedule()
-		}()
+		})
 	case e.Type == onefrog.EvApprovalRequested:
 		if r, ok := e.Data.(onefrog.ApprovalRequest); ok {
 			t, _ := b.store.Task(e.TaskID)

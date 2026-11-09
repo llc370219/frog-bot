@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"frogbot/internal/onefrog"
@@ -19,24 +20,25 @@ import (
 )
 
 type Config struct {
-	Name          string
-	DataDir       string // 事件日志、记忆
-	Workspace     string // 后台 agent 的工作区
-	ChatProvider  onefrog.Provider
-	ChatModel     string
-	AgentProvider onefrog.Provider
-	AgentModel    string
-	Reviewer      onefrog.Reviewer // 可选：auto 模式的审核模型
-	Policy        onefrog.Policy
-	ChatPolicy    onefrog.Policy // 聊天层直接写文件时的审批模式，默认 untrusted（每次写都要你确认）
-	Rules         onefrog.Rules
-	MaxConcurrent int
-	TaskMaxTime   time.Duration // 单个任务最长运行时间，默认 30 分钟
-	StallTimeout  time.Duration // 多久没有进展算卡住，默认 12 分钟
-	TurnTimeout   time.Duration // 聊天层每轮上限，默认 90 秒
-	MasterKey     string        // FROGBOT_MASTER_KEY；为空时用 data/master.key（自动生成）
-	Demo          bool
-		Timezone      string // 默认 Asia/Shanghai，用于展示与新建计划
+	Name           string
+	DataDir        string // 事件日志、记忆
+	Workspace      string // 后台 agent 的工作区
+	ChatProvider   onefrog.Provider
+	ChatModel      string
+	AgentProvider  onefrog.Provider
+	AgentModel     string
+	Reviewer       onefrog.Reviewer // 可选：auto 模式的审核模型
+	ReviewerModel  string           // 使用当前 API 连接
+	Policy         onefrog.Policy
+	ChatPolicy     onefrog.Policy // 聊天层直接写文件时的审批模式，默认 untrusted（每次写都要你确认）
+	Rules          onefrog.Rules
+	MaxConcurrent  int
+	TaskMaxTime    time.Duration // 单个任务最长运行时间，默认 30 分钟
+	StallTimeout   time.Duration // 多久没有进展算卡住，默认 12 分钟
+	TurnTimeout    time.Duration // 聊天层每轮上限，默认 90 秒
+	MasterKey      string        // FROGBOT_MASTER_KEY；为空时用 data/master.key（自动生成）
+	Demo           bool
+	Timezone       string // 默认 Asia/Shanghai，用于展示与新建计划
 	InitialBaseURL string
 	InitialKey     string
 }
@@ -51,19 +53,22 @@ type Bot struct {
 	guard    *onefrog.Guard // 任务和聊天层共用的审批管线
 	vault    *vault.Vault
 	sch      sched
-		sched    *scheduler.Engine // 定时唤醒器（持久化计划）
+	sched    *scheduler.Engine // 定时唤醒器（持久化计划）
 
 	modelMu        sync.RWMutex
-	initialBaseURL string
-	initialKey     string
-	providers      []ProviderSettings
-	chatRoute      ModelRoute
-	agentRoute     ModelRoute
+	memoryMu       sync.Mutex
+	model          modelConnection
+	channels       []storedChannel
+	defaultChannel string
+	modelOwner     *Bot
+	coordinator    *Bots
+	profile        atomic.Pointer[BotProfile]
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	kick   chan struct{}
-	wg     sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+	kick       chan struct{}
+	wg         sync.WaitGroup
+	background sync.WaitGroup
 
 	turnMu     sync.Mutex
 	turnCancel context.CancelCauseFunc
@@ -75,6 +80,10 @@ var (
 )
 
 func New(cfg Config) (*Bot, error) {
+	return newRuntime(cfg, nil, nil)
+}
+
+func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) {
 	if cfg.Name == "" {
 		cfg.Name = "Frog"
 	}
@@ -106,6 +115,12 @@ func New(cfg Config) (*Bot, error) {
 	if err != nil {
 		return nil, err
 	}
+	initialized := false
+	defer func() {
+		if !initialized {
+			store.Close()
+		}
+	}()
 	key, generated, err := vault.LoadKey(cfg.MasterKey, cfg.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("读取主密钥失败: %w", err)
@@ -119,17 +134,29 @@ func New(cfg Config) (*Bot, error) {
 	}
 	store.SetRedactor(vlt.RedactBytes)
 	b := &Bot{cfg: cfg, store: store, vault: vlt, approver: onefrog.NewQueueApprover(), kick: make(chan struct{}, 1),
-		sch: sched{launched: map[string]bool{}}, initialBaseURL: cfg.InitialBaseURL, initialKey: cfg.InitialKey}
-	b.ctx, b.cancel = context.WithCancel(context.Background())
+		sch: sched{launched: map[string]bool{}}, modelOwner: modelOwner}
+	b.profile.Store(profile)
+	if modelOwner == nil {
+		if err := b.loadSettings(); err != nil {
+			return nil, fmt.Errorf("读取 API 设置失败: %w", err)
+		}
+		if err := b.loadChannels(); err != nil {
+			return nil, fmt.Errorf("读取渠道配置失败: %w", err)
+		}
+	}
 
-	guard, err := onefrog.NewGuard(cfg.Rules, cfg.Reviewer, b.approver)
+	reviewer := cfg.Reviewer
+	if reviewer == nil && cfg.ReviewerModel != "" {
+		reviewer = settingsReviewer{bot: b, model: cfg.ReviewerModel}
+	}
+	guard, err := onefrog.NewGuard(cfg.Rules, reviewer, b.approver)
 	if err != nil {
 		return nil, err
 	}
 	guard.Store = approvalStore{store}
 	guard.Secrets = vlt
 	b.guard = guard
-	agent := &onefrog.Agent{Provider: cfg.AgentProvider, Model: cfg.AgentModel, Guard: guard,
+	agent := &onefrog.Agent{ResolveModel: func() (onefrog.Provider, string) { return b.resolveModel(false) }, Guard: guard,
 		Memory: b, Sink: onefrog.SinkFunc(b.onAgentEvent)}
 	b.mgr = onefrog.NewManager(agent, cfg.MaxConcurrent)
 	b.chatG, _ = onefrog.NewGuard(onefrog.Rules{}, nil, nil)
@@ -138,12 +165,15 @@ func New(cfg Config) (*Bot, error) {
 	if err := b.initScheduler(); err != nil {
 		return nil, err
 	}
-	b.loadSettings()
+	b.ctx, b.cancel = context.WithCancel(context.Background())
 	b.recover()
+	initialized = true
 	return b, nil
 }
 
 func (b *Bot) Store() *Store { return b.store }
+
+func (b *Bot) ID() string { return b.botProfile().ID }
 
 // Start 启动聊天层和监工的后台循环。
 func (b *Bot) Start() {
@@ -157,14 +187,32 @@ func (b *Bot) Start() {
 	b.wake()
 }
 
-func (b *Bot) Close() {
+func (b *Bot) stop() {
+	b.cancel()
+	// Wait for any dispatch that already passed the context check.
+	b.sch.mu.Lock()
+	b.sch.mu.Unlock()
 	b.mgr.CancelAll()
+}
+
+func (b *Bot) Close() {
+	b.stop()
 	if b.sched != nil {
 		b.sched.Stop()
 	}
-	b.cancel()
 	b.wg.Wait()
+	b.mgr.Drain()
+	b.background.Wait()
 	b.store.Close()
+}
+
+// Track callbacks that may outlive a chat turn or agent task.
+func (b *Bot) runBackground(fn func()) {
+	b.background.Add(1)
+	go func() {
+		defer b.background.Done()
+		fn()
+	}()
 }
 
 func (b *Bot) wake() {
@@ -299,12 +347,93 @@ func (b *Bot) AnswerCard(id, answer string, dismiss bool) error {
 func (b *Bot) memoryPath() string { return filepath.Join(b.cfg.DataDir, "memory.md") }
 
 // Recall 实现 onefrog.MemoryProvider。
-func (b *Bot) Recall(context.Context, string, string) (string, error) {
-	data, err := os.ReadFile(b.memoryPath())
-	if os.IsNotExist(err) {
-		return "", nil
+func (b *Bot) Recall(_ context.Context, _, _ string) (string, error) {
+	private, err := b.readMemory("private")
+	if err != nil {
+		return "", err
 	}
-	return string(data), err
+	if b.coordinator == nil {
+		return private, nil
+	}
+	shared, err := b.coordinator.readSharedMemory()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(shared) == "" {
+		return private, nil
+	}
+	return "[共享记忆]\n" + shared + "\n[本 Bot 私有记忆]\n" + private, nil
+}
+
+func (b *Bot) readMemory(scope string) (string, error) {
+	if scope == "" || scope == "private" {
+		b.memoryMu.Lock()
+		defer b.memoryMu.Unlock()
+		data, err := os.ReadFile(b.memoryPath())
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return strings.TrimSpace(string(data)), err
+	}
+	if scope != "shared" {
+		return "", errors.New("scope 必须是 private 或 shared")
+	}
+	if b.coordinator == nil {
+		return "", errors.New("共享记忆仅在多 Bot 模式下可用")
+	}
+	return b.coordinator.readSharedMemory()
+}
+
+func (b *Bot) writeMemory(scope, text, mode string) error {
+	if scope == "" || scope == "private" {
+		b.memoryMu.Lock()
+		defer b.memoryMu.Unlock()
+		return b.writeMemoryFile(b.memoryPath(), text, mode)
+	}
+	if scope != "shared" {
+		return errors.New("scope 必须是 private 或 shared")
+	}
+	if b.coordinator == nil {
+		return errors.New("共享记忆仅在多 Bot 模式下可用")
+	}
+	return b.coordinator.writeSharedMemory(text, mode)
+}
+
+func (b *Bot) writeMemoryFile(path, text, mode string) error {
+	if strings.TrimSpace(text) == "" || len(text) > 20000 {
+		return errors.New("记忆内容不能为空且最多 20000 字节")
+	}
+	var content string
+	if mode != "replace" {
+		old, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		content = string(old)
+	}
+	if mode == "replace" {
+		content = strings.TrimSpace(text) + "\n"
+	} else {
+		content = strings.TrimRight(content, "\n") + "\n- " + strings.TrimSpace(text) + "\n"
+	}
+	if len(content) > 1<<20 {
+		return errors.New("记忆文件最多 1 MiB")
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".memory-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err = tmp.Chmod(0600); err == nil {
+		_, err = tmp.WriteString(content)
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // approvalStore 只用来把审批记录写进事件日志（onefrog.Store 的其余方法不需要）。

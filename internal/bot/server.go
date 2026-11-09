@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,27 +42,43 @@ func (b *Bot) Handler(webDir string, embeddedFS ...fs.FS) http.Handler {
 		writeJSON(w, b.GetSettings(), nil)
 	})
 	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		var payload SettingsPayload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			writeJSON(w, nil, fmt.Errorf("请求格式不正确: %w", err))
+		payload, err := readAPISettings(w, r)
+		if err != nil {
+			writeJSON(w, nil, err)
 			return
 		}
-		err := b.SaveSettings(payload)
-		writeJSON(w, map[string]any{"ok": true, "settings": b.GetSettings()}, err)
+		saved, err := b.SaveSettings(payload)
+		writeJSON(w, saved, err)
 	})
-	mux.HandleFunc("POST /api/settings/providers/models", func(w http.ResponseWriter, r *http.Request) {
-		var p ProviderSettings
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-			writeJSON(w, nil, fmt.Errorf("请求格式不正确: %w", err))
+	mux.HandleFunc("POST /api/settings/models", func(w http.ResponseWriter, r *http.Request) {
+		p, err := readAPISettings(w, r)
+		if err != nil {
+			writeJSON(w, nil, err)
 			return
 		}
 		models, err := b.FetchRemoteModels(r.Context(), p)
 		writeJSON(w, map[string]any{"models": models}, err)
 	})
+	mux.HandleFunc("POST /api/settings/test", func(w http.ResponseWriter, r *http.Request) {
+		p, err := readAPISettings(w, r)
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		latency, err := b.TestConnection(r.Context(), p)
+		writeJSON(w, map[string]any{"latency_ms": latency}, err)
+	})
+	mux.HandleFunc("GET /api/update", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		status, err := checkUpdate(r.Context(), releaseClient, latestReleaseAPI, currentVersion())
+		writeJSON(w, status, err)
+	})
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"name": b.cfg.Name, "chat_model": b.cfg.ChatModel, "agent_model": b.cfg.AgentModel,
+		_, chatModel := b.resolveModel(true)
+		_, agentModel := b.resolveModel(false)
+		writeJSON(w, map[string]any{"name": b.botProfile().Name, "chat_model": chatModel, "agent_model": agentModel,
 			"policy": b.cfg.Policy, "demo": b.cfg.Demo, "max_concurrent": b.cfg.MaxConcurrent,
-			"stall_sec": int(b.cfg.StallTimeout.Seconds()), "timezone": "Asia/Shanghai"}, nil)
+			"stall_sec": int(b.cfg.StallTimeout.Seconds()), "timezone": "Asia/Shanghai", "version": currentVersion()}, nil)
 	})
 	mux.HandleFunc("POST /api/messages", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -212,7 +230,10 @@ func (b *Bot) serveStream(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("after"); v != "" && last == 0 {
 		last, _ = strconv.ParseInt(v, 10, 64)
 	}
+	b.turnMu.Lock()
 	live, unsub := b.store.Subscribe() // 先订阅再补发历史，避免漏事件
+	busy := b.turnCancel != nil
+	b.turnMu.Unlock()
 	defer unsub()
 	send := func(e Event) {
 		if e.Seq > 0 {
@@ -228,7 +249,8 @@ func (b *Bot) serveStream(w http.ResponseWriter, r *http.Request) {
 	for _, e := range b.store.Since(last) {
 		send(e)
 	}
-	send(Event{Kind: "replay.done", Time: time.Now(), Data: json.RawMessage("{}")})
+	busyData, _ := json.Marshal(map[string]bool{"busy": busy})
+	send(Event{Kind: "replay.done", Time: time.Now(), Data: busyData})
 	flusher.Flush()
 	ping := time.NewTicker(20 * time.Second)
 	defer ping.Stop()
@@ -246,6 +268,8 @@ func (b *Bot) serveStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		case <-r.Context().Done():
+			return
+		case <-b.ctx.Done():
 			return
 		}
 	}
@@ -280,8 +304,8 @@ func spaFS(efs fs.FS, fallbackDir string) http.Handler {
 	}
 	files := http.FileServer(http.FS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clean := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
-		clean = strings.TrimPrefix(clean, "\\")
+		// fs.FS uses slash-delimited paths on every platform, including Windows.
+		clean := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 		if clean == "" || clean == "." {
 			clean = "index.html"
 		}
@@ -298,6 +322,19 @@ func spaFS(efs fs.FS, fallbackDir string) http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+func readAPISettings(w http.ResponseWriter, r *http.Request) (APISettings, error) {
+	var s APISettings
+	// Cross-origin HTML forms must not be able to change or probe credentials.
+	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if media != "application/json" {
+		return s, fmt.Errorf("请求必须使用 JSON")
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&s); err != nil {
+		return s, fmt.Errorf("请求格式不正确: %w", err)
+	}
+	return s, nil
 }
 
 func writeJSON(w http.ResponseWriter, v any, err error) {

@@ -131,7 +131,7 @@ func (b *Bot) scheduleMutate(op string, args json.RawMessage, apply func() (stri
 			return apply()
 		},
 	}
-	task := onefrog.Task{ID: onefrog.NewID("chat"), BotID: b.cfg.Name, Input: "聊天层变更定时计划",
+	task := onefrog.Task{ID: onefrog.NewID("chat"), BotID: b.botProfile().ID, Input: "聊天层变更定时计划",
 		Workspace: b.cfg.Workspace, Policy: b.cfg.ChatPolicy}
 	v, _ := b.guard.Classify(task, tool, args)
 	switch v.Decision {
@@ -140,7 +140,7 @@ func (b *Bot) scheduleMutate(op string, args json.RawMessage, apply func() (stri
 	case onefrog.Allow:
 		return apply()
 	}
-	go func() {
+	b.runBackground(func() {
 		emit := func(typ onefrog.EventType, data any) {
 			b.store.Append("agent", onefrog.Event{TaskID: task.ID, Type: typ, Time: time.Now(), Data: data}, false)
 		}
@@ -158,7 +158,7 @@ func (b *Bot) scheduleMutate(op string, args json.RawMessage, apply func() (stri
 			return
 		}
 		b.notify(fmt.Sprintf("定时计划操作 %s 已批准并完成：%s。用一句话告诉用户。", op, out))
-	}()
+	})
 	return "这个定时计划变更需要用户确认，审批卡片已显示。批准后会自动执行，结果会通知你。现在用一句话请用户在卡片上确认，然后结束本轮。不要说已经改好了。", nil
 }
 

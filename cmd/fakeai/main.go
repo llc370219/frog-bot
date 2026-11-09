@@ -1,8 +1,8 @@
 // fakeai 是一个假的 OpenAI 兼容服务，只用于演示和冒烟测试（不需要 API Key）。
-// 模型名包含 "chat" 的当聊天层，其余当后台 agent。回复都是写死的剧本。
+// 根据调用方提供的工具区分聊天和后台任务。回复都是写死的剧本。
 //
 //	go run ./cmd/fakeai            # 监听 127.0.0.1:9911
-//	BASE_URL=http://127.0.0.1:9911 CHAT_MODEL=fake-chat AGENT_MODEL=fake-agent FROGBOT_DEMO=1 go run ./cmd/frogbot
+//	BASE_URL=http://127.0.0.1:9911 CHAT_MODEL=fake-model FROGBOT_DEMO=1 go run ./cmd/frogbot
 package main
 
 import (
@@ -47,22 +47,39 @@ func main() {
 		addr = v
 	}
 	http.HandleFunc("/chat/completions", handle)
+	http.HandleFunc("/models", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"fake-model"}]}`)
+	})
 	log.Printf("fakeai 监听 http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
 func handle(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Model    string `json:"model"`
-		Messages []msg  `json:"messages"`
+		Messages []msg `json:"messages"`
+		Tools    []struct {
+			Function struct{ Name string } `json:"function"`
+		} `json:"tools"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	w.Header().Set("Content-Type", "text/event-stream")
-	text, tool, args := chat(req.Messages)
-	think, field := thinkFor(req.Messages), "reasoning_content"
-	if !strings.Contains(req.Model, "chat") {
+	var text, tool, think string
+	var args any
+	field := "reasoning"
+	isChat := false
+	for _, t := range req.Tools {
+		if t.Function.Name == "start_task" {
+			isChat = true
+			break
+		}
+	}
+	if isChat {
+		text, tool, args = chat(req.Messages)
+		think, field = thinkFor(req.Messages), "reasoning_content"
+	} else {
 		text, tool, args = agent(req.Messages)
-		think, field = agentThink(req.Messages), "reasoning" // 两种字段都演示一下
+		think = agentThink(req.Messages)
 	}
 	f, _ := w.(http.Flusher)
 	send := func(delta any) {

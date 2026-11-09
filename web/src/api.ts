@@ -1,27 +1,30 @@
 
-export type ProviderSettings = {
-  id: string;
-  name: string;
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
+
+export type BotDraft = { name: string; instructions: string };
+export type BotProfile = BotDraft & { id: string; avatarSlot: number };
+const botPath = (id: string) => `/api/bots/${encodeURIComponent(id)}`;
+
+export type APIChannel = {
+  id: string; name: string; base_url: string; enabled: boolean; auth_required: boolean;
+  api_key?: string; has_api_key: boolean; models: string[]; hidden_models: string[];
+};
+export type APISettings = {
   base_url: string;
-  api_key?: string;
-  has_api_key?: boolean;
-  auth_required?: boolean;
-  enabled: boolean;
-  models: string[];
-  hidden_models: string[];
-};
-
-export type ModelRoute = {
-  provider_id: string;
   model: string;
+  api_key?: string;
+  has_api_key: boolean;
+  providers?: APIChannel[];
+  default_provider_id?: string;
+  provider_id?: string;
 };
 
-export type SettingsState = {
-  providers: ProviderSettings[];
-  chat_route: ModelRoute;
-  agent_route: ModelRoute;
+export type UpdateStatus = {
+  current: string;
+  latest?: string;
+  release_url: string;
+  state: 'no_release' | 'unversioned' | 'current' | 'available';
 };
-import { useEffect, useRef, useState } from 'react';
 
 // ---------- 类型（与 Go 后端的事件一一对应） ----------
 
@@ -48,7 +51,7 @@ export type Approval = {
   status: 'pending' | 'allow' | 'deny' | 'expired'; scope?: string; created: number;
 };
 export type Item = { type: 'msg' | 'task' | 'approval'; id: string };
-export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string };
+export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string; version?: string };
 export type Schedule = {
   id: string; title: string; prompt: string; enabled: boolean; kind: string; timezone: string;
   hour?: number; minute?: number; weekdays?: number[]; overlap?: string;
@@ -57,7 +60,7 @@ export type Schedule = {
 };
 
 export type State = {
-  items: Item[]; msgs: Record<string, Msg>; tasks: Record<string, Task>; approvals: Record<string, Approval>; schedules: Record<string, Schedule>;
+  items: Item[]; msgs: Record<string, Msg>; tasks: Record<string, Task>; approvals: Record<string, Approval>; scheduleRevision: number;
   streaming: string; toolLabel: string; busy: boolean;
   thinking: string; thinkStart: number; thinkEnd: number; // 聊天层这一轮的思考（流式，临时）
   ready: boolean; connected: boolean; lastSeq: number;
@@ -68,7 +71,7 @@ export type State = {
 type Wire = { seq: number; kind: string; time: string; data: any };
 type AgentEv = { task_id: string; type: string; time: string; data: any };
 
-const empty = (): State => ({ items: [], msgs: {}, tasks: {}, approvals: {}, schedules: {}, streaming: '', toolLabel: '', busy: false, thinking: '', thinkStart: 0, thinkEnd: 0, ready: false, connected: false, lastSeq: 0, news: 0, lastNews: '' });
+const empty = (): State => ({ items: [], msgs: {}, tasks: {}, approvals: {}, scheduleRevision: 0, streaming: '', toolLabel: '', busy: false, thinking: '', thinkStart: 0, thinkEnd: 0, ready: false, connected: false, lastSeq: 0, news: 0, lastNews: '' });
 const resetTurn = (s: State) => { s.streaming = ''; s.toolLabel = ''; s.thinking = ''; s.thinkStart = 0; s.thinkEnd = 0; };
 const endThink = (s: State) => { if (s.thinkStart && !s.thinkEnd) s.thinkEnd = Date.now(); };
 const ts = (s?: string) => (s ? new Date(s).getTime() : Date.now());
@@ -79,7 +82,7 @@ export const terminal = (st: string) => st === 'completed' || st === 'failed' ||
 function apply(s: State, ev: Wire) {
   const d = ev.data;
   switch (ev.kind) {
-    case 'replay.done': s.ready = true; break;
+    case 'replay.done': s.ready = true; s.busy = !!d.busy; s.scheduleRevision++; break;
     case 'message': {
       if (d.role === 'notice') break; // 系统通知只给聊天层看
       if (d.hidden) { s.items = s.items.filter((it) => it.id !== d.id); delete s.msgs[d.id]; break; }
@@ -147,16 +150,13 @@ function apply(s: State, ev: Wire) {
       break;
     }
     case 'agent': applyAgent(s, d as AgentEv, ev.seq > 0); break;
-    case 'schedule.upserted': {
-      s.schedules[d.id] = d as Schedule;
-      break;
-    }
+    case 'schedule.upserted':
     case 'schedule.deleted': {
-      delete s.schedules[d.id];
+      s.scheduleRevision++;
       break;
     }
     case 'schedule.run': {
-      if (d.plan?.id) s.schedules[d.plan.id] = d.plan as Schedule;
+      s.scheduleRevision++;
       if (d.claim?.status === 'needs_verify' || d.claim?.status === 'failed' || d.claim?.status === 'expired') {
         news(s, `定时计划「${d.plan?.title || ''}」：${d.claim.status}`);
       }
@@ -222,7 +222,8 @@ function applyAgent(s: State, e: AgentEv, persisted: boolean) {
 }
 
 // useBot 连接 SSE，维护整个界面的状态。断线后带 Last-Event-ID（或 ?after=）重连补齐。
-export function useBot() {
+// The caller keys the chat view by Bot ID, so replay and live events start from a clean state.
+export function useBot(id: string) {
   const ref = useRef<State>(empty());
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -231,7 +232,7 @@ export function useBot() {
     const render = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; setTick((n) => n + 1); }); };
     const connect = () => {
       const s = ref.current;
-      es = new EventSource(`/api/stream${s.lastSeq ? `?after=${s.lastSeq}` : ''}`);
+      es = new EventSource(`${botPath(id)}/stream${s.lastSeq ? `?after=${s.lastSeq}` : ''}`);
       es.onopen = () => { s.connected = true; s.busy = false; resetTurn(s); render(); };
       es.onmessage = (m) => {
         const ev = JSON.parse(m.data) as Wire;
@@ -249,48 +250,79 @@ export function useBot() {
     };
     connect();
     return () => { closed = true; es?.close(); clearTimeout(retry); cancelAnimationFrame(raf); };
-  }, []);
+  }, [id]);
   return ref.current;
 }
 
-async function post(path: string, body: unknown = {}) {
-  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+async function post(path: string, body: unknown = {}, method = 'POST') {
+  const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
   return r.json();
 }
 
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const r = await fetch(path, { signal });
+  const data = await r.json().catch(() => null);
+  if (!r.ok || data === null) throw new Error(data?.error || '无法读取数据，请确认 Frog Bot 后端已启动');
+  return data as T;
+}
+
 export type TaskAction = 'pause' | 'resume' | 'cancel' | 'retry' | 'top' | 'up';
 
+export function createBotAPI(botID: string) {
+  const base = botPath(botID);
+  return {
+    info: (signal?: AbortSignal): Promise<Info> => get(`${base}/info`, signal),
+    send: (text: string, files: Attachment[] = []) => post(`${base}/messages`, { text, files }),
+    stop: () => post(`${base}/stop`),
+    stopReply: () => post(`${base}/stop?scope=reply`),
+    regenerate: () => post(`${base}/regenerate`),
+    edit: (id: string, text: string) => post(`${base}/messages/${id}/edit`, { text }),
+    react: (id: string, emoji: string) => post(`${base}/messages/${id}/react`, { emoji }),
+    task: (id: string, action: TaskAction) => post(`${base}/tasks/${id}/${action}`),
+    upload: async (f: File): Promise<Attachment> => {
+      const fd = new FormData();
+      fd.append('file', f, f.name || 'pasted.png');
+      const r = await fetch(`${base}/uploads`, { method: 'POST', body: fd });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+      const out = (await r.json()) as Attachment[];
+      return out[0];
+    },
+    fileURL: (path: string, download = false) => `${base}/files?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`,
+    decide: (id: string, decision: 'once' | 'session' | 'deny') => post(`${base}/approvals/${id}`, { decision }),
+    answer: (id: string, answer: string) => post(`${base}/cards/${id}`, { answer }),
+    dismiss: (id: string) => post(`${base}/cards/${id}`, { dismiss: true }),
+    // 密钥值只走这个接口：直接加密落盘，不进聊天记录、事件流或模型上下文
+    saveSecret: (requestId: string, value: string) => post(`${base}/secrets`, { request_id: requestId, value }),
+    cancelSecret: (requestId: string) => post(`${base}/secrets/requests/${requestId}/cancel`),
+    schedules: (signal?: AbortSignal): Promise<Schedule[]> => get(`${base}/schedules`, signal),
+    schedule: (id: string, action: 'pause' | 'resume' | 'run' | 'delete') => post(`${base}/schedules/${id}/${action}`),
+  };
+}
+
+export const BotContext = createContext<{ bot: BotProfile; api: ReturnType<typeof createBotAPI> } | null>(null);
+export function useActiveBot() {
+  const context = useContext(BotContext);
+  if (!context) throw new Error('Missing active Bot');
+  return context;
+}
+
 export const api = {
-  info: (): Promise<Info> => fetch('/api/info').then((r) => r.json()),
-  send: (text: string, files: Attachment[] = []) => post('/api/messages', { text, files }),
-  stop: () => post('/api/stop'),
-  stopReply: () => post('/api/stop?scope=reply'),
-  regenerate: () => post('/api/regenerate'),
-  edit: (id: string, text: string) => post(`/api/messages/${id}/edit`, { text }),
-  react: (id: string, emoji: string) => post(`/api/messages/${id}/react`, { emoji }),
-  task: (id: string, action: TaskAction) => post(`/api/tasks/${id}/${action}`),
-  upload: async (f: File): Promise<Attachment> => {
-    const fd = new FormData();
-    fd.append('file', f, f.name || 'pasted.png');
-    const r = await fetch('/api/uploads', { method: 'POST', body: fd });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-    const out = (await r.json()) as Attachment[];
-    return out[0];
+  bots: (signal?: AbortSignal): Promise<BotProfile[]> => get('/api/bots', signal),
+  createBot: (draft: BotDraft): Promise<BotProfile> => post('/api/bots', draft),
+  editBot: (id: string, draft: BotDraft): Promise<BotProfile> => post(botPath(id), draft, 'PATCH'),
+  deleteBot: (id: string): Promise<{ ok: boolean }> => post(botPath(id), {}, 'DELETE'),
+  settings: async (signal?: AbortSignal): Promise<APISettings> => {
+    const settings = await get<APISettings>('/api/settings', signal);
+    if (typeof settings.base_url !== 'string' || typeof settings.model !== 'string') {
+      throw new Error('后端版本与网页不匹配，请重启 Frog Bot 后端并刷新网页');
+    }
+    return settings;
   },
-  fileURL: (path: string, download = false) => `/api/files?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`,
-  decide: (id: string, decision: 'once' | 'session' | 'deny') => post(`/api/approvals/${id}`, { decision }),
-  answer: (id: string, answer: string) => post(`/api/cards/${id}`, { answer }),
-  dismiss: (id: string) => post(`/api/cards/${id}`, { dismiss: true }),
-  // 密钥值只走这个接口：直接加密落盘，不进聊天记录、事件流或模型上下文
-  secrets: (): Promise<Array<{ name: string; description?: string; updated_at?: string }>> => fetch('/api/secrets').then((r) => r.json()),
-    saveSecret: (requestId: string, value: string) => post('/api/secrets', { request_id: requestId, value }),
-  cancelSecret: (requestId: string) => post(`/api/secrets/requests/${requestId}/cancel`),
-  settings: (): Promise<SettingsState> => fetch('/api/settings').then((r) => r.json()),
-  saveSettings: (s: SettingsState): Promise<{ ok: boolean; settings: SettingsState }> => post('/api/settings', s),
-  providerModels: (p: ProviderSettings): Promise<{ models: string[] }> => post('/api/settings/providers/models', p),
-  schedules: (): Promise<Schedule[]> => fetch('/api/schedules').then((r) => r.json()),
-  schedule: (id: string, action: 'pause' | 'resume' | 'run' | 'delete') => post(`/api/schedules/${id}/${action}`),
+  saveSettings: (s: APISettings): Promise<APISettings> => post('/api/settings', s),
+  providerModels: (s: APISettings): Promise<{ models: string[] }> => post('/api/settings/models', s),
+  testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post('/api/settings/test', s),
+  checkUpdate: (): Promise<UpdateStatus> => get('/api/update'),
 };
 
 export const isActive = (t: Task) => t.status === 'queued' || t.status === 'running';
