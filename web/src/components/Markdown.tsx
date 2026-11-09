@@ -146,7 +146,7 @@ export function AssistantBubbles({ text, streaming }: { text: string; streaming?
   const blocks = parseBlocks(text);
   if (!blocks.length && streaming) {
     return (
-      <div className="w-fit max-w-[88%] sm:max-w-[82%] rounded-[20px] rounded-tl-sm bg-s1 border border-line/80 px-4 py-2.5 text-[15px] leading-relaxed text-fg shadow-xs">
+      <div className="bot-bubble">
         <span className="caret-inline" />
       </div>
     );
@@ -192,10 +192,7 @@ export function AssistantBubbles({ text, streaming }: { text: string; streaming?
         const isLast = idx === items.length - 1;
         if (it.kind === 'sentence') {
           return (
-            <div
-              key={idx}
-              className="w-fit max-w-[88%] sm:max-w-[82%] rounded-[20px] rounded-tl-sm bg-s1 border border-line/80 px-4 py-2.5 text-[15px] leading-relaxed text-fg shadow-xs break-words"
-            >
+            <div key={idx} className="bot-bubble">
               <div className="md">
                 <p className={isLast && streaming ? 'caret' : ''}>{inline(it.text)}</p>
               </div>
@@ -211,10 +208,7 @@ export function AssistantBubbles({ text, streaming }: { text: string; streaming?
         }
         if (it.kind === 'heading') {
           return (
-            <div
-              key={idx}
-              className="w-fit max-w-[88%] sm:max-w-[82%] rounded-[20px] rounded-tl-sm bg-s1 border border-line/80 px-4 py-2 text-[15px] leading-relaxed text-fg shadow-xs font-semibold"
-            >
+            <div key={idx} className="bot-bubble font-semibold">
               <div className="md">
                 <p className={'md-h md-h' + Math.min(it.level, 3) + (isLast && streaming ? ' caret' : '')}>{inline(it.text)}</p>
               </div>
@@ -223,10 +217,7 @@ export function AssistantBubbles({ text, streaming }: { text: string; streaming?
         }
         if (it.kind === 'list') {
           return (
-            <div
-              key={idx}
-              className="w-fit max-w-[88%] sm:max-w-[82%] rounded-[20px] rounded-tl-sm bg-s1 border border-line/80 px-4 py-2.5 text-[15px] leading-relaxed text-fg shadow-xs break-words"
-            >
+            <div key={idx} className="bot-bubble">
               <div className="md">
                 {it.ordered ? (
                   <ol start={it.start}>{it.items.map((row, n) => <li key={n}>{lines(row.split('\n'))}</li>)}</ol>
@@ -239,10 +230,7 @@ export function AssistantBubbles({ text, streaming }: { text: string; streaming?
         }
         if (it.kind === 'quote') {
           return (
-            <div
-              key={idx}
-              className="w-fit max-w-[88%] sm:max-w-[82%] rounded-[20px] rounded-tl-sm bg-s1 border border-line/80 px-4 py-2.5 text-[15px] leading-relaxed text-fg shadow-xs break-words"
-            >
+            <div key={idx} className="bot-bubble">
               <div className="md">
                 <blockquote>{lines(it.rows)}</blockquote>
               </div>

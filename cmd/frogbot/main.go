@@ -62,7 +62,17 @@ func main() {
 	}
 	b.Start()
 	addr := env("127.0.0.1:8080", "ADDR")
-	srv := &http.Server{Addr: addr, Handler: b.Handler(env("web/dist", "WEB_DIR"))}
+	webDir := env("", "WEB_DIR")
+	if webDir == "" {
+		if _, err := os.Stat("web/dist"); err == nil {
+			webDir = "web/dist"
+		} else if _, err := os.Stat("frog-bot/web/dist"); err == nil {
+			webDir = "frog-bot/web/dist"
+		} else {
+			webDir = "web/dist"
+		}
+	}
+	srv := &http.Server{Addr: addr, Handler: b.Handler(webDir)}
 	go func() {
 		log.Printf("frog bot 已启动：http://%s （聊天模型 %s，agent 模型 %s）", addr, chatModel, agentModel)
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
