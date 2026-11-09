@@ -36,7 +36,9 @@ type Config struct {
 	TurnTimeout   time.Duration // 聊天层每轮上限，默认 90 秒
 	MasterKey     string        // FROGBOT_MASTER_KEY；为空时用 data/master.key（自动生成）
 	Demo          bool
-	Timezone      string // 默认 Asia/Shanghai，用于展示与新建计划
+		Timezone      string // 默认 Asia/Shanghai，用于展示与新建计划
+	InitialBaseURL string
+	InitialKey     string
 }
 
 type Bot struct {
@@ -49,7 +51,14 @@ type Bot struct {
 	guard    *onefrog.Guard // 任务和聊天层共用的审批管线
 	vault    *vault.Vault
 	sch      sched
-	sched    *scheduler.Engine // 定时唤醒器（持久化计划）
+		sched    *scheduler.Engine // 定时唤醒器（持久化计划）
+
+	modelMu        sync.RWMutex
+	initialBaseURL string
+	initialKey     string
+	providers      []ProviderSettings
+	chatRoute      ModelRoute
+	agentRoute     ModelRoute
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -110,7 +119,7 @@ func New(cfg Config) (*Bot, error) {
 	}
 	store.SetRedactor(vlt.RedactBytes)
 	b := &Bot{cfg: cfg, store: store, vault: vlt, approver: onefrog.NewQueueApprover(), kick: make(chan struct{}, 1),
-		sch: sched{launched: map[string]bool{}}}
+		sch: sched{launched: map[string]bool{}}, initialBaseURL: cfg.InitialBaseURL, initialKey: cfg.InitialKey}
 	b.ctx, b.cancel = context.WithCancel(context.Background())
 
 	guard, err := onefrog.NewGuard(cfg.Rules, cfg.Reviewer, b.approver)
@@ -129,6 +138,7 @@ func New(cfg Config) (*Bot, error) {
 	if err := b.initScheduler(); err != nil {
 		return nil, err
 	}
+	b.loadSettings()
 	b.recover()
 	return b, nil
 }

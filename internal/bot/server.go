@@ -36,6 +36,27 @@ import (
 //	POST /api/secrets/requests/{id}/cancel   取消密钥卡片（= 拒绝提供）
 func (b *Bot) Handler(webDir string, embeddedFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, b.GetSettings(), nil)
+	})
+	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		var payload SettingsPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, nil, fmt.Errorf("请求格式不正确: %w", err))
+			return
+		}
+		err := b.SaveSettings(payload)
+		writeJSON(w, map[string]any{"ok": true, "settings": b.GetSettings()}, err)
+	})
+	mux.HandleFunc("POST /api/settings/providers/models", func(w http.ResponseWriter, r *http.Request) {
+		var p ProviderSettings
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			writeJSON(w, nil, fmt.Errorf("请求格式不正确: %w", err))
+			return
+		}
+		models, err := b.FetchRemoteModels(r.Context(), p)
+		writeJSON(w, map[string]any{"models": models}, err)
+	})
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"name": b.cfg.Name, "chat_model": b.cfg.ChatModel, "agent_model": b.cfg.AgentModel,
 			"policy": b.cfg.Policy, "demo": b.cfg.Demo, "max_concurrent": b.cfg.MaxConcurrent,

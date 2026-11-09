@@ -260,7 +260,8 @@ export const api = {
   answer: (id: string, answer: string) => post(`/api/cards/${id}`, { answer }),
   dismiss: (id: string) => post(`/api/cards/${id}`, { dismiss: true }),
   // 密钥值只走这个接口：直接加密落盘，不进聊天记录、事件流或模型上下文
-  saveSecret: (requestId: string, value: string) => post('/api/secrets', { request_id: requestId, value }),
+  secrets: (): Promise<Array<{ name: string; description?: string; updated_at?: string }>> => fetch('/api/secrets').then((r) => r.json()),
+    saveSecret: (requestId: string, value: string) => post('/api/secrets', { request_id: requestId, value }),
   cancelSecret: (requestId: string) => post(`/api/secrets/requests/${requestId}/cancel`),
   schedules: (): Promise<Schedule[]> => fetch('/api/schedules').then((r) => r.json()),
   schedule: (id: string, action: 'pause' | 'resume' | 'run' | 'delete') => post(`/api/schedules/${id}/${action}`),

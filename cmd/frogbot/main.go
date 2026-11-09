@@ -58,7 +58,9 @@ func main() {
 		MaxConcurrent: maxConc,
 		TaskMaxTime:   time.Duration(taskMin) * time.Minute,
 		MasterKey:     os.Getenv("FROGBOT_MASTER_KEY"),
-		Demo:          env("", "FROGBOT_DEMO") != "",
+				Demo:          env("", "FROGBOT_DEMO") != "",
+		InitialBaseURL: baseURL,
+		InitialKey:     key,
 	})
 	if err != nil {
 		log.Fatal(err)
