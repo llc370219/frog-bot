@@ -13,6 +13,7 @@ Go 后端
  ├─ 聊天层：快模型 + 管理工具。每轮只回一两句话就结束，不守着 agent
  ├─ 后台 agent：onefrog（internal/onefrog），在 goroutine 里跑，可以同时跑多个
  ├─ 监工：普通 Go 代码，管排队和暂停/继续，盯 agent 事件，在任务完成/失败/需要审批时叫醒聊天层
+ ├─ 定时唤醒器：无模型；持久化计划到点派任务进现有队列（前端开不开无关；后端没开就无法执行）
  └─ 事件日志：data/stream.jsonl，消息、任务、审批全靠它，重启后能恢复
 ```
 
@@ -252,6 +253,49 @@ cd web && npm run dev         # 打开 http://localhost:5173，/api 会自动转
 | `FAKEAI_THINK_MS` | `45` | 仅 fakeai：每个思考片段的间隔毫秒数（调大可以看清流式效果） |
 | `FAKEAI_STEP_MS` | `300` | 仅 fakeai：后台 agent 每一步前的等待（调大可以看清工作条和排队） |
 
+
+## 定时唤醒器（scheduler）
+
+默认时区 **Asia/Shanghai**。计划存在 `data/schedules.json`（0600），与聊天记录分开。
+
+### 能做什么
+
+| 节奏 | 字段 | 说明 |
+|---|---|---|
+| `once` | `at_local`（如 `2026-11-10 09:00`） | 只跑一次；触发或过期后自动停用 |
+| `daily` | `hour` / `minute` | 每天固定时刻 |
+| `weekly` | `hour` / `minute` + `weekdays`（0=周日…6=周六） | 每周若干天 |
+
+聊天层工具：`list_schedules` / `get_schedule` / `create_schedule` / `update_schedule` / `pause_schedule` / `resume_schedule` / `delete_schedule` / `run_schedule_now`。
+**创建、修改、删除、暂停、恢复都要你在审批卡片上点确认**；聊天里说「同意」不算数。界面托盘上的暂停/恢复/立刻执行/删除是你点的按钮，算用户确认。
+
+到点后：唤醒器**不调用模型**，只把一条普通后台任务放进现有队列（带确定性任务 ID）。任务进度、审批、完成汇报与手动 `start_task` 完全一样。空闲的未来计划**不会**让工作条动画。
+
+### 策略（已写进代码并测过）
+
+- **迟到（misfire）**：周期性计划迟到超过 5 分钟 → 跳过本趟，推进到下一次；单次计划在 24 小时宽限内仍可补跑，超时则标记过期并停用。
+- **重叠（overlap）**：默认 `skip`（上一趟还开着就跳过本趟）；可设 `queue`（照样入队，交给并发上限排队）。
+- **时钟回拨**：检测到墙上时间回拨时本轮不触发。
+- **重启**：对每一次拟触发时刻先原子认领再派发；重启后不会对同一 occurrence 再派一次。若认领了但任务去向不明 → `needs_verify`，叫醒聊天层请你核实，**绝不自动重放**可能有外部副作用的动作。
+- **诚实声明**：调度保证的是「同一 occurrence 不重复派任务」，**不保证**外部副作用 exactly-once（发信、打卡、转账等）。崩溃时若动作可能已执行到一半，需要人工或业务侧核对，而不是盲目重跑。
+
+### 例子
+
+> 「帮我建一个每天上午 9 点的提醒：整理 README」  
+> → 聊天层调用 `create_schedule` → 你点审批 → 计划出现在定时托盘，显示下次触发时间（含时区）。
+
+> 「把那个计划暂停」→ `pause_schedule` → 再确认。  
+> 「现在先跑一次」→ `run_schedule_now`（不消耗正规触发点）。
+
+HTTP：`GET /api/schedules`、`POST /api/schedules/{id}/{pause|resume|run|delete}`。
+
+### 局限
+
+- 后端进程没运行 = 到点不会执行（不是常驻系统 cron；可用 systemd 保活进程）。
+- 计划只是「到点派任务」的意图；任务里用密钥、改文件、发网络请求仍走原有审批。
+- 没有日历 UI；改复杂规则请用聊天层工具。
+- 夏令时：不存在的墙上时间按 Go `time.Date` 折叠；跨 DST 的每周/每天计划请用明确时区。
+
 ## 测试
 
 ```bash
@@ -271,6 +315,9 @@ Go 测试覆盖：用户发消息 → 聊天层 start_task → agent 完成 → 
 密钥卡片取消；聊天里贴密钥自动隐藏；删除密钥需要审批；思考片段解析（两种字段 + 跨分片的 `<think>` 标签）、
 思考事件流式推送、随回复保存、不喂回模型。
 
+定时唤醒器：单次/每天/每周 + 时区/DST；假时钟 misfire/重叠/回拨；认领幂等与重启对账；失踪任务 needs_verify；
+创建计划必须审批；到点派进任务队列。
+
 第 4 轮新增（全部跑过 `go test -race`）：排队顺序和并发上限、每个任务只汇报一次（多个任务同时结束也一样）；
 安全点暂停后继续（步数接着数、快照恢复、补充要求带上）；暂停能打断正在进行的模型调用、开始前暂停；
 重启后任务变成"暂停"并能继续做完；queue_task / pause_task / resume_task / reprioritize / 全部停止；
@@ -283,12 +330,14 @@ cmd/frogbot/        主程序（读环境变量，启动 HTTP）
 cmd/fakeai/         假的 OpenAI 兼容服务（演示和冒烟测试用）
 internal/onefrog/   agent 内核（从 onefrog-agent 复制过来；secrets.go = 占位符替换 + 执行层脱敏的接口）
 internal/vault/     加密密钥库（AES-256-GCM、主密钥、脱敏替换表）
+internal/scheduler/ 定时唤醒器（下次时间计算、持久化计划/认领、misfire/重叠/回拨）
 internal/bot/
   store.go          事件日志 + 状态重放 + SSE 订阅
   bot.go            配置、发送、停止、审批、卡片、记忆
   chat.go           聊天层：提示词、每一轮、管理工具
   chattools.go      聊天层的快速读写：任务知识、工作区文件、带审批的小改动
   secrets.go        密钥卡片、密钥工具、聊天里贴密钥的自动隐藏
+  schedules.go      定时计划：聊天工具、审批门闩、到点派任务
   supervisor.go     监工：排队调度、暂停/继续、快照、汇报、卡住检测、重启恢复
   interact.go       重新生成、编辑重发、表情、上传、文件下载、界面上的任务按钮
   server.go         HTTP 接口 + SSE + 前端静态文件
@@ -298,7 +347,7 @@ web/src/
   App.tsx           页面：时间线、空状态、流式回复
   lib/format.ts     把工具调用翻译成人话、时间格式
   components/       Header、WorkingCard、TaskDock（工作条 + 任务托盘）、Composer、MessageActions、Artifact、
-                    ApprovalCard、OptionCard、SecretCard、ThinkingBlock、Markdown
+                    ApprovalCard、OptionCard、SecretCard、ThinkingBlock、Markdown、ScheduleDock
 ```
 
 ## 以后怎么并回 Onefrog
@@ -332,5 +381,6 @@ web/src/
 - 密钥库的局限见上面"诚实的局限"一节：有 shell 的 agent 仍可能外发密钥，防护靠审批 + 允许名单 + 脱敏。
 - 用到密钥的"本任务内都批准"按参数哈希匹配，命令稍有不同就要重新确认（偏严格）。
 - 只有聊天层的思考会保存；后台 agent 的思考只实时显示，不保存。
+- 定时唤醒器：见上一节；不保证外部副作用 exactly-once；后端离线不会补跑错过的周期性触发（只跳过并推进）。
 - 聊天层的只读快速工具（read_file 等）不能引用密钥（会被拒绝）；需要用密钥的事交给后台任务或写文件工具。
 - 聊天层写文件的审批要等你点按钮，最长等 10 分钟；这期间服务重启，审批会作废，写入不会执行（聊天层会告诉你）。

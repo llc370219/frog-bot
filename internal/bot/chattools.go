@@ -328,6 +328,22 @@ func toolLabel(name string, args json.RawMessage) string {
 		return "请求保存密钥 " + tg
 	case "delete_secret":
 		return "请求删除密钥 " + tg
+	case "list_schedules":
+		return "查看了定时计划"
+	case "get_schedule":
+		return "查看了计划 " + tg
+	case "create_schedule":
+		return "请求创建定时计划"
+	case "update_schedule":
+		return "请求更新定时计划"
+	case "pause_schedule":
+		return "请求暂停定时计划"
+	case "resume_schedule":
+		return "请求恢复定时计划"
+	case "delete_schedule":
+		return "请求删除定时计划"
+	case "run_schedule_now":
+		return "立刻执行了定时计划"
 	}
 	return ""
 }

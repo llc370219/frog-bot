@@ -27,13 +27,16 @@ import (
 //	GET  /api/secrets              密钥列表（只有名字、说明、时间，永远没有值）
 //	POST /api/secrets              {"request_id":"sec_…","value":"…"}（或 {"name","value","description"}）
 //	                               值只经过这一个接口，直接加密落盘，不进聊天记录/事件/日志
+//	GET  /api/schedules             定时计划列表
+//	GET  /api/schedules/{id}         单个计划
+//	POST /api/schedules/{id}/{action} pause|resume|run|delete（界面按钮；创建/大改仍走聊天层审批）
 //	POST /api/secrets/requests/{id}/cancel   取消密钥卡片（= 拒绝提供）
 func (b *Bot) Handler(webDir string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"name": b.cfg.Name, "chat_model": b.cfg.ChatModel, "agent_model": b.cfg.AgentModel,
 			"policy": b.cfg.Policy, "demo": b.cfg.Demo, "max_concurrent": b.cfg.MaxConcurrent,
-			"stall_sec": int(b.cfg.StallTimeout.Seconds())}, nil)
+			"stall_sec": int(b.cfg.StallTimeout.Seconds()), "timezone": "Asia/Shanghai"}, nil)
 	})
 	mux.HandleFunc("POST /api/messages", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -128,6 +131,40 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	})
 	mux.HandleFunc("POST /api/secrets/requests/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]bool{"ok": true}, b.CancelSecret(r.PathValue("id")))
+	})
+	mux.HandleFunc("GET /api/schedules", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, b.Schedules(), nil)
+	})
+	mux.HandleFunc("GET /api/schedules/{id}", func(w http.ResponseWriter, r *http.Request) {
+		p, err := b.findSchedule(r.PathValue("id"))
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		writeJSON(w, p.Public(), nil)
+	})
+	mux.HandleFunc("POST /api/schedules/{id}/{action}", func(w http.ResponseWriter, r *http.Request) {
+		id, action := r.PathValue("id"), r.PathValue("action")
+		p, err := b.findSchedule(id)
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		switch action {
+		case "pause":
+			p2, err := b.sched.SetEnabled(p.ID, false)
+			writeJSON(w, p2.Public(), err)
+		case "resume":
+			p2, err := b.sched.SetEnabled(p.ID, true)
+			writeJSON(w, p2.Public(), err)
+		case "run":
+			c, err := b.sched.RunNow(p.ID)
+			writeJSON(w, map[string]any{"claim": c, "task_id": c.TaskID}, err)
+		case "delete":
+			writeJSON(w, map[string]bool{"ok": true}, b.sched.Remove(p.ID))
+		default:
+			writeJSON(w, nil, fmt.Errorf("未知操作 %s（pause|resume|run|delete）", action))
+		}
 	})
 	mux.HandleFunc("GET /api/stream", b.serveStream)
 	if webDir != "" {

@@ -10,6 +10,7 @@ import MessageActions, { Reactions } from './components/MessageActions';
 import OptionCard from './components/OptionCard';
 import SecretCard from './components/SecretCard';
 import TaskDock from './components/TaskDock';
+import ScheduleDock, { useSchedules } from './components/ScheduleDock';
 import ThinkingBlock from './components/ThinkingBlock';
 import WorkingCard from './components/WorkingCard';
 
@@ -17,6 +18,12 @@ const NOTIFY_KEY = 'frogbot-notify';
 
 export default function App() {
   const s = useBot();
+  const [schedules, setSchedules] = useSchedules(s.ready);
+  // SSE 里的计划变更合并进本地列表
+  useEffect(() => {
+    const list = Object.values(s.schedules);
+    if (list.length) setSchedules(list);
+  }, [s.schedules, setSchedules]);
   const [info, setInfo] = useState<Info>({ name: 'Frog', chat_model: '', agent_model: '', policy: '', demo: false });
   const [error, setError] = useState('');
   const [notify, setNotify] = useState(() => localStorage.getItem(NOTIFY_KEY) === '1' && typeof Notification !== 'undefined' && Notification.permission === 'granted');
@@ -120,6 +127,7 @@ export default function App() {
         </main>
       </div>
       <div className="dock relative">
+        <ScheduleDock schedules={schedules} onChange={setSchedules} onError={setError} />
         <TaskDock tasks={tasks} pos={pos} />
         {error && <p className="mx-auto mb-1.5 max-w-3xl px-4 text-center text-xs text-danger" role="alert">{error}<button onClick={() => setError('')} className="ml-2 text-fg4 underline">知道了</button></p>}
         <Composer name={info.name} connected={s.connected} chatBusy={s.busy} working={working}
@@ -203,6 +211,7 @@ function Welcome({ name, onPick }: { name: string; onPick: (t: string) => void }
     { icon: FolderSearch, title: '整理工作区', text: '看看工作区里有什么，写一份 notes.md 总结' },
     { icon: SquareTerminal, title: '写代码并运行', text: '写一个 hello.go 并运行它' },
     { icon: ListTodo, title: '先记个待办', text: '帮我记个待办：明天整理 README，先别开始' },
+    { icon: ListTodo, title: '定个提醒', text: '帮我创建一个明天上午 9 点的单次提醒：整理 README' },
   ];
   return (
     <div className="rise flex flex-col items-center px-2 pt-[9vh] text-center">

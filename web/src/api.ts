@@ -25,10 +25,16 @@ export type Approval = {
   status: 'pending' | 'allow' | 'deny' | 'expired'; scope?: string; created: number;
 };
 export type Item = { type: 'msg' | 'task' | 'approval'; id: string };
-export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number };
+export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string };
+export type Schedule = {
+  id: string; title: string; prompt: string; enabled: boolean; kind: string; timezone: string;
+  hour?: number; minute?: number; weekdays?: number[]; overlap?: string;
+  next_run?: string; next_run_local?: string; last_run?: string; last_run_local?: string;
+  last_status?: string; last_task_id?: string; at_local?: string;
+};
 
 export type State = {
-  items: Item[]; msgs: Record<string, Msg>; tasks: Record<string, Task>; approvals: Record<string, Approval>;
+  items: Item[]; msgs: Record<string, Msg>; tasks: Record<string, Task>; approvals: Record<string, Approval>; schedules: Record<string, Schedule>;
   streaming: string; toolLabel: string; busy: boolean;
   thinking: string; thinkStart: number; thinkEnd: number; // 聊天层这一轮的思考（流式，临时）
   ready: boolean; connected: boolean; lastSeq: number;
@@ -39,7 +45,7 @@ export type State = {
 type Wire = { seq: number; kind: string; time: string; data: any };
 type AgentEv = { task_id: string; type: string; time: string; data: any };
 
-const empty = (): State => ({ items: [], msgs: {}, tasks: {}, approvals: {}, streaming: '', toolLabel: '', busy: false, thinking: '', thinkStart: 0, thinkEnd: 0, ready: false, connected: false, lastSeq: 0, news: 0, lastNews: '' });
+const empty = (): State => ({ items: [], msgs: {}, tasks: {}, approvals: {}, schedules: {}, streaming: '', toolLabel: '', busy: false, thinking: '', thinkStart: 0, thinkEnd: 0, ready: false, connected: false, lastSeq: 0, news: 0, lastNews: '' });
 const resetTurn = (s: State) => { s.streaming = ''; s.toolLabel = ''; s.thinking = ''; s.thinkStart = 0; s.thinkEnd = 0; };
 const endThink = (s: State) => { if (s.thinkStart && !s.thinkEnd) s.thinkEnd = Date.now(); };
 const ts = (s?: string) => (s ? new Date(s).getTime() : Date.now());
@@ -118,6 +124,21 @@ function apply(s: State, ev: Wire) {
       break;
     }
     case 'agent': applyAgent(s, d as AgentEv, ev.seq > 0); break;
+    case 'schedule.upserted': {
+      s.schedules[d.id] = d as Schedule;
+      break;
+    }
+    case 'schedule.deleted': {
+      delete s.schedules[d.id];
+      break;
+    }
+    case 'schedule.run': {
+      if (d.plan?.id) s.schedules[d.plan.id] = d.plan as Schedule;
+      if (d.claim?.status === 'needs_verify' || d.claim?.status === 'failed' || d.claim?.status === 'expired') {
+        news(s, `定时计划「${d.plan?.title || ''}」：${d.claim.status}`);
+      }
+      break;
+    }
   }
 }
 
@@ -241,6 +262,8 @@ export const api = {
   // 密钥值只走这个接口：直接加密落盘，不进聊天记录、事件流或模型上下文
   saveSecret: (requestId: string, value: string) => post('/api/secrets', { request_id: requestId, value }),
   cancelSecret: (requestId: string) => post(`/api/secrets/requests/${requestId}/cancel`),
+  schedules: (): Promise<Schedule[]> => fetch('/api/schedules').then((r) => r.json()),
+  schedule: (id: string, action: 'pause' | 'resume' | 'run' | 'delete') => post(`/api/schedules/${id}/${action}`),
 };
 
 export const isActive = (t: Task) => t.status === 'queued' || t.status === 'running';

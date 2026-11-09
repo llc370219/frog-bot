@@ -18,7 +18,9 @@ import (
 
 // TaskOpts 是创建任务时的选项。
 type TaskOpts struct {
-	Hold bool // true = 只记成待办（暂停状态），等用户或聊天层说"开始"再跑
+	Hold       bool   // true = 只记成待办（暂停状态），等用户或聊天层说"开始"再跑
+	ID         string // 可选：确定性任务 ID（定时唤醒器用，避免重启后重复派发）
+	ScheduleID string // 可选：来源定时计划
 }
 
 type sched struct {
@@ -41,10 +43,23 @@ func (b *Bot) CreateTask(input, title string, o TaskOpts) (string, error) {
 			title = string(r[:20]) + "…"
 		}
 	}
-	id := onefrog.NewID("task")
+	id := o.ID
+	if id == "" {
+		id = onefrog.NewID("task")
+	} else if _, exists := b.store.Task(id); exists {
+		// 同 ID 已存在：幂等，直接返回（定时器重启后的二次派发）
+		b.schedule()
+		return id, nil
+	}
 	rec := TaskRec{ID: id, Title: title, Input: input, Status: "queued", Prio: float64(time.Now().UnixNano()), CreatedAt: time.Now()}
 	if o.Hold {
 		rec.Status, rec.StopReason = "paused", "held"
+	}
+	if o.ScheduleID != "" {
+		// 标题前缀让界面能看出是定时触发的
+		if !strings.HasPrefix(rec.Title, "定时·") {
+			rec.Title = "定时·" + rec.Title
+		}
 	}
 	b.store.Append("task.created", rec, false)
 	b.schedule()
@@ -315,6 +330,13 @@ func (b *Bot) onAgentEvent(e onefrog.Event) {
 	case e.Terminal():
 		b.landed(e.TaskID)
 		b.removeCheckpoint(e.TaskID)
+		if b.sched != nil {
+			st := "completed"
+			if t, ok := b.store.Task(e.TaskID); ok {
+				st = t.Status
+			}
+			b.sched.MarkTaskFinished(e.TaskID, st)
+		}
 		go func() { b.report(e.TaskID); b.schedule() }() // 不在 agent 的 goroutine 里做重活
 	case e.Type == onefrog.EvTaskPaused:
 		b.landed(e.TaskID)

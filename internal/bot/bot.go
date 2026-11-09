@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"frogbot/internal/onefrog"
+	"frogbot/internal/scheduler"
 	"frogbot/internal/vault"
 )
 
@@ -35,6 +36,7 @@ type Config struct {
 	TurnTimeout   time.Duration // 聊天层每轮上限，默认 90 秒
 	MasterKey     string        // FROGBOT_MASTER_KEY；为空时用 data/master.key（自动生成）
 	Demo          bool
+	Timezone      string // 默认 Asia/Shanghai，用于展示与新建计划
 }
 
 type Bot struct {
@@ -47,6 +49,7 @@ type Bot struct {
 	guard    *onefrog.Guard // 任务和聊天层共用的审批管线
 	vault    *vault.Vault
 	sch      sched
+	sched    *scheduler.Engine // 定时唤醒器（持久化计划）
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -123,6 +126,9 @@ func New(cfg Config) (*Bot, error) {
 	b.chatG, _ = onefrog.NewGuard(onefrog.Rules{}, nil, nil)
 	b.chatG.Secrets = vlt // 聊天层工具的输出同样脱敏；直接引用密钥的只读调用会被拒绝
 	b.chatTool = onefrog.NewRegistry(b.chatTools()...)
+	if err := b.initScheduler(); err != nil {
+		return nil, err
+	}
 	b.recover()
 	return b, nil
 }
@@ -134,12 +140,18 @@ func (b *Bot) Start() {
 	b.wg.Add(2)
 	go func() { defer b.wg.Done(); b.chatLoop() }()
 	go func() { defer b.wg.Done(); b.watchStalls() }()
+	if b.sched != nil {
+		b.sched.Start(b.ctx)
+	}
 	b.schedule() // 重启前排着队的任务接着排
 	b.wake()
 }
 
 func (b *Bot) Close() {
 	b.mgr.CancelAll()
+	if b.sched != nil {
+		b.sched.Stop()
+	}
 	b.cancel()
 	b.wg.Wait()
 	b.store.Close()
