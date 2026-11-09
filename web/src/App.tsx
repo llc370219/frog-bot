@@ -11,6 +11,7 @@ import OptionCard from './components/OptionCard';
 import SecretCard from './components/SecretCard';
 import TaskDock from './components/TaskDock';
 import ScheduleDock, { useSchedules } from './components/ScheduleDock';
+import SettingsDialog from './components/SettingsDialog';
 import ThinkingBlock from './components/ThinkingBlock';
 import WorkingCard from './components/WorkingCard';
 
@@ -28,7 +29,10 @@ export default function App() {
   const [error, setError] = useState('');
   const [notify, setNotify] = useState(() => localStorage.getItem(NOTIFY_KEY) === '1' && typeof Notification !== 'undefined' && Notification.permission === 'granted');
   const [unread, setUnread] = useState(0);
-  useEffect(() => { api.info().then(setInfo).catch(() => {}); }, []);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const loadInfo = () => api.info().then((i) => { setInfo(i); if (i.settings && i.configured === false) setSettingsOpen(true); return i; });
+  useEffect(() => { loadInfo().catch(() => {}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const needsSetup = !!info.settings && info.configured === false;
 
   const tasks = Object.values(s.tasks);
   const running = tasks.filter((t) => t.status === 'running');
@@ -106,7 +110,14 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <Header name={info.name} status={status} working={working || s.busy} demo={info.demo} connected={s.connected || !s.ready} notify={notify} onNotify={toggleNotify} />
+      <Header name={info.name} status={status} working={working || s.busy} demo={info.demo} connected={s.connected || !s.ready} notify={notify} onNotify={toggleNotify}
+        onSettings={info.settings ? () => setSettingsOpen(true) : undefined} needsSetup={needsSetup} />
+      {settingsOpen && <SettingsDialog firstRun={needsSetup} onClose={() => setSettingsOpen(false)} onSaved={() => { loadInfo().catch(() => {}); setError(''); }} />}
+      {needsSetup && !settingsOpen && (
+        <div className="flex items-center justify-center gap-2 border-b border-line bg-warn-soft px-4 py-1.5 text-[12.5px] text-warn" role="status">
+          还没配置模型，暂时不能聊天。<button onClick={() => setSettingsOpen(true)} className="font-medium underline">去设置</button>
+        </div>
+      )}
       {!s.connected && s.ready && (
         <div className="flex items-center justify-center gap-2 border-b border-line bg-s2 px-4 py-1.5 text-[12.5px] text-fg3" role="status">
           <WifiOff size={13} />连接中断，正在重新连接。任务在服务器上照常进行，连上后会自动补齐。

@@ -3,10 +3,15 @@ package bot
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,12 +36,57 @@ import (
 //	GET  /api/schedules/{id}         单个计划
 //	POST /api/schedules/{id}/{action} pause|resume|run|delete（界面按钮；创建/大改仍走聊天层审批）
 //	POST /api/secrets/requests/{id}/cancel   取消密钥卡片（= 拒绝提供）
+//	GET  /api/health               {"ok":true}
+//	GET  /api/settings             模型设置（永远不含 API Key 明文，只有 has_api_key）
+//	POST /api/settings             {"base_url","api_key","chat_model","agent_model"}，api_key 为空 = 不改
+//	POST /api/settings/test        同上字段，发一条很短的请求测试连接（不保存）
 func (b *Bot) Handler(webDir string) http.Handler {
+	if webDir == "" {
+		return b.HandlerFS(nil)
+	}
+	return b.HandlerFS(os.DirFS(webDir))
+}
+
+// HandlerFS 和 Handler 一样，但前端文件来自任意 fs.FS（例如打包进程序的 embed.FS）。web 为 nil 时只提供 API。
+func (b *Bot) HandlerFS(web fs.FS) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true, "configured": b.Configured()}, nil)
+	})
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"name": b.cfg.Name, "chat_model": b.cfg.ChatModel, "agent_model": b.cfg.AgentModel,
-			"policy": b.cfg.Policy, "demo": b.cfg.Demo, "max_concurrent": b.cfg.MaxConcurrent,
-			"stall_sec": int(b.cfg.StallTimeout.Seconds()), "timezone": "Asia/Shanghai"}, nil)
+		chat, agent := b.ModelNames()
+		writeJSON(w, map[string]any{"name": b.cfg.Name, "chat_model": chat, "agent_model": agent,
+			"policy": b.cfg.Policy, "demo": b.cfg.Demo, "max_concurrent": b.cfg.MaxConcurrent, "configured": b.Configured(),
+			"settings": b.models != nil, "stall_sec": int(b.cfg.StallTimeout.Seconds()), "timezone": "Asia/Shanghai"}, nil)
+	})
+	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		if b.models == nil {
+			writeJSON(w, nil, fmt.Errorf("这个实例的模型由程序直接注入，不能在网页里设置"))
+			return
+		}
+		writeJSON(w, b.settingsView(), nil)
+	})
+	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		in, ok := b.readSettings(w, r)
+		if !ok {
+			return
+		}
+		err := b.models.Save(in)
+		in.APIKey = ""
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		writeJSON(w, b.settingsView(), nil)
+	})
+	mux.HandleFunc("POST /api/settings/test", func(w http.ResponseWriter, r *http.Request) {
+		in, ok := b.readSettings(w, r)
+		if !ok {
+			return
+		}
+		reply, err := b.models.Test(r.Context(), in)
+		in.APIKey = ""
+		writeJSON(w, map[string]any{"ok": true, "reply": reply}, err)
 	})
 	mux.HandleFunc("POST /api/messages", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -167,10 +217,78 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		}
 	})
 	mux.HandleFunc("GET /api/stream", b.serveStream)
-	if webDir != "" {
-		mux.Handle("/", spa(webDir))
+	if web != nil {
+		mux.Handle("/", spa(web))
+	}
+	if b.cfg.LocalOnly {
+		return localOnly(mux)
 	}
 	return mux
+}
+
+func (b *Bot) settingsView() SettingsView {
+	v := b.models.View()
+	v.DataDir, v.Workspace = absPath(b.cfg.DataDir), absPath(b.cfg.Workspace)
+	return v
+}
+
+func absPath(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
+}
+
+func (b *Bot) readSettings(w http.ResponseWriter, r *http.Request) (SettingsInput, bool) {
+	var in SettingsInput
+	if b.models == nil {
+		writeJSON(w, nil, fmt.Errorf("这个实例的模型由程序直接注入，不能在网页里设置"))
+		return in, false
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
+		writeJSON(w, nil, fmt.Errorf("请求格式不对"))
+		return in, false
+	}
+	return in, true
+}
+
+func isLoopbackHost(h string) bool {
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(h, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func hostname(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return strings.Trim(hostport, "[]")
+}
+
+// localOnly：没有登录功能，所以只接受发往本机地址的请求（挡住 DNS 重绑定），
+// 并拒绝来自其他网站的写操作（挡住 CSRF，比如恶意网页偷偷替你点"批准"）。
+func localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(hostname(r.Host)) {
+			http.Error(w, "frog bot 只允许从本机访问（http://127.0.0.1 或 http://localhost）", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if o := r.Header.Get("Origin"); o != "" {
+				u, err := url.Parse(o)
+				if err != nil || !isLoopbackHost(hostname(u.Host)) {
+					http.Error(w, "拒绝跨站请求", http.StatusForbidden)
+					return
+				}
+			} else if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+				http.Error(w, "拒绝跨站请求", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (b *Bot) serveStream(w http.ResponseWriter, r *http.Request) {
@@ -225,18 +343,22 @@ func (b *Bot) serveStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func spa(dir string) http.Handler {
-	files := http.FileServer(http.Dir(dir))
+func spa(web fs.FS) http.Handler {
+	files := http.FileServer(http.FS(web))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		index := filepath.Join(dir, "index.html")
-		if _, err := os.Stat(index); err != nil {
+		if _, err := fs.Stat(web, "index.html"); err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "前端还没构建：cd web && npm install && npm run build（开发时用 npm run dev）")
 			return
 		}
-		if _, err := os.Stat(filepath.Join(dir, filepath.Clean("/"+r.URL.Path))); err != nil {
-			http.ServeFile(w, r, index)
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if st, err := fs.Stat(web, name); name == "" || err != nil || st.IsDir() {
+			w.Header().Set("Cache-Control", "no-cache")
+			http.ServeFileFS(w, r, web, "index.html")
 			return
+		}
+		if strings.HasPrefix(name, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		files.ServeHTTP(w, r)
 	})

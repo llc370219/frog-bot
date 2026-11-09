@@ -37,6 +37,10 @@ type Config struct {
 	MasterKey     string        // FROGBOT_MASTER_KEY；为空时用 data/master.key（自动生成）
 	Demo          bool
 	Timezone      string // 默认 Asia/Shanghai，用于展示与新建计划
+	// 下面三项给可执行程序用：AgentProvider 为空时，模型配置来自环境变量 + 网页设置（data/config）。
+	ModelEnv      ModelEnv
+	ReviewerModel string // REVIEWER_MODEL：auto 模式的审核模型（用 agent 的地址和 Key）
+	LocalOnly     bool   // 只接受 Host 为本机的请求，并拒绝跨站的写操作（防 DNS 重绑定 / CSRF）
 }
 
 type Bot struct {
@@ -48,6 +52,7 @@ type Bot struct {
 	chatG    *onefrog.Guard
 	guard    *onefrog.Guard // 任务和聊天层共用的审批管线
 	vault    *vault.Vault
+	models   *modelConf // 可执行程序模式下的模型设置；测试里直接注入 Provider 时为 nil
 	sch      sched
 	sched    *scheduler.Engine // 定时唤醒器（持久化计划）
 
@@ -87,9 +92,6 @@ func New(cfg Config) (*Bot, error) {
 	if cfg.TurnTimeout <= 0 {
 		cfg.TurnTimeout = 90 * time.Second
 	}
-	if cfg.ChatProvider == nil {
-		cfg.ChatProvider = cfg.AgentProvider
-	}
 	if err := os.MkdirAll(cfg.Workspace, 0o755); err != nil {
 		return nil, err
 	}
@@ -108,8 +110,25 @@ func New(cfg Config) (*Bot, error) {
 	if err != nil {
 		return nil, err
 	}
-	store.SetRedactor(vlt.RedactBytes)
-	b := &Bot{cfg: cfg, store: store, vault: vlt, approver: onefrog.NewQueueApprover(), kick: make(chan struct{}, 1),
+	var models *modelConf
+	if cfg.AgentProvider == nil {
+		if models, err = openModelConf(cfg.DataDir, key, cfg.ModelEnv); err != nil {
+			return nil, err
+		}
+		cfg.AgentProvider = switchProvider{m: models}
+		cfg.ChatProvider = switchProvider{m: models, chat: true}
+		cfg.AgentModel, cfg.ChatModel = "", "" // 每次调用时从当前设置取
+		if cfg.ReviewerModel != "" && cfg.Reviewer == nil {
+			cfg.Reviewer = &onefrog.LLMReviewer{Provider: cfg.AgentProvider, Model: cfg.ReviewerModel}
+		}
+		store.SetRedactor(func(b []byte) []byte { return models.RedactBytes(vlt.RedactBytes(b)) })
+	} else {
+		store.SetRedactor(vlt.RedactBytes)
+	}
+	if cfg.ChatProvider == nil {
+		cfg.ChatProvider = cfg.AgentProvider
+	}
+	b := &Bot{cfg: cfg, store: store, vault: vlt, models: models, approver: onefrog.NewQueueApprover(), kick: make(chan struct{}, 1),
 		sch: sched{launched: map[string]bool{}}}
 	b.ctx, b.cancel = context.WithCancel(context.Background())
 
@@ -175,6 +194,9 @@ func (b *Bot) Send(text string, files ...Attachment) (Message, error) {
 	text = strings.TrimSpace(text)
 	if text == "" && len(files) == 0 {
 		return Message{}, errors.New("消息为空")
+	}
+	if b.models != nil && !b.models.Configured() && !IsStop(text) {
+		return Message{}, errNotConfigured
 	}
 	for i, f := range files { // 附件必须是工作区里真实存在的文件
 		p, err := onefrog.ResolvePath(b.cfg.Workspace, f.Path)
@@ -312,3 +334,14 @@ func (a approvalStore) SaveApproval(_ context.Context, r onefrog.ApprovalRecord)
 	a.s.Append("approval.record", r, true)
 	return nil
 }
+
+// ModelNames 返回当前生效的聊天模型和 agent 模型名。
+func (b *Bot) ModelNames() (chat, agent string) {
+	if b.models != nil {
+		return b.models.models()
+	}
+	return b.cfg.ChatModel, b.cfg.AgentModel
+}
+
+// Configured 表示模型是否已配置好（测试里直接注入 Provider 时总是 true）。
+func (b *Bot) Configured() bool { return b.models == nil || b.models.Configured() }

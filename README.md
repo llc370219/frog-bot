@@ -8,6 +8,29 @@ frog bot 是一个能聊天、也能在后台干活的 AI 助理。它就是我�
 
 <p align="center"><em>目标架构示意，部分功能仍在规划中</em>（可编辑矢量图见 <a href="docs/images/architecture-minimal.svg">architecture-minimal.svg</a>）</p>
 
+## 快速开始（不用装 Go / Node）
+
+> ⚠️ **v0.1.1-beta 是本机使用的测试版**：没有登录功能，只监听 `127.0.0.1`，**不要暴露到公网**；
+> 后台 agent 的 `shell` 工具**没有沙箱**，会在你的电脑上真实执行命令；有风险的操作**默认会先弹审批卡片**等你确认。
+
+1. 到 [Releases](https://github.com/llc370219/frog-bot/releases) 下载对应系统的文件：
+   | 系统 | 文件 |
+   |---|---|
+   | Windows（64 位） | `frogbot_v0.1.1-beta_windows_amd64.zip` |
+   | macOS（Apple 芯片 M1/M2/M3/M4） | `frogbot_v0.1.1-beta_darwin_arm64.tar.gz` |
+   | macOS（Intel） | `frogbot_v0.1.1-beta_darwin_amd64.tar.gz` |
+   | Linux | `frogbot_v0.1.1-beta_linux_amd64.tar.gz` / `_linux_arm64.tar.gz` |
+2. 解压后运行里面的 `frogbot`（Windows 是 `frogbot.exe`，双击即可）。会弹出一个命令行窗口，**别关它**，关掉就退出了。
+   - macOS 第一次会提示"无法验证开发者"（程序没有签名）：在"系统设置 → 隐私与安全性"里点"仍要打开"，或在终端执行 `xattr -d com.apple.quarantine ./frogbot` 后再运行 `./frogbot`。
+   - Windows 可能弹出 SmartScreen"已保护你的电脑"（同样因为没有签名）：点"更多信息 → 仍要运行"。
+3. 浏览器会自动打开管理页面（没打开就手动访问命令行里显示的地址，默认 http://127.0.0.1:8080 ，被占用时会自动换 8081、8082…）。
+4. 第一次打开会弹出「先连接一个模型」：填 **API 地址**（有 OpenAI / xAI / DeepSeek / OpenRouter / Ollama 快捷按钮）、**API Key**、**模型名**，可以先点「测试连接」，再点「保存」。保存后立即生效，不用重启。
+   - API Key 用 AES-256-GCM 加密保存在本机数据目录里，页面不会再显示它，助理和工具也读不到。以后想改，点右上角齿轮。
+5. 开始聊天。数据默认放在：Windows `%AppData%\frogbot`，macOS `~/Library/Application Support/frogbot`，Linux `~/.config/frogbot`
+   （`data/` 是聊天记录、设置和密钥，`workspace/` 是助理读写文件的地方）。
+
+常用参数：`frogbot -addr 127.0.0.1:9000`（换端口）、`-data 路径`（换数据目录）、`-no-browser`（不自动打开浏览器）、`-version`。
+
 
 ```
 浏览器（React）
@@ -202,22 +225,26 @@ API Key、token、密码这类东西不应该出现在聊天里。frog bot 内�
 - **密钥卡片**：密码输入框（可切换显示）+ 保存 / 取消；保存后变成一行"已安全保存 NAME"。
 - 空状态有引导和示例；支持深色和浅色（跟随系统，也可以手动切换）；适配手机；断线自动重连并补齐事件。
 
-## 怎么运行
+## 从源码运行
 
 需要 Go 1.22+、Node 20+。
 
 ```bash
-# 1. 构建前端（只需一次，改了前端再跑）
+# 1. 构建前端（只需一次，改了前端再跑）。构建结果会被 go:embed 打包进程序
 cd web && npm install && npm run build && cd ..
 
-# 2. 启动（任何 OpenAI 兼容接口都可以：xAI、OpenAI、DeepSeek、OpenRouter……）
+# 2. 启动，浏览器会自动打开，在网页里填模型设置即可
+go run ./cmd/frogbot
+
+# 也可以继续用环境变量（环境变量优先于网页设置，网页上对应的输入框会变成只读）
 export BASE_URL=https://api.x.ai/v1
 export API_KEY=你的key
 export CHAT_MODEL=快而便宜的模型
 export AGENT_MODEL=强模型
 go run ./cmd/frogbot
-# 打开 http://127.0.0.1:8080
 ```
+
+打发布包：`scripts/release.sh v0.1.1-beta`（构建前端、交叉编译 5 个平台、生成 SHA256SUMS，输出在 `dist/`）。
 
 ### 不用 API Key 先看效果（演示模式）
 
@@ -240,21 +267,23 @@ cd web && npm run dev         # 打开 http://localhost:5173，/api 会自动转
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `BASE_URL` | `https://api.x.ai/v1` | OpenAI 兼容接口地址 |
+| `BASE_URL` | 空（网页设置） | OpenAI 兼容接口地址；只设了模型名没设它时按旧版默认 `https://api.x.ai/v1` |
 | `API_KEY` | — | 也认 `FROGBOT_API_KEY` / `XAI_API_KEY` / `OPENAI_API_KEY` |
 | `CHAT_MODEL` | 同 `AGENT_MODEL` | 聊天层模型（建议用快的） |
-| `AGENT_MODEL` | 必填 | 后台 agent 模型（建议用强的） |
+| `AGENT_MODEL` | 空（网页设置） | 后台 agent 模型（建议用强的） |
 | `REVIEWER_MODEL` | 空 | 审核模型，只在 `POLICY=auto` 时用 |
 | `CHAT_BASE_URL` / `CHAT_API_KEY` | 同上 | 聊天层要用别家模型时单独设置 |
 | `POLICY` | `on-request` | 后台任务的审批模式：`untrusted` / `on-request` / `auto` / `never` |
 | `CHAT_POLICY` | `untrusted` | 聊天层直接写文件的审批模式（默认每次都要你确认） |
-| `WORKSPACE` | `./workspace` | agent 能读写的目录 |
-| `DATA_DIR` | `./data` | 事件日志和记忆 |
-| `ADDR` | `127.0.0.1:8080` | 监听地址 |
+| `WORKSPACE` | 数据目录旁边的 `workspace` | agent 能读写的目录 |
+| `DATA_DIR` | 见下 | 事件日志、记忆、设置、密钥。当前目录已有 `./data` 就用它（兼容旧版），否则用系统用户配置目录下的 `frogbot/data`；也可用 `-data` |
+| `ADDR` | `127.0.0.1:8080` | 监听地址（也可用 `-addr`）。没指定时 8080 被占用会自动试 8081–8099 |
+| `FROGBOT_NO_BROWSER` | 空 | 设为 1 时启动后不自动打开浏览器（也可用 `-no-browser`；没有图形界面时自动跳过） |
+| `FROGBOT_ALLOW_REMOTE` | 空 | 默认只接受 Host 为本机的请求并拒绝跨站写操作（防 DNS 重绑定 / CSRF）。设为 1 关闭这层检查——**只有你自己加了反向代理和登录时才这么做** |
 | `BOT_NAME` | `Frog` | Bot 名字 |
 | `MAX_CONCURRENT` | `4` | 最多同时运行的任务数，多出来的排队 |
 | `TASK_MAX_MINUTES` | `30` | 单个任务最长时间 |
-| `WEB_DIR` | `web/dist` | 前端构建产物目录 |
+| `WEB_DIR` | 空（用打包进程序的前端） | 从磁盘读前端构建产物（开发调试用） |
 | `FROGBOT_DEMO` | 空 | 设为 1 时顶栏显示"演示"标记 |
 | `FROGBOT_MASTER_KEY` | 空 | 密钥库主密钥（64 位 hex / base64 的 32 字节）。不设置时自动生成 `data/master.key`（0600），见上面的警告 |
 | `FAKEAI_THINK_MS` | `45` | 仅 fakeai：每个思考片段的间隔毫秒数（调大可以看清流式效果） |
@@ -333,7 +362,9 @@ Go 测试覆盖：用户发消息 → 聊天层 start_task → agent 完成 → 
 ## 文件结构
 
 ```
-cmd/frogbot/        主程序（读环境变量，启动 HTTP）
+cmd/frogbot/        主程序（参数/环境变量、数据目录、自动打开浏览器、启动 HTTP）
+web/embed.go        go:embed 把 web/dist 打包进程序
+scripts/release.sh  打发布包
 cmd/fakeai/         假的 OpenAI 兼容服务（演示和冒烟测试用）
 internal/onefrog/   agent 内核（从 onefrog-agent 复制过来；secrets.go = 占位符替换 + 执行层脱敏的接口）
 internal/vault/     加密密钥库（AES-256-GCM、主密钥、脱敏替换表）
@@ -347,7 +378,8 @@ internal/bot/
   schedules.go      定时计划：聊天工具、审批门闩、到点派任务
   supervisor.go     监工：排队调度、暂停/继续、快照、汇报、卡住检测、重启恢复
   interact.go       重新生成、编辑重发、表情、上传、文件下载、界面上的任务按钮
-  server.go         HTTP 接口 + SSE + 前端静态文件
+  server.go         HTTP 接口 + SSE + 前端静态文件 + 本机访问限制
+  models.go         网页里的模型设置（data/config，Key 加密保存；环境变量优先；改了立即生效）
   bot_test.go       测试（queue_test.go：队列和暂停）
 web/src/
   api.ts            事件类型、状态合并、SSE 连接（自动重连续传）
@@ -380,6 +412,9 @@ web/src/
 - 并行的任务可能同时改同一个文件，目前没有加锁，靠聊天层判断该排队还是并行。
 - `shell` 工具不是真沙箱（详见 onefrog 的说明）；生产环境请放进容器里跑。
 - 只用假模型测试过，**没有用真实 API Key 跑过**；真实模型下聊天层的表现取决于提示词，需要再调。
+- Windows 上 `shell` 工具优先用 `bash`（装了 Git Bash / WSL 时）；没有 bash 时退回 PowerShell，但提示词按 bash 写的，命令可能需要模型自己调整。Windows / macOS 版本只做了交叉编译，没有在真机上测过。
+- 发布的程序没有代码签名，macOS 会有 Gatekeeper 提示、Windows 可能有 SmartScreen 提示（处理方法见"快速开始"）。
+- 网页里保存的模型 API Key 和密钥库共用同一把主密钥（`data/master.key`）；agent 的 shell 没有沙箱，理论上能读到数据目录里的文件。
 - 没有多会话、语音输入；只能编辑最后一条消息。
 - 上传的附件放在工作区 `uploads/`，不会自动清理；单个最大 25MB。
 - 系统通知需要浏览器允许，且只在页面打开（可以在后台标签页）时有效，没有离线推送。
@@ -391,3 +426,8 @@ web/src/
 - 定时唤醒器：见上一节；不保证外部副作用 exactly-once；后端离线不会补跑错过的周期性触发（只跳过并推进）。
 - 聊天层的只读快速工具（read_file 等）不能引用密钥（会被拒绝）；需要用密钥的事交给后台任务或写文件工具。
 - 聊天层写文件的审批要等你点按钮，最长等 10 分钟；这期间服务重启，审批会作废，写入不会执行（聊天层会告诉你）。
+
+## 许可证
+
+本项目整体以 [GNU AGPL v3.0](LICENSE) 发布（与它复用了界面素材的 OneFrog v0.1.31 一致）。复用来源和第三方声明见 [ATTRIBUTION.md](ATTRIBUTION.md) 和 `licenses/`。
+如果你修改后通过网络向别人提供服务，AGPL 要求你向这些用户提供对应的源代码。

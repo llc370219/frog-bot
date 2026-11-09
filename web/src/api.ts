@@ -25,7 +25,12 @@ export type Approval = {
   status: 'pending' | 'allow' | 'deny' | 'expired'; scope?: string; created: number;
 };
 export type Item = { type: 'msg' | 'task' | 'approval'; id: string };
-export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string };
+export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string; configured?: boolean; settings?: boolean };
+export type Settings = {
+  configured: boolean; base_url: string; chat_model: string; agent_model: string; has_api_key: boolean;
+  locked: Record<'base_url' | 'api_key' | 'chat_model' | 'agent_model', boolean>; data_dir: string; workspace: string;
+};
+export type SettingsInput = { base_url: string; api_key?: string; clear_api_key?: boolean; chat_model: string; agent_model: string };
 export type Schedule = {
   id: string; title: string; prompt: string; enabled: boolean; kind: string; timezone: string;
   hour?: number; minute?: number; weekdays?: number[]; overlap?: string;
@@ -262,6 +267,14 @@ export const api = {
   // 密钥值只走这个接口：直接加密落盘，不进聊天记录、事件流或模型上下文
   saveSecret: (requestId: string, value: string) => post('/api/secrets', { request_id: requestId, value }),
   cancelSecret: (requestId: string) => post(`/api/secrets/requests/${requestId}/cancel`),
+  settings: async (): Promise<Settings> => {
+    const r = await fetch('/api/settings');
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    return r.json();
+  },
+  // API Key 只往后端发，后端只回 has_api_key，不会把值再发回来
+  saveSettings: (s: SettingsInput): Promise<Settings> => post('/api/settings', s),
+  testSettings: (s: SettingsInput): Promise<{ ok: boolean; reply: string }> => post('/api/settings/test', s),
   schedules: (): Promise<Schedule[]> => fetch('/api/schedules').then((r) => r.json()),
   schedule: (id: string, action: 'pause' | 'resume' | 'run' | 'delete') => post(`/api/schedules/${id}/${action}`),
 };

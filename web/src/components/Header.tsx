@@ -1,4 +1,4 @@
-import { Bell, BellOff, Monitor, Moon, Sun } from 'lucide-react';
+import { Bell, BellOff, Monitor, Moon, Settings, Sun } from 'lucide-react';
 import { useState } from 'react';
 
 type Pref = 'system' | 'light' | 'dark';
@@ -10,7 +10,7 @@ function applyTheme(p: Pref) {
   else { root.dataset.theme = p; localStorage.setItem(KEY, p); }
 }
 
-export default function Header({ name, status, working, demo, connected, notify, onNotify }: { name: string; status: string; working: boolean; demo: boolean; connected: boolean; notify: boolean; onNotify: () => void }) {
+export default function Header({ name, status, working, demo, connected, notify, onNotify, onSettings, needsSetup }: { name: string; status: string; working: boolean; demo: boolean; connected: boolean; notify: boolean; onNotify: () => void; onSettings?: () => void; needsSetup?: boolean }) {
   const [pref, setPref] = useState<Pref>(() => (localStorage.getItem(KEY) as Pref) || 'system');
   const next: Record<Pref, Pref> = { system: 'light', light: 'dark', dark: 'system' };
   const Icon = pref === 'light' ? Sun : pref === 'dark' ? Moon : Monitor;
@@ -32,6 +32,12 @@ export default function Header({ name, status, working, demo, connected, notify,
           title={notify ? '页面不在前台时会弹系统通知（点一下关闭）' : '开启系统通知：页面不在前台时，任务完成或需要确认会提醒你'} aria-label={notify ? '关闭系统通知' : '开启系统通知'} aria-pressed={notify}>
           {notify ? <Bell size={17} /> : <BellOff size={17} />}
         </button>
+        {onSettings && (
+          <button onClick={onSettings} className="relative grid size-9 place-items-center rounded-full text-fg3 transition hover:bg-s2 hover:text-fg" title="模型设置" aria-label="模型设置">
+            <Settings size={17} />
+            {needsSetup && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-warn" />}
+          </button>
+        )}
         <button
           onClick={() => { const p = next[pref]; setPref(p); applyTheme(p); }}
           className="grid size-9 place-items-center rounded-full text-fg3 transition hover:bg-s2 hover:text-fg"
