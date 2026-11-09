@@ -1,7 +1,14 @@
-# Upstream attribution
+# Attribution
 
-The UI styling, cat logo, and safe Markdown renderer reuse/adapt OneFrog v0.1.31 stable materials, as described in README.md and source comments.
+The UI styling, cat logo, black-line bot avatars, and safe Markdown renderer
+reuse/adapt materials from OneFrog v0.1.31 (https://github.com/llc370219/onefrog).
 
-The upstream checkout supplies GNU AGPL v3.0 in its LICENSE. Its license text and original third-party notices are preserved verbatim under `licenses/`. The original notices describe the full upstream OneFrog distribution; they are not a claim that every listed upstream dependency is used in this smaller project.
+OneFrog and frog bot are by the same author (llc370219). OneFrog is published
+under AGPL-3.0; as the copyright holder, the author releases the material
+reused here under the MIT License together with the rest of frog bot
+(see `LICENSE`). This does not change the license of the OneFrog repository
+itself.
 
-The whole frog bot project, including newly written code, is released under the GNU Affero General Public License v3.0 (see `LICENSE`, identical to the upstream text in `licenses/OneFrog-AGPL-3.0.txt`). Existing upstream rights and obligations remain applicable to reused material.
+Third-party components embedded in the frogbot binary (Go standard library,
+golang.org/x/crypto, React, lucide-react, Inter and IBM Plex Mono fonts) keep
+their own licenses; see `licenses/THIRD_PARTY_NOTICES.txt`.

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 打发布包：构建前端 → 打包进 Go 程序 → 交叉编译 → 压缩 → SHA256SUMS。
-# 用法：scripts/release.sh v0.1.2-beta     输出在 dist/
+# 用法：scripts/release.sh v0.1.2     输出在 dist/
 set -euo pipefail
-VERSION="${1:?用法: scripts/release.sh <版本号，例如 v0.1.1-beta>}"
+VERSION="${1:?用法: scripts/release.sh <版本号，例如 v0.1.2>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist"
 cd "$ROOT"
@@ -12,6 +12,7 @@ test -f web/dist/index.html || { echo "前端没有构建成功" >&2; exit 1; }
 touch web/dist/.gitkeep  # vite 会清空 dist，占位文件放回去（它被 git 跟踪）
 
 rm -rf "$OUT" && mkdir -p "$OUT"
+CHANNEL="正式版"; case "$VERSION" in *-*) CHANNEL="测试版" ;; esac
 for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
   GOOS="${target%/*}"; GOARCH="${target#*/}"
   name="frogbot_${VERSION}_${GOOS}_${GOARCH}"
@@ -23,7 +24,7 @@ for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; d
   cp LICENSE ATTRIBUTION.md "$stage/"
   mkdir -p "$stage/licenses" && cp licenses/* "$stage/licenses/"
   cat > "$stage/使用说明.txt" <<TXT
-frog bot $VERSION（测试版）
+frog bot $VERSION（$CHANNEL，MIT 许可证）
 
 【本机版】自己电脑上用
 1. 运行 $bin（Windows 双击；macOS / Linux 在终端里执行 ./$bin）。命令行窗口别关，关掉就退出了。

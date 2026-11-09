@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/ins
   初始密码：xxxx-xxxx-xxxx-xxxx   ← 只显示这一次
 ```
 
-- 可选参数写在 `sudo` 后面：`… | sudo PORT=9000 FROGBOT_USER=me bash`；`FROGBOT_PASSWORD=…` 指定初始密码；`VERSION=v0.1.2-beta` 装指定版本。
+- 可选参数写在 `sudo` 后面：`… | sudo PORT=9000 FROGBOT_USER=me bash`；`FROGBOT_PASSWORD=…` 指定初始密码；`VERSION=v0.1.2` 装指定版本。
 - 再运行一次同样的命令就是**升级**，数据、账号和密码都保留。
 - 忘记密码：`sudo frogbot reset-password`（打印新密码，旧的登录全部失效，不用重启服务）。登录后也可以在「设置 → 账号与登录」改密码。
 - 卸载：`curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo bash -s uninstall`（保留数据；最后加 `--purge` 连数据一起删）。
@@ -266,7 +266,7 @@ go run ./cmd/frogbot
 go run ./cmd/frogbot -server -port 8080
 ```
 
-模型配置只保存在 `数据目录/channels.json`（API Key 加密）。从 v0.1.1-beta 升级时，旧的 `data/config/model.json` 会在第一次启动时自动迁移进来。「设置 → 版本更新」可以检查 GitHub 上的正式发布。打发布包用 `scripts/release.sh v0.1.2-beta`（构建前端、交叉编译 5 个平台、生成 SHA256SUMS）。
+模型配置只保存在 `数据目录/channels.json`（API Key 加密）。从 v0.1.1-beta 升级时，旧的 `data/config/model.json` 会在第一次启动时自动迁移进来。「设置 → 版本更新」可以检查 GitHub 上的正式发布。打发布包用 `scripts/release.sh v0.1.2`（构建前端、交叉编译 5 个平台、生成 SHA256SUMS）。
 
 数据目录默认：当前目录下已有 `./data` 就用它；否则 Windows `%AppData%\frogbot`、macOS `~/Library/Application Support/frogbot`、Linux `~/.config/frogbot`；服务器版安装脚本用 `/var/lib/frogbot`。
 
@@ -437,6 +437,7 @@ frog bot 现在定位是单人使用（本机或自己的一台服务器），�
 - 并行的任务可能同时改同一个文件，目前没有加锁，靠聊天层判断该排队还是并行。
 - `shell` 工具不是真沙箱（详见 onefrog 的说明）；服务器版请用专门的 VPS，或放进容器里跑。
 - 只用假模型测试过，**没有用真实 API Key 跑过**；真实模型下聊天层的表现取决于提示词，需要再调。
+- macOS 和 Windows 版只是交叉编译出来，**没有在真机上运行过**；程序没有签名，第一次打开时系统会弹安全提示。
 - Bot 之间 ask_agent 是异步的：提问后立刻返回，对方的回复稍后作为收件箱消息送达；对方不回复就没有回音（请求保留在对方收件箱里）。
 - 每个 Bot 各有一把主密钥和一个密钥库（还没合并成一个）。
 - 每个 Bot 保留一条对话；没有语音输入，只能编辑最后一条消息。
@@ -450,3 +451,10 @@ frog bot 现在定位是单人使用（本机或自己的一台服务器），�
 - 定时唤醒器：见上一节；不保证外部副作用 exactly-once；后端离线不会补跑错过的周期性触发（只跳过并推进）。
 - 聊天层的只读快速工具（read_file 等）不能引用密钥（会被拒绝）；需要用密钥的事交给后台任务或写文件工具。
 - 聊天层写文件的审批要等你点按钮，最长等 10 分钟；这期间服务重启，审批会作废，写入不会执行（聊天层会告诉你）。
+
+## 许可证
+
+frog bot 以 [MIT 许可证](LICENSE) 开源，从 v0.1.2 起生效（v0.1.2-beta 及更早的发布包当时按 AGPL-3.0 发布）。
+界面、猫咪 logo、简笔画头像和 Markdown 渲染器沿用自同一作者的 [Onefrog](https://github.com/llc370219/onefrog) v0.1.31，
+作者以版权人身份将这部分随 frog bot 一起按 MIT 授权（Onefrog 仓库本身的许可证不变），详见 [ATTRIBUTION.md](ATTRIBUTION.md)。
+打包进程序的第三方组件（Go 标准库、golang.org/x/crypto、React、lucide-react、Inter / IBM Plex Mono 字体）保留各自的许可证，见 [licenses/THIRD_PARTY_NOTICES.txt](licenses/THIRD_PARTY_NOTICES.txt)。

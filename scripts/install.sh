@@ -7,7 +7,7 @@
 #   PORT=8080              监听端口
 #   FROGBOT_USER=admin     登录用户名（只在第一次安装时使用）
 #   FROGBOT_PASSWORD=…     登录密码（只在第一次安装时使用；不设就随机生成）
-#   VERSION=v0.1.2-beta    安装指定版本（默认最新发布，包括测试版）
+#   VERSION=v0.1.2         安装指定版本（默认装最新发布的那个，正式版和测试版都算）
 #   DOMAIN=bot.example.com 用 Caddy 自动申请 HTTPS 证书，frog bot 只监听本机
 #
 # 再次运行 = 升级：保留数据、账号和密码，只替换程序。
@@ -297,6 +297,7 @@ main() {
   if [ -n "$upgrade" ] && ! sandbox; then systemctl stop frogbot 2>/dev/null || true; fi
   install -m 755 "$src/frogbot" "$APP_DIR/frogbot.new" && mv -f "$APP_DIR/frogbot.new" "$APP_DIR/frogbot"
   cp -f "$src/LICENSE" "$src/ATTRIBUTION.md" "$APP_DIR/" 2>/dev/null || true
+  if [ -d "$src/licenses" ]; then rm -rf "$APP_DIR/licenses"; cp -R "$src/licenses" "$APP_DIR/licenses"; fi
   write_env
   # 升级时端口以配置文件为准
   local addr_line
