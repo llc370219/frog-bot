@@ -1,0 +1,40 @@
+# Local runtime state and secrets
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+secrets.json
+master.key
+data/
+workspace/
+uploads/
+checkpoints/
+/demo/
+*.jsonl
+*.log
+# Dependencies, builds, and generated archives
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+*.zip
+*.tar
+*.tar.gz
+*.exe
+*.test
+*.out
+/bin/
+/frogbot
+/frog-bot
+/onefrog
+/onefrog-agent
+/onefrog-server
+# Editor/OS files
+.DS_Store
+.idea/
+.vscode/
