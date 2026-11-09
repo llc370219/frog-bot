@@ -20,6 +20,10 @@ checkpoints/
 # Dependencies, builds, and generated archives
 node_modules/
 dist/
+# web/dist 里只提交占位文件，让 go:embed 在没构建前端时也能编译
+!/web/dist/
+/web/dist/*
+!/web/dist/.gitkeep
 build/
 coverage/
 *.tsbuildinfo
