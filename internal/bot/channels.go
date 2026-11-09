@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -75,28 +76,25 @@ func (b *Bot) publicChannels() []APIChannel {
 		c.HasAPIKey = p.key != ""
 		channels = append(channels, c)
 	}
-	if len(channels) == 0 && b.model.baseURL != "" {
-		channels = append(channels, APIChannel{ID: "primary", Name: "主力 API", BaseURL: b.model.baseURL, Enabled: true, AuthRequired: b.model.key != "", HasAPIKey: b.model.key != "", Models: []string{b.model.model}, HiddenModels: []string{}})
-	}
 	return channels
 }
 
-// Only reuse a saved key for the matching channel and address.
+// catalogKey 决定这次请求用哪个 Key：请求里带了就用请求里的；否则只在渠道 ID 和地址都没变时
+// 复用已保存的 Key（改了地址就不会把旧 Key 发给新地址）。没指定渠道时按默认渠道算。
 func (b *Bot) catalogKey(d APISettings, url string) string {
 	if d.APIKey != nil {
 		return strings.TrimSpace(*d.APIKey)
 	}
-	if d.ProviderID != "" {
-		for _, p := range b.channels {
-			if p.ID == d.ProviderID && p.BaseURL == url {
-				return p.key
-			}
-		}
-		if d.ProviderID != "primary" || len(b.channels) != 0 {
-			return ""
+	id := d.ProviderID
+	if id == "" {
+		id = b.defaultChannel
+	}
+	for _, p := range b.channels {
+		if p.ID == id && p.BaseURL == url {
+			return p.key
 		}
 	}
-	return b.model.keyFor(d, url)
+	return ""
 }
 
 func (b *Bot) saveChannels(d APISettings) (APISettings, error) {
@@ -165,10 +163,12 @@ func (b *Bot) saveChannelsLocked(d APISettings) (APISettings, error) {
 		return APISettings{}, err
 	}
 	defer os.Remove(tmp.Name())
+	chmodErr := tmp.Chmod(0o600)
 	_, writeErr := tmp.Write(raw)
+	syncErr := tmp.Sync()
 	closeErr := tmp.Close()
-	if err = errors.Join(writeErr, closeErr); err != nil {
-		return APISettings{}, err
+	if err = errors.Join(chmodErr, writeErr, syncErr, closeErr); err != nil {
+		return APISettings{}, fmt.Errorf("保存渠道配置失败: %w", err)
 	}
 	if err = os.Rename(tmp.Name(), b.channelPath()); err != nil {
 		return APISettings{}, err

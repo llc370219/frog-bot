@@ -32,8 +32,9 @@ type Config struct {
 	Policy         onefrog.Policy
 	ChatPolicy     onefrog.Policy // 聊天层直接写文件时的审批模式，默认 untrusted（每次写都要你确认）
 	Rules          onefrog.Rules
-	MaxConcurrent  int
+	MaxConcurrent  int           // 所有 Bot 合计同时运行的后台任务上限（MAX_CONCURRENT），默认 4
 	TaskMaxTime    time.Duration // 单个任务最长运行时间，默认 30 分钟
+	ContextTokens  int           // 后台任务对话超过多少 token（估算）就压缩旧内容，默认 60000（CONTEXT_TOKENS）
 	StallTimeout   time.Duration // 多久没有进展算卡住，默认 12 分钟
 	TurnTimeout    time.Duration // 聊天层每轮上限，默认 90 秒
 	MasterKey      string        // FROGBOT_MASTER_KEY；为空时用 data/master.key（自动生成）
@@ -58,9 +59,11 @@ type Bot struct {
 	modelMu        sync.RWMutex
 	memoryMu       sync.Mutex
 	model          modelConnection
+	envModel       modelConnection // 环境变量提供的模型连接，非空时优先
 	channels       []storedChannel
 	defaultChannel string
 	modelOwner     *Bot
+	slots          *taskSlots // 所有 Bot 共用的后台任务并发上限
 	coordinator    *Bots
 	profile        atomic.Pointer[BotProfile]
 
@@ -136,12 +139,14 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	b := &Bot{cfg: cfg, store: store, vault: vlt, approver: onefrog.NewQueueApprover(), kick: make(chan struct{}, 1),
 		sch: sched{launched: map[string]bool{}}, modelOwner: modelOwner}
 	b.profile.Store(profile)
+	if modelOwner != nil {
+		b.slots = modelOwner.slots
+	} else {
+		b.slots = newTaskSlots(cfg.MaxConcurrent)
+	}
 	if modelOwner == nil {
 		if err := b.loadSettings(); err != nil {
-			return nil, fmt.Errorf("读取 API 设置失败: %w", err)
-		}
-		if err := b.loadChannels(); err != nil {
-			return nil, fmt.Errorf("读取渠道配置失败: %w", err)
+			return nil, fmt.Errorf("读取模型设置失败: %w", err)
 		}
 	}
 
@@ -156,8 +161,10 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	guard.Store = approvalStore{store}
 	guard.Secrets = vlt
 	b.guard = guard
-	agent := &onefrog.Agent{ResolveModel: func() (onefrog.Provider, string) { return b.resolveModel(false) }, Guard: guard,
-		Memory: b, Sink: onefrog.SinkFunc(b.onAgentEvent)}
+	resolveAgent := func() (onefrog.Provider, string) { return b.resolveModel(false) }
+	agent := &onefrog.Agent{ResolveModel: resolveAgent, Guard: guard, Memory: b, Sink: onefrog.SinkFunc(b.onAgentEvent),
+		// 长任务的对话超过上限时，把旧的步骤压缩成摘要（先让模型写，失败就用机械摘要）。
+		Compactor: &onefrog.AutoCompactor{MaxTokens: cfg.ContextTokens, Summarize: onefrog.SummarizeWith(resolveAgent)}}
 	b.mgr = onefrog.NewManager(agent, cfg.MaxConcurrent)
 	b.chatG, _ = onefrog.NewGuard(onefrog.Rules{}, nil, nil)
 	b.chatG.Secrets = vlt // 聊天层工具的输出同样脱敏；直接引用密钥的只读调用会被拒绝
@@ -436,17 +443,9 @@ func (b *Bot) writeMemoryFile(path, text, mode string) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// approvalStore 只用来把审批记录写进事件日志（onefrog.Store 的其余方法不需要）。
+// approvalStore 把审批记录写进事件日志（审批管线只需要这一个持久化接口）。
 type approvalStore struct{ s *Store }
 
-func (a approvalStore) SaveTask(context.Context, onefrog.Task) error { return nil }
-func (a approvalStore) LoadTask(context.Context, string) (onefrog.Task, error) {
-	return onefrog.Task{}, errors.New("not supported")
-}
-func (a approvalStore) SaveEvent(context.Context, onefrog.Event) error { return nil }
-func (a approvalStore) Events(context.Context, string, int64) ([]onefrog.Event, error) {
-	return nil, nil
-}
 func (a approvalStore) SaveApproval(_ context.Context, r onefrog.ApprovalRecord) error {
 	a.s.Append("approval.record", r, true)
 	return nil

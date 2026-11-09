@@ -17,7 +17,11 @@ export type APISettings = {
   providers?: APIChannel[];
   default_provider_id?: string;
   provider_id?: string;
+  env_override?: boolean;
 };
+
+// enabled = 服务器模式（需要登录）；本机模式没有登录。
+export type AuthInfo = { enabled: boolean; authenticated?: boolean; username?: string };
 
 export type UpdateStatus = {
   current: string;
@@ -242,6 +246,10 @@ export function useBot(id: string) {
       };
       es.onerror = () => {
         s.connected = false; render();
+        // EventSource 看不到状态码：断线时问一下是不是登录失效了（服务器模式）。
+        fetch('/api/auth/me').then((r) => r.json()).then((me: AuthInfo) => {
+          if (me.enabled && !me.authenticated) location.assign('/login');
+        }).catch(() => {});
         if (es?.readyState === EventSource.CLOSED && !closed) { // 浏览器放弃了，自己重连
           es.close();
           retry = window.setTimeout(connect, 2000);
@@ -254,14 +262,21 @@ export function useBot(id: string) {
   return ref.current;
 }
 
+// 服务器模式下登录过期（或在别处改了密码）时，接口返回 401：直接回到登录页。
+function checkAuth(r: Response) {
+  if (r.status === 401 && location.pathname !== '/login') location.assign('/login');
+}
+
 async function post(path: string, body: unknown = {}, method = 'POST') {
   const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  checkAuth(r);
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
   return r.json();
 }
 
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const r = await fetch(path, { signal });
+  checkAuth(r);
   const data = await r.json().catch(() => null);
   if (!r.ok || data === null) throw new Error(data?.error || '无法读取数据，请确认 Frog Bot 后端已启动');
   return data as T;
@@ -284,6 +299,7 @@ export function createBotAPI(botID: string) {
       const fd = new FormData();
       fd.append('file', f, f.name || 'pasted.png');
       const r = await fetch(`${base}/uploads`, { method: 'POST', body: fd });
+      checkAuth(r);
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
       const out = (await r.json()) as Attachment[];
       return out[0];
@@ -311,7 +327,11 @@ export const api = {
   bots: (signal?: AbortSignal): Promise<BotProfile[]> => get('/api/bots', signal),
   createBot: (draft: BotDraft): Promise<BotProfile> => post('/api/bots', draft),
   editBot: (id: string, draft: BotDraft): Promise<BotProfile> => post(botPath(id), draft, 'PATCH'),
-  deleteBot: (id: string): Promise<{ ok: boolean }> => post(botPath(id), {}, 'DELETE'),
+  deleteBot: (id: string, purge = false): Promise<{ ok: boolean }> => post(`${botPath(id)}${purge ? '?purge=1' : ''}`, {}, 'DELETE'),
+  botPaths: (id: string): Promise<{ data_dir: string; workspace: string }> => get(`${botPath(id)}/paths`),
+  me: (): Promise<AuthInfo> => get('/api/auth/me'),
+  logout: () => post('/api/auth/logout'),
+  changePassword: (oldPassword: string, newPassword: string) => post('/api/auth/password', { old_password: oldPassword, new_password: newPassword }),
   settings: async (signal?: AbortSignal): Promise<APISettings> => {
     const settings = await get<APISettings>('/api/settings', signal);
     if (typeof settings.base_url !== 'string' || typeof settings.model !== 'string') {

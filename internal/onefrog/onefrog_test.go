@@ -235,7 +235,7 @@ func TestLoopToolThenAnswer(t *testing.T) {
 		{Role: "assistant", Content: "写好了"},
 	}}
 	sink := &recSink{}
-	a := &Agent{Provider: fp, Guard: newGuard(t, nil), Sink: sink, Store: NewMemStore()}
+	a := &Agent{Provider: fp, Guard: newGuard(t, nil), Sink: sink}
 	res, err := a.Run(context.Background(), Task{ID: "t1", Input: "写个文件", Workspace: ws})
 	if err != nil || res.Status != StatusCompleted || res.Output != "写好了" || res.Steps != 2 {
 		t.Fatalf("got %+v %v", res, err)

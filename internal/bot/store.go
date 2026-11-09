@@ -3,6 +3,9 @@ package bot
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -181,6 +184,10 @@ type ApprovalRec struct {
 type Store struct {
 	mu        sync.Mutex
 	f         *os.File
+	dirty     bool          // 有写入还没 fsync
+	writeErr  time.Time     // 上次记录写盘失败日志的时间（避免刷屏）
+	stopSync  chan struct{} // 关闭后台定期 fsync
+	syncDone  chan struct{}
 	seq       int64
 	log       []Event
 	subs      map[chan Event]struct{}
@@ -225,30 +232,120 @@ func OpenStore(dir string) (*Store, error) {
 	s := &Store{subs: map[chan Event]struct{}{}, byID: map[string]*Message{}, cards: map[string]*Message{},
 		tasks: map[string]*TaskRec{}, approvals: map[string]*ApprovalRec{}, secrets: map[string]*Message{}}
 	path := filepath.Join(dir, "stream.jsonl")
-	if f, err := os.Open(path); err == nil {
-		sc := bufio.NewScanner(f)
-		sc.Buffer(nil, 16<<20)
-		for sc.Scan() {
-			var e Event
-			if json.Unmarshal(sc.Bytes(), &e) == nil && e.Seq > s.seq {
-				s.seq = e.Seq
-				s.log = append(s.log, e)
-				s.apply(e)
-			}
-		}
-		f.Close()
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) // 含聊天记录，只允许本用户读
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) // 含聊天记录，只允许本用户读
 	if err != nil {
 		return nil, err
 	}
+	good, err := s.replay(f)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("读取 %s 失败: %w", path, err)
+	}
+	// 上次崩溃/断电时可能只写了半行：截掉最后一个换行之后的残留，免得下一条事件接在坏数据后面。
+	if st, err := f.Stat(); err == nil && st.Size() > good {
+		log.Printf("事件日志 %s 末尾有 %d 字节不完整的数据（上次可能异常退出），已截掉", path, st.Size()-good)
+		if err := f.Truncate(good); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		f.Close()
+		return nil, err
+	}
 	s.f = f
+	s.stopSync, s.syncDone = make(chan struct{}), make(chan struct{})
+	go s.syncLoop()
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.f.Close() }
+// replay 读入已有的事件，返回最后一个完整行（以换行结尾）之后的位置。
+func (s *Store) replay(f *os.File) (int64, error) {
+	r := bufio.NewReaderSize(f, 1<<20)
+	var off int64
+	for {
+		line, err := r.ReadBytes('\n')
+		if err == io.EOF {
+			return off, nil // 没有换行结尾的残行不算
+		}
+		if err != nil {
+			return off, err
+		}
+		off += int64(len(line))
+		var e Event
+		if json.Unmarshal(line, &e) == nil && e.Seq > s.seq {
+			s.seq = e.Seq
+			s.log = append(s.log, e)
+			s.apply(e)
+		}
+	}
+}
 
-// Append 保存一条事件、更新状态并推送。
+// syncLoop 每 2 秒把还没落盘的事件 fsync 一次（关键事件在 Append 里立刻 fsync）。
+func (s *Store) syncLoop() {
+	defer close(s.syncDone)
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopSync:
+			return
+		case <-t.C:
+			s.mu.Lock()
+			s.syncLocked()
+			s.mu.Unlock()
+		}
+	}
+}
+
+func (s *Store) syncLocked() {
+	if !s.dirty || s.f == nil {
+		return
+	}
+	if err := s.f.Sync(); err != nil {
+		s.logWriteErr("fsync", err)
+		return
+	}
+	s.dirty = false
+}
+
+func (s *Store) logWriteErr(op string, err error) {
+	if time.Since(s.writeErr) > time.Minute {
+		s.writeErr = time.Now()
+		log.Printf("⚠ 写事件日志失败（%s）：%v。磁盘满了或没有权限时，重启后可能丢失最近的记录。", op, err)
+	}
+}
+
+func (s *Store) Close() error {
+	if s.stopSync != nil {
+		close(s.stopSync)
+		<-s.syncDone
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.syncLocked()
+	return s.f.Close()
+}
+
+// 这些事件写完立刻 fsync：用户的输入和决定、任务状态变化。其余（agent 的工具调用过程等）由 syncLoop 定期落盘。
+func syncNow(kind string, data []byte) bool {
+	switch kind {
+	case "agent":
+		var ev struct {
+			Type onefrog.EventType `json:"type"`
+		}
+		_ = json.Unmarshal(data, &ev)
+		switch ev.Type {
+		case onefrog.EvTaskCompleted, onefrog.EvTaskFailed, onefrog.EvTaskCancelled, onefrog.EvTaskPaused,
+			onefrog.EvApprovalRequested, onefrog.EvApprovalDecided:
+			return true
+		}
+		return false
+	}
+	return true
+}
+
+// Append 保存一条事件、更新状态并推送。写盘失败时事件仍然生效（内存和界面里都有），并在日志里提示。
 func (s *Store) Append(kind string, data any, internal bool) Event {
 	raw, _ := json.Marshal(data)
 	s.mu.Lock()
@@ -257,11 +354,27 @@ func (s *Store) Append(kind string, data any, internal bool) Event {
 	s.seq++
 	e := Event{Seq: s.seq, Kind: kind, Time: time.Now(), Data: raw, Internal: internal}
 	line, _ := json.Marshal(e)
-	_, _ = s.f.Write(append(line, '\n'))
+	if _, err := s.f.Write(append(line, '\n')); err != nil {
+		s.logWriteErr("write", err)
+	} else {
+		s.dirty = true
+		if syncNow(kind, raw) {
+			s.syncLocked()
+		}
+	}
 	s.log = append(s.log, e)
 	s.apply(e)
 	s.publish(e)
 	return e
+}
+
+// Touch 记录任务有动静（只推送不保存的流式文字也算），给卡住检测用。
+func (s *Store) Touch(taskID string) {
+	s.mu.Lock()
+	if t := s.tasks[taskID]; t != nil {
+		t.LastActivity = time.Now()
+	}
+	s.mu.Unlock()
 }
 
 // Broadcast 推送一条不保存的临时事件。

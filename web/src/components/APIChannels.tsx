@@ -85,6 +85,7 @@ export default function APIChannels({ saving, setSaving, onSaved }: { saving: bo
     <div className="settings-channel-title"><div><h3 id="settings-api-title">API 渠道</h3><p className="settings-description">管理模型服务渠道，选择聊天和任务使用的默认模型。</p></div>
       {state && !provider && <button className="settings-button settings-primary" disabled={busy} onClick={add}><Plus size={15} />添加渠道</button>}
     </div>
+    {state?.env_override && <p className="settings-env-note">当前模型由启动时的环境变量（BASE_URL / API_KEY / CHAT_MODEL）指定，优先于这里的设置；这里保存的内容要等去掉环境变量、重启后才生效。</p>}
     {notice && <p role={notice.error ? 'alert' : 'status'} className={`settings-feedback${notice.error ? ' is-error' : ''}`}>{notice.error ? <CircleAlert size={15} /> : <Check size={15} />}<span>{notice.text}</span></p>}
     {!state ? <div className="settings-load">{notice ? <button className="settings-button" onClick={() => { setNotice(undefined); setAttempt(n => n + 1); }}>重试</button> : <p className="settings-pending"><Loader2 size={16} className="animate-spin" />正在读取渠道…</p>}</div> : <>
       {provider ? <div className="settings-channel-editor">

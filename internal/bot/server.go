@@ -3,10 +3,11 @@ package bot
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -36,7 +37,7 @@ import (
 //	GET  /api/schedules/{id}         单个计划
 //	POST /api/schedules/{id}/{action} pause|resume|run|delete（界面按钮；创建/大改仍走聊天层审批）
 //	POST /api/secrets/requests/{id}/cancel   取消密钥卡片（= 拒绝提供）
-func (b *Bot) Handler(webDir string, embeddedFS ...fs.FS) http.Handler {
+func (b *Bot) Handler(webDir string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, b.GetSettings(), nil)
@@ -209,10 +210,8 @@ func (b *Bot) Handler(webDir string, embeddedFS ...fs.FS) http.Handler {
 		}
 	})
 	mux.HandleFunc("GET /api/stream", b.serveStream)
-	if len(embeddedFS) > 0 && embeddedFS[0] != nil {
-		mux.Handle("/", spaFS(embeddedFS[0], webDir))
-	} else if webDir != "" {
-		mux.Handle("/", spa(webDir))
+	if webDir != "" {
+		mux.Handle("/", spa(os.DirFS(webDir)))
 	}
 	return mux
 }
@@ -275,52 +274,73 @@ func (b *Bot) serveStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func spa(dir string) http.Handler {
-	files := http.FileServer(http.Dir(dir))
+// spa 提供前端文件；找不到的路径都回退到 index.html（前端路由）。
+func spa(web fs.FS) http.Handler {
+	files := http.FileServer(http.FS(web))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		index := filepath.Join(dir, "index.html")
-		if _, err := os.Stat(index); err != nil {
+		if _, err := fs.Stat(web, "index.html"); err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "前端还没构建：cd web && npm install && npm run build（开发时用 npm run dev）")
 			return
 		}
-		if _, err := os.Stat(filepath.Join(dir, filepath.Clean("/"+r.URL.Path))); err != nil {
-			http.ServeFile(w, r, index)
+		// fs.FS 在所有平台（包括 Windows）上都用 / 分隔路径。
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if st, err := fs.Stat(web, name); name == "" || err != nil || st.IsDir() {
+			w.Header().Set("Cache-Control", "no-cache")
+			http.ServeFileFS(w, r, web, "index.html")
 			return
+		}
+		if strings.HasPrefix(name, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		files.ServeHTTP(w, r)
 	})
 }
 
-func spaFS(efs fs.FS, fallbackDir string) http.Handler {
-	if fallbackDir != "" {
-		if _, err := os.Stat(filepath.Join(fallbackDir, "index.html")); err == nil {
-			return spa(fallbackDir)
-		}
+func absPath(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		return a
 	}
-	sub, err := fs.Sub(efs, "dist")
-	if err != nil {
-		sub = efs
+	return p
+}
+
+func isLoopbackHost(h string) bool {
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
 	}
-	files := http.FileServer(http.FS(sub))
+	ip := net.ParseIP(strings.Trim(h, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func hostname(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return strings.Trim(hostport, "[]")
+}
+
+// LocalOnly 是本机模式的保护：没有登录功能，所以只接受发往本机地址的请求（挡住 DNS 重绑定），
+// 并拒绝来自其他网站的写操作（挡住 CSRF，比如恶意网页偷偷替你点「批准」）。
+func LocalOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// fs.FS uses slash-delimited paths on every platform, including Windows.
-		clean := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
-		if clean == "" || clean == "." {
-			clean = "index.html"
-		}
-		if _, err := fs.Stat(sub, clean); err != nil {
-			idx, err := sub.Open("index.html")
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			defer idx.Close()
-			stat, _ := idx.Stat()
-			http.ServeContent(w, r, "index.html", stat.ModTime(), idx.(io.ReadSeeker))
+		if !isLoopbackHost(hostname(r.Host)) {
+			http.Error(w, "frog bot 本机模式只允许从本机访问（http://127.0.0.1 或 http://localhost）。要远程使用请用服务器模式：frogbot -server", http.StatusForbidden)
 			return
 		}
-		files.ServeHTTP(w, r)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if o := r.Header.Get("Origin"); o != "" {
+				u, err := url.Parse(o)
+				if err != nil || !isLoopbackHost(hostname(u.Host)) {
+					http.Error(w, "拒绝跨站请求", http.StatusForbidden)
+					return
+				}
+			} else if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+				http.Error(w, "拒绝跨站请求", http.StatusForbidden)
+				return
+			}
+		}
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
 	})
 }
 

@@ -1,13 +1,13 @@
-import { ArrowUpRight, Atom, Check, CircleAlert, Code2, Link2, Orbit, Plug, RefreshCw, SquareTerminal, X, Zap } from 'lucide-react';
+import { ArrowUpRight, Atom, Check, CircleAlert, Code2, KeyRound, Link2, LogOut, Orbit, Plug, RefreshCw, SquareTerminal, X, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { api, type UpdateStatus } from '../api';
+import { api, type AuthInfo, type UpdateStatus } from '../api';
 import APIChannels from './APIChannels';
 
 const releasesPage = 'https://github.com/llc370219/frog-bot/releases';
 const message = (err: unknown) => err instanceof TypeError ? '无法连接 Frog Bot 后端，请确认服务已启动'
   : err instanceof Error ? err.message : '请求失败，请重试';
 
-type Tab = 'api' | 'connections' | 'update';
+type Tab = 'api' | 'connections' | 'update' | 'account';
 type Feedback = { error: boolean; text: string };
 
 export default function SettingsDialog({ onClose, version, onSettingsSaved }: {
@@ -18,6 +18,9 @@ export default function SettingsDialog({ onClose, version, onSettingsSaved }: {
   const dialog = useRef<HTMLDialogElement>(null);
   const [tab, setTab] = useState<Tab>('api');
   const [saving, setSaving] = useState(false);
+  const [auth, setAuth] = useState<AuthInfo>();
+
+  useEffect(() => { api.me().then(setAuth).catch(() => {}); }, []);
 
   useEffect(() => {
     const el = dialog.current;
@@ -40,6 +43,9 @@ export default function SettingsDialog({ onClose, version, onSettingsSaved }: {
           <button type="button" aria-current={tab === 'update' ? 'page' : undefined} aria-controls="settings-update" disabled={saving} onClick={() => setTab('update')}>
             <RefreshCw size={15} aria-hidden="true" /> 版本更新
           </button>
+          {auth?.enabled && <button type="button" aria-current={tab === 'account' ? 'page' : undefined} aria-controls="settings-account" disabled={saving} onClick={() => setTab('account')}>
+            <KeyRound size={15} aria-hidden="true" /> 账号与登录
+          </button>}
         </nav>
       </aside>
       <button type="button" className="settings-close" aria-label="关闭设置" disabled={saving} onClick={onClose}>
@@ -52,6 +58,9 @@ export default function SettingsDialog({ onClose, version, onSettingsSaved }: {
         <section id="settings-update" className="settings-pane" hidden={tab !== 'update'} aria-labelledby="settings-update-title">
           <UpdatePanel version={version} />
         </section>
+        {auth?.enabled && <section id="settings-account" className="settings-pane" hidden={tab !== 'account'} aria-labelledby="settings-account-title">
+          <AccountPanel username={auth.username ?? ''} />
+        </section>}
         <section id="settings-connections" className="settings-pane" hidden={tab !== 'connections'} aria-labelledby="settings-connections-title">
           <ConnectionsPanel />
         </section>
@@ -140,6 +149,56 @@ function UpdatePanel({ version }: { version?: string }) {
           {checking ? '检查中…' : '检查更新'}
         </button>
       </div>
+    </>
+  );
+}
+
+function AccountPanel({ username }: { username: string }) {
+  const [oldPw, setOldPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [again, setAgain] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>();
+
+  async function change(e: React.FormEvent) {
+    e.preventDefault();
+    if (newPw !== again) { setFeedback({ error: true, text: '两次输入的新密码不一样' }); return; }
+    setBusy(true);
+    setFeedback(undefined);
+    try {
+      await api.changePassword(oldPw, newPw);
+      setOldPw(''); setNewPw(''); setAgain('');
+      setFeedback({ error: false, text: '密码已修改。其他设备上的登录已失效，需要用新密码重新登录。' });
+    } catch (err) {
+      setFeedback({ error: true, text: message(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function logout() {
+    await api.logout().catch(() => {});
+    location.assign('/login');
+  }
+
+  return (
+    <>
+      <h3 id="settings-account-title">账号与登录</h3>
+      <p className="settings-description">服务器模式下，打开管理页面需要登录。当前用户：<b>{username}</b></p>
+      <form className="settings-account-form" onSubmit={change}>
+        <div className="settings-field"><label htmlFor="pw-old">当前密码</label>
+          <input id="pw-old" type="password" autoComplete="current-password" required value={oldPw} onChange={(e) => setOldPw(e.target.value)} /></div>
+        <div className="settings-field"><label htmlFor="pw-new">新密码</label>
+          <input id="pw-new" type="password" autoComplete="new-password" required minLength={8} value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+          <p className="settings-field-hint">至少 8 位。忘记密码时可以在服务器上运行 sudo frogbot reset-password。</p></div>
+        <div className="settings-field"><label htmlFor="pw-again">再输一次新密码</label>
+          <input id="pw-again" type="password" autoComplete="new-password" required minLength={8} value={again} onChange={(e) => setAgain(e.target.value)} /></div>
+        {feedback && <FeedbackLine feedback={feedback} />}
+        <div className="settings-actions">
+          <button type="button" className="settings-button" onClick={logout}><LogOut size={14} aria-hidden="true" />退出登录</button>
+          <button type="submit" className="settings-button settings-primary" disabled={busy || !oldPw || !newPw}>{busy ? '正在修改…' : '修改密码'}</button>
+        </div>
+      </form>
     </>
   );
 }

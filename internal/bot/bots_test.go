@@ -39,7 +39,7 @@ func TestBotsKeepSeparateConversationsAndTasksAcrossRestart(t *testing.T) {
 		return bs
 	}
 	bs := open()
-	h := bs.Handler("")
+	h := bs.Handler(nil)
 	request := func(method, path, body string, want int) string {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -80,12 +80,12 @@ func TestBotsKeepSeparateConversationsAndTasksAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request("GET", "/api/files?path="+att.Path, "", http.StatusNotFound)
+	request("GET", "/api/bots/main/files?path="+att.Path, "", http.StatusNotFound)
 	if got := request("GET", base+"/files?path="+att.Path, "", http.StatusOK); got != "child file content" {
 		t.Fatalf("unexpected child file contents: %s", got)
 	}
 	request("POST", base+"/secrets", `{"name":"CHILD_ONLY","value":"child-private-value"}`, http.StatusOK)
-	if got := request("GET", "/api/secrets", "", http.StatusOK); strings.Contains(got, "CHILD_ONLY") {
+	if got := request("GET", "/api/bots/main/secrets", "", http.StatusOK); strings.Contains(got, "CHILD_ONLY") {
 		t.Fatal("child secret metadata leaked to default Bot")
 	}
 	if got := request("GET", base+"/secrets", "", http.StatusOK); !strings.Contains(got, "CHILD_ONLY") || strings.Contains(got, "child-private-value") {
@@ -96,14 +96,14 @@ func TestBotsKeepSeparateConversationsAndTasksAcrossRestart(t *testing.T) {
 	bs.Close()
 
 	bs = open()
-	h = bs.Handler("")
+	h = bs.Handler(nil)
 	if got := request("GET", "/api/bots", "", http.StatusOK); !strings.Contains(got, "Reviewer renamed") {
 		t.Fatalf("Bot list did not survive restart: %s", got)
 	}
 	if bs.runtimes[profile.ID].botProfile().AvatarSlot != profile.AvatarSlot {
 		t.Fatal("avatar changed after rename and restart")
 	}
-	legacy := replayText(t, h, "/api/stream")
+	legacy := replayText(t, h, "/api/bots/main/stream")
 	created := replayText(t, h, base+"/stream")
 	if !strings.Contains(legacy, "legacy conversation") || strings.Contains(legacy, "child task marker") ||
 		!strings.Contains(created, "child task marker") || strings.Contains(created, "legacy conversation") {
@@ -125,7 +125,7 @@ func TestDeleteBotStopsWorkAndSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer bs.Close()
-	h := bs.Handler("")
+	h := bs.Handler(nil)
 	request := func(method, path string, status int) string {
 		t.Helper()
 		r := httptest.NewRequest(method, path, strings.NewReader(`{"name":"Temporary"}`))
@@ -176,7 +176,7 @@ func TestDeleteBotStopsWorkAndSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	h = reopened.Handler("")
+	h = reopened.Handler(nil)
 	request("GET", path+"/info", http.StatusNotFound)
 	if got := request("GET", "/api/bots", http.StatusOK); strings.Contains(got, p.ID) {
 		t.Fatalf("deleted Bot returned after restart: %s", got)

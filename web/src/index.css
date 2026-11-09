@@ -394,3 +394,7 @@ textarea:focus-visible{outline:none}
   .settings-api-actions { flex-wrap: wrap; gap: 14px; }
   .settings-save-note { flex-basis: 100%; }
 }
+
+/* 账号与登录（服务器模式） */
+.settings-account-form { display: grid; gap: 16px; max-width: 420px; }
+.settings-env-note { margin: -12px 0 20px; padding: 8px 12px; border: 1px solid var(--line2); border-radius: 10px; color: var(--warn); font-size: 12px; line-height: 1.6; }

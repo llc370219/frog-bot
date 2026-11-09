@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"frogbot/internal/onefrog"
+	"frogbot/internal/vault"
 )
 
 // APISettings describes the connection shared by chat and background tasks.
@@ -27,30 +29,9 @@ type APISettings struct {
 	Providers         []APIChannel `json:"providers,omitempty"`
 	DefaultProviderID string       `json:"default_provider_id,omitempty"`
 	ProviderID        string       `json:"provider_id,omitempty"`
-}
-
-type settingsFile struct {
-	BaseURL string `json:"base_url"`
-	Model   string `json:"model"`
-	Sealed  string `json:"sealed_api_key,omitempty"`
-}
-
-type legacyProvider struct {
-	ID      string   `json:"id"`
-	BaseURL string   `json:"base_url"`
-	APIKey  string   `json:"api_key"`
-	Models  []string `json:"models"`
-}
-
-type legacyRoute struct {
-	ProviderID string `json:"provider_id"`
-	Model      string `json:"model"`
-}
-
-type legacySettings struct {
-	Providers  []legacyProvider `json:"providers"`
-	ChatRoute  legacyRoute      `json:"chat_route"`
-	AgentRoute legacyRoute      `json:"agent_route"`
+	// EnvOverride 表示模型连接由环境变量（BASE_URL / API_KEY / CHAT_MODEL / AGENT_MODEL）提供，
+	// 优先于网页里保存的渠道；网页上的修改要等去掉环境变量后才生效。
+	EnvOverride bool `json:"env_override,omitempty"`
 }
 
 type modelConnection struct {
@@ -58,70 +39,98 @@ type modelConnection struct {
 	provider            onefrog.Provider
 }
 
-func (b *Bot) settingsPath() string {
-	return filepath.Join(b.cfg.DataDir, "settings.json")
-}
-
+// 模型配置只有一个来源：data/channels.json（API Key 用主密钥加密）。环境变量可以临时覆盖，但不写盘。
+// 旧版本的配置在第一次启动时迁移进 channels.json，原文件改名为 *.migrated：
+//   - v0.1.1-beta：data/config/model.json + data/config/secrets.json（MODEL_API_KEY）
+//   - 开发分支上短暂存在过的 data/settings.json（base_url / model / sealed_api_key）
 func (b *Bot) loadSettings() error {
 	if b.cfg.InitialBaseURL != "" {
 		model := b.cfg.ChatModel
 		if model == "" {
 			model = b.cfg.AgentModel
 		}
-		b.model = newConnection(b.cfg.InitialBaseURL, model, b.cfg.InitialKey)
+		if model != "" {
+			b.envModel = newConnection(b.cfg.InitialBaseURL, model, b.cfg.InitialKey)
+		}
 	}
+	if _, err := os.Stat(b.channelPath()); err == nil {
+		return b.loadChannels()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return b.migrateSettings()
+}
 
-	raw, err := os.ReadFile(b.settingsPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var saved settingsFile
-	if err := json.Unmarshal(raw, &saved); err != nil {
-		return err
-	}
-	if saved.BaseURL != "" {
-		var key string
-		if saved.Sealed != "" {
-			key, err = b.vault.OpenAPIKey(saved.Sealed)
-			if err != nil {
+type oldSettingsFile struct {
+	BaseURL string `json:"base_url"`
+	Model   string `json:"model"`
+	Sealed  string `json:"sealed_api_key,omitempty"`
+}
+
+type betaModelFile struct {
+	BaseURL    string `json:"base_url"`
+	ChatModel  string `json:"chat_model"`
+	AgentModel string `json:"agent_model"`
+}
+
+func (b *Bot) migrateSettings() error {
+	var baseURL, key string
+	var models []string
+	var old []string // 迁移成功后改名的文件
+	settings := filepath.Join(b.cfg.DataDir, "settings.json")
+	betaDir := filepath.Join(b.cfg.DataDir, "config")
+	if raw, err := os.ReadFile(settings); err == nil {
+		var f oldSettingsFile
+		if err := json.Unmarshal(raw, &f); err != nil {
+			return fmt.Errorf("%s 格式不对: %w", settings, err)
+		}
+		if f.Sealed != "" {
+			if key, err = b.vault.OpenAPIKey(f.Sealed); err != nil {
 				return err
 			}
 		}
-		b.model = newConnection(saved.BaseURL, saved.Model, key)
+		baseURL, models, old = f.BaseURL, []string{f.Model}, []string{settings}
+	} else if raw, err := os.ReadFile(filepath.Join(betaDir, "model.json")); err == nil {
+		var f betaModelFile
+		if err := json.Unmarshal(raw, &f); err != nil {
+			return fmt.Errorf("data/config/model.json 格式不对: %w", err)
+		}
+		mk, _, err := vault.LoadKey(b.cfg.MasterKey, b.cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		v, err := vault.Open(betaDir, mk)
+		if err != nil {
+			return fmt.Errorf("读取 v0.1.1-beta 的模型密钥失败: %w", err)
+		}
+		if v.Has("MODEL_API_KEY") {
+			vals, err := v.Values([]string{"MODEL_API_KEY"})
+			if err != nil {
+				return err
+			}
+			key = vals["MODEL_API_KEY"]
+		}
+		baseURL, models = f.BaseURL, []string{f.ChatModel, f.AgentModel}
+		old = []string{filepath.Join(betaDir, "model.json"), filepath.Join(betaDir, "secrets.json")}
+	} else {
+		return nil // 全新安装
+	}
+	models = slices.DeleteFunc(models, func(m string) bool { return strings.TrimSpace(m) == "" })
+	models = slices.Compact(models)
+	if strings.TrimSpace(baseURL) == "" || len(models) == 0 {
 		return nil
 	}
-	// Start with the channel actually used for chat in older settings.
-	var old legacySettings
-	if err := json.Unmarshal(raw, &old); err != nil {
-		return err
+	if _, err := b.saveChannelsLocked(APISettings{DefaultProviderID: "primary", Model: models[0], Providers: []APIChannel{{
+		ID: "primary", Name: "主力 API", BaseURL: baseURL, Enabled: true, AuthRequired: key != "", APIKey: &key, Models: models,
+	}}}); err != nil {
+		return fmt.Errorf("迁移旧的模型设置失败: %w", err)
 	}
-	idx := slices.IndexFunc(old.Providers, func(p legacyProvider) bool { return p.ID == old.ChatRoute.ProviderID && p.BaseURL != "" })
-	if idx < 0 {
-		idx = slices.IndexFunc(old.Providers, func(p legacyProvider) bool { return p.BaseURL != "" })
+	for _, p := range old {
+		if err := os.Rename(p, p+".migrated"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("旧设置已迁移到 channels.json，但没能改名 %s：%v", p, err)
+		}
 	}
-	if idx >= 0 {
-		p := old.Providers[idx]
-		model := ""
-		if p.ID == old.ChatRoute.ProviderID {
-			model = old.ChatRoute.Model
-		}
-		if model == "" && p.ID == old.AgentRoute.ProviderID {
-			model = old.AgentRoute.Model
-		}
-		if model == "" && len(p.Models) > 0 {
-			model = p.Models[0]
-		}
-		key := p.APIKey
-		if key == "" && p.ID == "primary" {
-			if normalized, err := normalizeBaseURL(p.BaseURL); err == nil && normalized == b.model.baseURL {
-				key = b.model.key
-			}
-		}
-		b.model = newConnection(p.BaseURL, model, key)
-	}
+	log.Printf("已把旧的模型设置迁移到 %s", b.channelPath())
 	return nil
 }
 
@@ -159,6 +168,9 @@ func (b *Bot) resolveModel(chat bool) (onefrog.Provider, string) {
 	}
 	b.modelMu.RLock()
 	defer b.modelMu.RUnlock()
+	if b.envModel.provider != nil {
+		return b.envModel.provider, b.envModel.model
+	}
 	if b.model.provider != nil {
 		if b.model.model == "" {
 			return nil, ""
@@ -194,6 +206,7 @@ func (b *Bot) GetSettings() APISettings {
 	if s.DefaultProviderID == "" && len(s.Providers) > 0 {
 		s.DefaultProviderID = s.Providers[0].ID
 	}
+	s.EnvOverride = b.envModel.provider != nil
 	return s
 }
 
@@ -201,16 +214,8 @@ func (m modelConnection) public() APISettings {
 	return APISettings{BaseURL: m.baseURL, Model: m.model, HasAPIKey: m.key != ""}
 }
 
-func (m modelConnection) keyFor(draft APISettings, baseURL string) string {
-	if draft.APIKey != nil {
-		return strings.TrimSpace(*draft.APIKey)
-	}
-	if baseURL == m.baseURL {
-		return m.key
-	}
-	return ""
-}
-
+// SaveSettings 保存模型设置。网页总是提交完整的渠道列表；只带 base_url / model / api_key 的旧式请求
+// 会更新默认渠道（没有渠道时新建一个「主力 API」）。两种请求最后都写进 channels.json。
 func (b *Bot) SaveSettings(draft APISettings) (APISettings, error) {
 	if draft.Providers != nil {
 		return b.saveChannels(draft)
@@ -226,51 +231,23 @@ func (b *Bot) SaveSettings(draft APISettings) (APISettings, error) {
 	b.modelMu.Lock()
 	defer b.modelMu.Unlock()
 	key := b.catalogKey(draft, baseURL)
-	if len(b.channels) == 0 {
-		if _, statErr := os.Stat(b.channelPath()); statErr == nil {
-			return b.saveChannelsLocked(APISettings{DefaultProviderID: "primary", Model: model, Providers: []APIChannel{{
-				ID: "primary", Name: "主力 API", BaseURL: baseURL, Enabled: true, AuthRequired: key != "", APIKey: &key, Models: []string{model},
-			}}})
+	providers := b.publicChannels()
+	id := b.defaultChannel
+	idx := slices.IndexFunc(providers, func(p APIChannel) bool { return p.ID == id })
+	if idx < 0 {
+		id = "primary"
+		if idx = slices.IndexFunc(providers, func(p APIChannel) bool { return p.ID == id }); idx < 0 {
+			providers = append(providers, APIChannel{ID: id, Name: "主力 API"})
+			idx = len(providers) - 1
 		}
 	}
-	if len(b.channels) > 0 {
-		providers := b.publicChannels()
-		for i := range providers {
-			if providers[i].ID == b.defaultChannel {
-				p := &providers[i]
-				p.BaseURL, p.Enabled, p.AuthRequired, p.APIKey = baseURL, true, key != "", &key
-				p.Models = append(slices.Clone(p.Models), model)
-				p.HiddenModels = slices.DeleteFunc(slices.Clone(p.HiddenModels), func(id string) bool { return id == model })
-				return b.saveChannelsLocked(APISettings{Providers: providers, DefaultProviderID: b.defaultChannel, Model: model})
-			}
-		}
+	p := &providers[idx]
+	p.BaseURL, p.Enabled, p.AuthRequired, p.APIKey = baseURL, true, key != "", &key
+	if !slices.Contains(p.Models, model) {
+		p.Models = append(slices.Clone(p.Models), model)
 	}
-	f := settingsFile{BaseURL: baseURL, Model: model}
-	if key != "" {
-		f.Sealed, err = b.vault.SealAPIKey(key)
-		if err != nil {
-			return APISettings{}, err
-		}
-	}
-	raw, err := json.MarshalIndent(f, "", "  ")
-	if err != nil {
-		return APISettings{}, err
-	}
-	tmp, err := os.CreateTemp(b.cfg.DataDir, "settings-*.tmp")
-	if err != nil {
-		return APISettings{}, fmt.Errorf("保存设置失败: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	_, writeErr := tmp.Write(raw)
-	closeErr := tmp.Close()
-	if err := errors.Join(writeErr, closeErr); err != nil {
-		return APISettings{}, fmt.Errorf("保存设置失败: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), b.settingsPath()); err != nil {
-		return APISettings{}, fmt.Errorf("保存设置失败: %w", err)
-	}
-	b.model = newConnection(baseURL, model, key)
-	return b.model.public(), nil
+	p.HiddenModels = slices.DeleteFunc(slices.Clone(p.HiddenModels), func(m string) bool { return m == model })
+	return b.saveChannelsLocked(APISettings{Providers: providers, DefaultProviderID: id, Model: model})
 }
 
 var modelCatalogClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: noRedirect}

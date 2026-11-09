@@ -14,8 +14,6 @@ if errorlevel 1 (
 )
 
 where go.exe >nul 2>&1
-if errorlevel 1 if exist "%~dp0..\.beta-tools\go\bin\go.exe" set "PATH=%~dp0..\.beta-tools\go\bin;%PATH%"
-where go.exe >nul 2>&1
 if errorlevel 1 (
   echo Go was not found. Install Go 1.22 or newer and add it to PATH.
   goto :failed

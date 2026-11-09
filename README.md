@@ -2,9 +2,49 @@
 
 frog bot 是一个能聊天、也能在后台干活的 AI 助理。它就是我们讨论过的那套架构，做成了一个能跑起来的独立项目。
 
-点左侧 Bots 旁的「＋」创建助理，填写名称和可选职责，例如代码审查或资料整理。点头像所在的行切换助理，点行内的铅笔编辑或删除。默认 Bot 可以编辑，不能删除。删除其他 Bot 会停止它的任务和定时计划，已有记录和工作区文件仍保留在本机。每个 Bot 有独立的对话、任务队列、审批、记忆、密钥和定时计划；切换时，原 Bot 的后台任务继续运行。
+点左侧 Bots 旁的「＋」创建助理，填写名称和可选职责，例如代码审查或资料整理。点头像所在的行切换助理，点行内的铅笔编辑或删除。默认 Bot 可以编辑，不能删除。删除其他 Bot 会停止它的任务和定时计划；默认只从列表里移除，聊天记录、记忆、密钥和工作区文件仍保留在磁盘上（确认框里会显示具体目录），勾选「彻底删除」才会连这些数据一起删掉。最多 32 个 Bot。每个 Bot 有独立的对话、任务队列、审批、记忆、密钥和定时计划；切换时，原 Bot 的后台任务继续运行。
 
-所有 Bot 共用「设置 → 模型连接」。原有单 Bot 数据继续由默认 Bot 使用。新 Bot 的记录保存在 `DATA_DIR/bots/<id>/`，独立工作区在 `WORKSPACE-bots/<id>/`（默认 `./workspace-bots/<id>/`）。备份时请保留数据目录和两个工作区目录。
+所有 Bot 共用「设置 → API 渠道」。原有单 Bot 数据继续由默认 Bot 使用。新 Bot 的记录保存在 `DATA_DIR/bots/<id>/`，独立工作区在 `WORKSPACE-bots/<id>/`（默认 `./workspace-bots/<id>/`）。备份时请保留数据目录和两个工作区目录。
+
+## 下载和使用
+
+到 [Releases](https://github.com/llc370219/frog-bot/releases) 下载对应系统的包。有两种用法：
+
+**本机版**（自己电脑上用）：解压后运行 `frogbot`（Windows 双击 `frogbot.exe`），浏览器会自动打开管理页面 `http://127.0.0.1:8080`，在「设置 → API 渠道」填好模型的接口地址、API Key 和模型名就能聊天。本机版只接受来自这台电脑的访问，没有登录。
+
+**服务器版**（放在 Linux 服务器上，从任何地方用浏览器登录）：在服务器上执行一行命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo bash
+```
+
+脚本会自动识别 x86_64 / arm64，从 Releases 下载最新版并校验 SHA256，装到 `/opt/frogbot`，创建专用的非 root 用户 `frogbot`，数据放在 `/var/lib/frogbot`，注册开机自启、出错自动重启的 systemd 服务，最后打印：
+
+```
+  访问地址：http://<服务器公网 IP>:8080
+  用户名：  admin
+  初始密码：xxxx-xxxx-xxxx-xxxx   ← 只显示这一次
+```
+
+- 可选参数写在 `sudo` 后面：`… | sudo PORT=9000 FROGBOT_USER=me bash`；`FROGBOT_PASSWORD=…` 指定初始密码；`VERSION=v0.1.2-beta` 装指定版本。
+- 再运行一次同样的命令就是**升级**，数据、账号和密码都保留。
+- 忘记密码：`sudo frogbot reset-password`（打印新密码，旧的登录全部失效，不用重启服务）。登录后也可以在「设置 → 账号与登录」改密码。
+- 卸载：`curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo bash -s uninstall`（保留数据；最后加 `--purge` 连数据一起删）。
+- 脚本**不会改防火墙**。云服务器要在安全组里放行端口（例如 `sudo ufw allow 8080/tcp`）。
+
+> ⚠️ **HTTP 是明文**：直接用 `http://IP:端口` 登录时，密码和聊天内容在网络上不加密，路上的人能看到。建议准备一个域名，解析到服务器后用 HTTPS：
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo DOMAIN=bot.example.com bash
+> ```
+>
+> 这会装好 [Caddy](https://caddyserver.com) 并自动申请证书，frog bot 改为只监听本机，访问地址变成 `https://bot.example.com`（需要放行 80 和 443）。已经有 Caddy 的话，在 Caddyfile 里加一段 `bot.example.com { reverse_proxy 127.0.0.1:8080 }` 即可。
+
+> ⚠️ **后台 agent 能在服务器上执行命令**，`shell` 工具没有真正的沙箱（systemd 只做了基本加固：非 root 用户、只能写 `/var/lib/frogbot`）。请用一台专门的 VPS，不要和重要的服务、数据放在一起。有风险的操作默认仍然要你在网页上点「批准」。
+
+不用安装脚本也行：`./frogbot -server`（默认监听 `0.0.0.0:8080`，第一次启动时在终端打印用户名和初始密码），或者 `./frogbot -server -port 9000`。
+
+服务器版的登录：密码用 bcrypt 哈希保存在 `数据目录/auth.json`；会话 Cookie 是 HttpOnly + SameSite=Strict（HTTPS 下加 Secure），7 天有效，改密码后旧会话全部失效；同一 IP 连续输错 5 次锁 1 分钟并逐次翻倍（最长 1 小时），全局 15 分钟内错 30 次暂停所有登录 15 分钟；所有 `/api/*`（包括 SSE 事件流和审批接口）都要登录，跨站写请求一律拒绝。
 
 交流讨论：[Telegram 群](https://t.me/+pKQYEaxzidU4ZjZh)（与 [OneFrog](https://github.com/llc370219/onefrog) 同一交流群）
 
@@ -15,10 +55,13 @@ frog bot 是一个能聊天、也能在后台干活的 AI 助理。它就是我�
 
 ```
 浏览器（React）
-   │ POST /api/messages、/api/stop、/api/approvals/{id}、/api/cards/{id}、/api/secrets
-   │ POST /api/tasks/{id}/{pause|resume|cancel|retry|top|up}、/api/uploads、/api/regenerate、
-   │      /api/messages/{id}/edit、/api/messages/{id}/react；GET /api/files?path=
-   │ GET  /api/stream（SSE，一条流推送所有事件，断线带 Last-Event-ID 续传）
+   │ 每个 Bot 的接口都在 /api/bots/{id}/ 下：
+   │ POST messages、stop、approvals/{id}、cards/{id}、secrets、tasks/{id}/{pause|resume|cancel|retry|top|up}、
+   │      uploads、regenerate、messages/{id}/edit、messages/{id}/react；GET files?path=
+   │ GET  stream（SSE，一条流推送这个 Bot 的所有事件，断线带 Last-Event-ID 续传）
+   │ 全局：GET/POST /api/bots、/api/settings；服务器模式另有 /login、/api/auth/*
+   ▼
+本机模式：只接受发往 127.0.0.1 的请求 + 拒绝跨站写请求    服务器模式：必须登录 + 拒绝跨站写请求
    ▼
 Go 后端
  ├─ 聊天层：快模型 + 管理工具。每轮只回一两句话就结束，不守着 agent
@@ -208,18 +251,24 @@ API Key、token、密码这类东西不应该出现在聊天里。frog bot 内�
 
 ## 怎么运行
 
-需要 Go 1.22+、Node 20+。
+从源码运行需要 Go 1.22+、Node 20+。
 
 ```bash
-# 1. 构建前端（只需一次，改了前端再跑）
+# 1. 构建前端（只需一次，改了前端再跑）。不构建也能 go vet / go test / go build：
+#    web/dist 里有占位文件，只是打开页面时会提示「前端还没构建」。
 cd web && npm install && npm run build && cd ..
 
-# 2. 启动
+# 2. 启动（本机模式）
 go run ./cmd/frogbot
-# 打开 http://127.0.0.1:8080，在「应用设置 → 模型连接」填写接口地址、密钥和模型。
+# 打开 http://127.0.0.1:8080，在「设置 → API 渠道」填写接口地址、密钥和模型。
+
+# 服务器模式（需要登录）
+go run ./cmd/frogbot -server -port 8080
 ```
 
-已有多渠道配置时，默认载入原聊天所用的渠道和模型。「应用设置 → 版本更新」可以检查 GitHub 上的正式发布；发布构建可用 `go build -ldflags "-X frogbot/internal/bot.Version=vX.Y.Z" ./cmd/frogbot` 注入版本号。
+模型配置只保存在 `数据目录/channels.json`（API Key 加密）。从 v0.1.1-beta 升级时，旧的 `data/config/model.json` 会在第一次启动时自动迁移进来。「设置 → 版本更新」可以检查 GitHub 上的正式发布。打发布包用 `scripts/release.sh v0.1.2-beta`（构建前端、交叉编译 5 个平台、生成 SHA256SUMS）。
+
+数据目录默认：当前目录下已有 `./data` 就用它；否则 Windows `%AppData%\frogbot`、macOS `~/Library/Application Support/frogbot`、Linux `~/.config/frogbot`；服务器版安装脚本用 `/var/lib/frogbot`。
 
 ### 不用 API Key 先看效果（演示模式）
 
@@ -246,18 +295,22 @@ cd web && npm run dev         # 打开 http://localhost:5173，/api 会自动转
 |---|---|---|
 | `BASE_URL` | — | 初始 API 地址；只提供环境变量中的模型或密钥时，默认 `https://api.x.ai/v1` |
 | `API_KEY` | — | 也认 `FROGBOT_API_KEY` / `XAI_API_KEY` / `OPENAI_API_KEY` |
-| `CHAT_MODEL` | 同 `AGENT_MODEL` | 聊天和后台任务共用的初始模型；网页保存的设置优先 |
+| `CHAT_MODEL` | 同 `AGENT_MODEL` | 聊天和后台任务共用的模型。设置了 `BASE_URL`/`CHAT_MODEL` 时**优先于网页设置**（不写盘，网页上会提示） |
 | `AGENT_MODEL` | 空 | 未提供 `CHAT_MODEL` 时的初始模型 |
 | `REVIEWER_MODEL` | 空 | 审核模型，只在 `POLICY=auto` 时用 |
 | `POLICY` | `on-request` | 后台任务的审批模式：`untrusted` / `on-request` / `auto` / `never` |
 | `CHAT_POLICY` | `untrusted` | 聊天层直接写文件的审批模式（默认每次都要你确认） |
-| `WORKSPACE` | `./workspace` | agent 能读写的目录 |
-| `DATA_DIR` | `./data` | 事件日志和记忆 |
-| `ADDR` | `127.0.0.1:8080` | 监听地址 |
+| `WORKSPACE` | 数据目录旁的 `workspace` | agent 能读写的目录 |
+| `DATA_DIR` | 见上文 | 事件日志、记忆、模型配置、登录账号；也可用 `-data` |
+| `FROGBOT_MODE` | 空 | 设为 `server` 等同 `-server`：监听所有网卡并要求登录 |
+| `ADDR` | 本机 `127.0.0.1:8080`（被占用时自动换到 8099 以内）/ 服务器 `0.0.0.0:8080` | 监听地址；也可用 `-addr` |
+| `PORT` | `8080` | 只改端口；也可用 `-port` |
+| `FROGBOT_USER` / `FROGBOT_PASSWORD` | `admin` / 随机 | 服务器模式第一次启动时创建的账号（之后用 `frogbot reset-password` 改） |
 | `BOT_NAME` | `Frog` | Bot 名字 |
-| `MAX_CONCURRENT` | `4` | 每个 Bot 最多同时运行的后台任务数，多出来的排队 |
+| `MAX_CONCURRENT` | `4` | **所有 Bot 合计**最多同时运行的后台任务数，多出来的排队 |
+| `CONTEXT_TOKENS` | `60000` | 后台任务的对话估算超过这么多 token 时，把旧步骤压缩成摘要（先让模型写，失败就用机械摘要） |
 | `TASK_MAX_MINUTES` | `30` | 单个任务最长时间 |
-| `WEB_DIR` | `web/dist` | 前端构建产物目录 |
+| `WEB_DIR` | 打包进程序的前端 | 前端构建产物目录（开发时覆盖用） |
 | `FROGBOT_DEMO` | 空 | 设为 1 时顶栏显示"演示"标记 |
 | `FROGBOT_MASTER_KEY` | 空 | 密钥库主密钥（64 位 hex / base64 的 32 字节）。不设置时自动生成 `data/master.key`（0600），见上面的警告 |
 | `FAKEAI_THINK_MS` | `45` | 仅 fakeai：每个思考片段的间隔毫秒数（调大可以看清流式效果） |
@@ -309,9 +362,14 @@ HTTP：`GET /api/schedules`、`POST /api/schedules/{id}/{pause|resume|run|delete
 ## 测试
 
 ```bash
-go vet ./... && go test ./...      # 全部用假模型，不需要 API Key
-cd web && npm run build            # 含 TypeScript 类型检查
+go vet ./... && go test -race ./...  # 全部用假模型，不需要 API Key，也不需要先构建前端
+cd web && npm run build              # 含 TypeScript 类型检查
+shellcheck scripts/*.sh
 ```
+
+v0.1.2 新增：登录（错误密码、限速、篡改 Cookie、跨站写请求、改密码后旧会话失效、命令行重置后自动生效、SSE 带 Cookie）；
+所有 Bot 合计的并发上限；两个 Bot 同时互相 ask_agent 不会卡住；长任务对话压缩（成对保留工具调用、模型失败时退回机械摘要）；
+事件日志末尾半行坏数据自动截掉、agent 流式文字不写盘；彻底删除 Bot；旧设置迁移进 channels.json；环境变量覆盖不写盘；本机模式的 Host / 跨站检查。
 
 Go 测试覆盖：用户发消息 → 聊天层 start_task → agent 完成 → 监工叫醒聊天层 → **只有一条**最终汇报；
 「停」停止全部任务且不调用模型、不产生汇报；审批只能通过 HTTP 接口完成（未知或重复审批会被拒），聊天层没有批准工具；
@@ -360,29 +418,27 @@ web/src/
                     ApprovalCard、OptionCard、SecretCard、ThinkingBlock、Markdown、ScheduleDock
 ```
 
-## 以后怎么并回 Onefrog
+## 远期设想：并回 Onefrog（可选，目前不做）
 
-| frog bot | 对应到 Onefrog |
-|---|---|
-| `internal/onefrog` | 直接作为 Onefrog 后端的 agent 包 |
-| 一个 `bot.Bot` 实例 | Onefrog 里的一个 Bot；多个 Bot = 多个实例（或者给 Store 加 `bot_id`） |
-| `data/stream.jsonl` 事件日志 | 换成 Postgres：`tasks`、`task_events`、`approvals`、`bot_messages`、`memories`（见 onefrog-agent 的 CHAT_LAYER.md），用 `LISTEN/NOTIFY` 代替内存订阅 |
-| `/api/stream` 一条流 | 每个用户一条流，事件带上 `bot_id` |
-| `notify` 系统通知 | Bot 之间互发消息（`message_bot`）也走同一个"收件箱 → 叫醒"的机制 |
-| `data/memory.md` | `memories` 表，分 Bot 记忆和共享记忆 |
-| 前端组件 | WorkingCard / ApprovalCard / OptionCard 可以直接搬进 Onefrog 的聊天页 |
+frog bot 现在定位是单人使用（本机或自己的一台服务器），事件日志 `stream.jsonl` 对这个规模足够，不需要数据库。
+只有将来要做成多用户、多实例的服务端时，才考虑把事件日志换成数据库，把 `internal/onefrog` 作为 Onefrog 后端的 agent 包复用。
+在那之前不为它预留接口。
 
 ## 已知限制
 
-- 单用户、本机使用：**没有登录鉴权**，默认只监听 127.0.0.1。放到公网前必须给 `/api/*`（尤其是审批接口）加登录校验。
-- 事件日志只追加不压缩，长期使用会越来越大；agent 的流式文字也会存下来。写文件时没有 fsync，断电可能丢最后几条。
+- 单用户：服务器版只有一个管理员账号，没有多用户和权限分级。本机版没有登录，只接受来自本机的请求。
+- 服务器版用 `http://IP:端口` 时是明文传输；要加密请配域名 + HTTPS（见上文）。服务器版只在容器里模拟测试过安装脚本，**没有在真实 VPS 上跑过**。
+- 事件日志只追加不压缩，长期使用会越来越大（agent 的流式文字已经不再写盘）。关键事件立刻 fsync，其余每 2 秒落盘一次，断电最多丢最近 2 秒的过程记录。
+- 长任务的对话压缩是按字符数估算 token 的，和模型实际计数有出入；压缩会丢掉旧步骤的细节（只留摘要）。
 - 重启后任务从最后一个完整步骤接着做；如果重启时某个工具正执行到一半（例如长命令），那一步的结果会丢，agent 会在继续时重新判断（可能重做那一步）。
 - 正在流式输出的聊天回复如果断线，会等最终消息到了再显示，中间的打字效果会丢掉。
 - 里程碑汇报只在卡住、需要确认、方向改变时由聊天层说；正常进度只在卡片和工作条里显示。
 - 暂停要等当前这一步做完；一个很长的命令会一直跑完才停（这是有意的：不在写到一半时打断）。
 - 并行的任务可能同时改同一个文件，目前没有加锁，靠聊天层判断该排队还是并行。
-- `shell` 工具不是真沙箱（详见 onefrog 的说明）；生产环境请放进容器里跑。
+- `shell` 工具不是真沙箱（详见 onefrog 的说明）；服务器版请用专门的 VPS，或放进容器里跑。
 - 只用假模型测试过，**没有用真实 API Key 跑过**；真实模型下聊天层的表现取决于提示词，需要再调。
+- Bot 之间 ask_agent 是异步的：提问后立刻返回，对方的回复稍后作为收件箱消息送达；对方不回复就没有回音（请求保留在对方收件箱里）。
+- 每个 Bot 各有一把主密钥和一个密钥库（还没合并成一个）。
 - 每个 Bot 保留一条对话；没有语音输入，只能编辑最后一条消息。
 - 上传的附件放在工作区 `uploads/`，不会自动清理；单个最大 25MB。
 - 系统通知需要浏览器允许，且只在页面打开（可以在后台标签页）时有效，没有离线推送。

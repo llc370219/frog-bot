@@ -20,3 +20,5 @@ func openBrowser(url string) error {
 	}
 	return nil
 }
+
+var errNoDisplay = fmt.Errorf("没有图形界面")

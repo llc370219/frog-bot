@@ -28,6 +28,52 @@ type sched struct {
 	launched map[string]bool // 已交给 Manager、还没结束/暂停的任务
 }
 
+// taskSlots 是所有 Bot 共用的后台任务并发上限（MAX_CONCURRENT，默认 4）。
+// 一个 Bot 没抢到空位时登记在 waiters 里，任何任务结束腾出空位都会让它们重新排一次。
+type taskSlots struct {
+	mu      sync.Mutex
+	used    int
+	max     int
+	waiters map[*Bot]struct{}
+}
+
+func newTaskSlots(max int) *taskSlots {
+	if max <= 0 {
+		max = 4
+	}
+	return &taskSlots{max: max, waiters: map[*Bot]struct{}{}}
+}
+
+func (s *taskSlots) acquire(b *Bot) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.used >= s.max {
+		s.waiters[b] = struct{}{}
+		return false
+	}
+	s.used++
+	return true
+}
+
+func (s *taskSlots) release() {
+	s.mu.Lock()
+	if s.used > 0 {
+		s.used--
+	}
+	waiters := s.waiters
+	s.waiters = map[*Bot]struct{}{}
+	s.mu.Unlock()
+	for w := range waiters {
+		go w.schedule() // 不在调用方持有的锁里排队；Bot 已关闭时 schedule 直接返回
+	}
+}
+
+func (s *taskSlots) running() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.used
+}
+
 // StartTask 创建任务：有空位就立刻开始，没有就排队。立刻返回 ID。
 func (b *Bot) StartTask(input, title string) (string, error) {
 	return b.CreateTask(input, title, TaskOpts{})
@@ -101,11 +147,11 @@ func (b *Bot) schedule() {
 		return
 	}
 	for _, t := range b.store.Queue() {
-		if len(b.sch.launched) >= b.cfg.MaxConcurrent {
-			return
-		}
 		if b.sch.launched[t.ID] {
 			continue
+		}
+		if !b.slots.acquire(b) {
+			return // 全局空位满了；有任务结束时会再叫我
 		}
 		profile := b.botProfile()
 		task := onefrog.Task{ID: t.ID, BotID: profile.ID, Input: t.Input, Workspace: b.cfg.Workspace,
@@ -127,6 +173,7 @@ func (b *Bot) schedule() {
 		}
 		b.mgr.Agent.ClearPause(t.ID)
 		if _, err := b.mgr.Start(task); err != nil {
+			b.slots.release()
 			b.store.Append("task.updated", TaskRec{ID: t.ID, Status: "failed", Error: err.Error()}, false)
 			continue
 		}
@@ -136,8 +183,12 @@ func (b *Bot) schedule() {
 
 func (b *Bot) landed(id string) {
 	b.sch.mu.Lock()
+	was := b.sch.launched[id]
 	delete(b.sch.launched, id)
 	b.sch.mu.Unlock()
+	if was {
+		b.slots.release()
+	}
 }
 
 // PauseTask 暂停任务：运行中的在下一个安全点暂停（正在执行的命令/写文件一定会跑完），排队中的直接挂起。
@@ -242,10 +293,16 @@ func (b *Bot) CancelTask(id, reason string) error {
 		return fmt.Errorf("任务已经%s", statusCN(t.Status))
 	}
 	b.store.Append("task.updated", TaskRec{ID: t.ID, StopReason: reason}, false)
-	if b.isLaunched(t.ID) {
+	// 和 schedule 用同一把锁：检查"还没开始"和标记取消之间，不能被别的 goroutine 抢先派发出去。
+	b.sch.mu.Lock()
+	launched := b.sch.launched[t.ID]
+	if !launched {
+		b.store.Append("task.updated", TaskRec{ID: t.ID, Status: "cancelled", Error: "在开始前被取消"}, false)
+	}
+	b.sch.mu.Unlock()
+	if launched {
 		return b.mgr.Cancel(t.ID) // 结束事件由 agent 发出，之后统一汇报
 	}
-	b.store.Append("task.updated", TaskRec{ID: t.ID, Status: "cancelled", Error: "在开始前被取消"}, false)
 	b.removeCheckpoint(t.ID)
 	go b.report(t.ID)
 	return nil
@@ -328,6 +385,12 @@ func (b *Bot) onAgentEvent(e onefrog.Event) {
 		return
 	case onefrog.EvCheckpoint:
 		b.saveCheckpoint(e.TaskID, e.Data) // 快照单独存文件，不进事件日志
+		return
+	}
+	if e.Type == onefrog.EvTextDelta {
+		// agent 的流式文字只推给界面，不写进事件日志（结果在 task.completed 里有完整的一份）。
+		b.store.Touch(e.TaskID)
+		b.store.Broadcast("agent", e)
 		return
 	}
 	b.store.Append("agent", e, false)
