@@ -1,27 +1,37 @@
 package bot
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
 	"frogbot/internal/onefrog"
 )
 
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func TestSettingsFlow(t *testing.T) {
 	dir := t.TempDir()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"},{"id":"deepseek-chat"}]}`))
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-	customClient = srv.Client()
+
+	customClient = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == "/v1/models" {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewReader([]byte(`{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"},{"id":"deepseek-chat"}]}`))),
+					Header:     make(http.Header),
+				}, nil
+			}
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(bytes.NewReader(nil))}, nil
+		}),
+	}
 	defer func() { customClient = nil }()
 
 	ai := &fakeAI{agent: func(_ context.Context, _ []onefrog.Message) (onefrog.Message, error) {
@@ -36,7 +46,7 @@ func TestSettingsFlow(t *testing.T) {
 		ChatModel:      "gpt-4o-mini",
 		AgentProvider:  ai,
 		AgentModel:     "gpt-4o",
-		InitialBaseURL: srv.URL + "/v1",
+		InitialBaseURL: "http://api.mock.test/v1",
 		InitialKey:     "test-key",
 		Demo:           true,
 	})

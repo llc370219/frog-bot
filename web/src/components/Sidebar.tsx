@@ -7,7 +7,7 @@ export type BotItem = {
   avatarSlot: number;
 };
 
-// 严格按照图一的 Bot 列表，图标使用 onefrog 的 bot 库 (bot-avatars webp 头像)
+// 严格按照图一的 Bot 列表，图标使用 onefrog bot 库
 export const DEFAULT_BOTS: BotItem[] = [
   { id: 'grok-ref', name: 'Grok Bot项目借鉴', avatarSlot: 0 },
   { id: 'onefrog', name: 'Onefrog', avatarSlot: 1 },
@@ -30,26 +30,26 @@ export default function Sidebar({
 }) {
   return (
     <aside
-      className="flex h-full w-64 shrink-0 flex-col border-r border-line bg-[#f5f3f2] dark:bg-[#1c1b1a] select-none text-fg"
+      className="flex h-full w-64 shrink-0 flex-col border-r border-[#e3e1dc] dark:border-[#2a2926] bg-[#f5f3f2] dark:bg-[#1c1b1a] select-none text-fg"
       style={{ width: '256px' }}
       aria-label="Bots 状态栏"
     >
-      {/* 顶部 Bots 标题与 + 号，严格按照图一样式 */}
-      <div className="flex items-center justify-between px-3.5 pt-3 pb-2 text-[13.5px] font-medium text-fg4">
+      {/* 顶部 Bots 标题与 + 号，完全对齐图一样式 */}
+      <div className="flex items-center justify-between px-3.5 pt-3.5 pb-2 text-[13px] font-medium text-fg4">
         <span>Bots</span>
         <button
           type="button"
           onClick={onNewChat}
           className="grid size-6 place-items-center rounded-md text-fg4 hover:text-fg hover:bg-black/5 dark:hover:bg-white/10 transition"
           title="新建 Bot 对话"
-          aria-label="添加"
+          aria-label="新建"
         >
-          <Plus size={16} />
+          <Plus size={15} />
         </button>
       </div>
 
-      {/* 只有 Bots 列表，无上方选项，无下方对话 */}
-      <div className="flex-1 overflow-y-auto px-2 space-y-1 scrollbar-thin">
+      {/* 仅保留 Bot 列表 */}
+      <div className="flex-1 overflow-y-auto px-2 space-y-0.5 scrollbar-thin">
         {DEFAULT_BOTS.map((b) => {
           const active = activeBotId === b.id;
           return (
@@ -70,17 +70,21 @@ export default function Sidebar({
         })}
       </div>
 
-      {/* 设置放在左下角状态栏里 */}
-      <div className="border-t border-line/60 p-2.5 bg-[#f0eee9] dark:bg-[#181716]">
+      {/* 左下角设置：无分割线，图标与文字微调小更精致 */}
+      <div className="px-2 pb-3 pt-1">
         <button
           type="button"
           onClick={onOpenSettings}
-          className="flex items-center gap-2.5 w-full px-3 py-2 rounded-xl text-left text-[13.5px] text-fg font-medium hover:bg-black/5 dark:hover:bg-white/10 transition"
-          title="系统与偏好设置"
-          aria-label="系统与偏好设置"
+          className="group flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-xl text-left text-[12.5px] text-fg3 hover:bg-black/5 dark:hover:bg-white/10 hover:text-fg transition duration-150"
+          title="设置"
+          aria-label="设置"
         >
-          <SettingsIcon size={17} className="text-accent shrink-0" />
-          <span className="flex-1">设置</span>
+          <SettingsIcon
+            size={15}
+            className="text-fg4 group-hover:text-fg transition-colors duration-150 shrink-0"
+            strokeWidth={1.7}
+          />
+          <span className="font-normal tracking-tight">设置</span>
         </button>
       </div>
     </aside>

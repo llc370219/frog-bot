@@ -167,6 +167,9 @@ export default function App() {
         info={info}
         notify={notify}
         onToggleNotify={toggleNotify}
+        onSettingsSaved={() => {
+          api.info().then(setInfo).catch(() => {});
+        }}
       />
     </div>
   );

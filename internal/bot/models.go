@@ -117,12 +117,7 @@ func (b *Bot) saveSettingsLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	_ = os.Remove(p)
-	return os.Rename(tmp, p)
+	return os.WriteFile(p, raw, 0o600)
 }
 
 // applyRoutesLocked 根据当前的 routes 动态更新 chatProvider/agentProvider 和模型。

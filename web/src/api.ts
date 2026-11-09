@@ -1,3 +1,26 @@
+
+export type ProviderSettings = {
+  id: string;
+  name: string;
+  base_url: string;
+  api_key?: string;
+  has_api_key?: boolean;
+  auth_required?: boolean;
+  enabled: boolean;
+  models: string[];
+  hidden_models: string[];
+};
+
+export type ModelRoute = {
+  provider_id: string;
+  model: string;
+};
+
+export type SettingsState = {
+  providers: ProviderSettings[];
+  chat_route: ModelRoute;
+  agent_route: ModelRoute;
+};
 import { useEffect, useRef, useState } from 'react';
 
 // ---------- 类型（与 Go 后端的事件一一对应） ----------
@@ -263,6 +286,9 @@ export const api = {
   secrets: (): Promise<Array<{ name: string; description?: string; updated_at?: string }>> => fetch('/api/secrets').then((r) => r.json()),
     saveSecret: (requestId: string, value: string) => post('/api/secrets', { request_id: requestId, value }),
   cancelSecret: (requestId: string) => post(`/api/secrets/requests/${requestId}/cancel`),
+  settings: (): Promise<SettingsState> => fetch('/api/settings').then((r) => r.json()),
+  saveSettings: (s: SettingsState): Promise<{ ok: boolean; settings: SettingsState }> => post('/api/settings', s),
+  providerModels: (p: ProviderSettings): Promise<{ models: string[] }> => post('/api/settings/providers/models', p),
   schedules: (): Promise<Schedule[]> => fetch('/api/schedules').then((r) => r.json()),
   schedule: (id: string, action: 'pause' | 'resume' | 'run' | 'delete') => post(`/api/schedules/${id}/${action}`),
 };
