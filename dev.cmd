@@ -1,9 +1,10 @@
 @echo off
-rem Frog bot dev server: http://127.0.0.1:5173 (auto reload). /api -> http://127.0.0.1:8080
 cd /d "%~dp0web"
-if not exist node_modules\.bin\vite.cmd call npm install
-start "" /b cmd /c "timeout /t 5 /nobreak >nul & start http://127.0.0.1:5173"
-call node_modules\.bin\vite.cmd --host 127.0.0.1 --port 5173 --strictPort
+set PATH=C:\Program Files\nodejs;%PATH%
+if not exist node_modules\vite\bin\vite.js call npm install
+echo Starting Frog Bot frontend dev server on http://127.0.0.1:5173 ...
+start "" /b cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:5173"
+node node_modules\vite\bin\vite.js --host 127.0.0.1 --port 5173
 echo.
-echo Dev server stopped. See the message above.
+echo Dev server exited.
 pause
