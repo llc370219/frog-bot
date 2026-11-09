@@ -299,6 +299,7 @@ func (b *Bot) saveCheckpoint(id string, data any) {
 	_ = os.MkdirAll(filepath.Dir(p), 0o700)
 	tmp := p + ".tmp"
 	if os.WriteFile(tmp, raw, 0o600) == nil {
+		_ = os.Remove(p)
 		_ = os.Rename(tmp, p)
 	}
 }

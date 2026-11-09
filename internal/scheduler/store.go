@@ -65,6 +65,7 @@ func (s *Store) saveLocked() error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
+	_ = os.Remove(s.path)
 	return os.Rename(tmp, s.path)
 }
 

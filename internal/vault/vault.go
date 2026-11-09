@@ -201,6 +201,7 @@ func (v *Vault) save() error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
+	_ = os.Remove(v.path)
 	return os.Rename(tmp, v.path)
 }
 

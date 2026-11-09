@@ -5,7 +5,7 @@ import ApprovalCard from './components/ApprovalCard';
 import Artifact from './components/Artifact';
 import Composer from './components/Composer';
 import Header, { Avatar } from './components/Header';
-import Markdown from './components/Markdown';
+import { AssistantBubbles } from './components/Markdown';
 import MessageActions, { Reactions } from './components/MessageActions';
 import OptionCard from './components/OptionCard';
 import SecretCard from './components/SecretCard';
@@ -120,7 +120,7 @@ export default function App() {
           {s.busy && (
             <AssistantRow>
               {s.thinking && <ThinkingBlock live text={s.thinking} startedAt={s.thinkStart} endedAt={s.thinkEnd || undefined} />}
-              {s.streaming ? <div className="md caret"><Markdown text={s.streaming} /></div>
+              {s.streaming ? <AssistantBubbles text={s.streaming} streaming />
                 : !(s.thinking && !s.thinkEnd) && <div className="flex items-center gap-2 pt-1.5"><span className="typing"><i /><i /><i /></span>{s.toolLabel && <span className="text-[12.5px] text-fg4">{s.toolLabel.replace(/^(查看了|读取了|搜索了|请求|派出了|写入了|停止了|暂停了|恢复了|排上了)/, (m) => '正在' + m.replace('了', ''))}…</span>}</div>}
             </AssistantRow>
           )}
@@ -179,7 +179,7 @@ function Message({ m, canRegenerate, canEdit, onError }: { m: Msg; canRegenerate
     <AssistantRow>
       <div className="group">
         {m.thinking && <ThinkingBlock text={m.thinking} ms={m.thinking_ms} />}
-        {m.text && <div className="md"><Markdown text={m.text} /></div>}
+        {m.text && <AssistantBubbles text={m.text} />}
         {m.files && m.files.length > 0 && <div className="mt-2"><Files files={m.files} /></div>}
         {m.tools && m.tools.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
