@@ -3,10 +3,13 @@ package bot
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,7 +34,7 @@ import (
 //	GET  /api/schedules/{id}         单个计划
 //	POST /api/schedules/{id}/{action} pause|resume|run|delete（界面按钮；创建/大改仍走聊天层审批）
 //	POST /api/secrets/requests/{id}/cancel   取消密钥卡片（= 拒绝提供）
-func (b *Bot) Handler(webDir string) http.Handler {
+func (b *Bot) Handler(webDir string, embeddedFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"name": b.cfg.Name, "chat_model": b.cfg.ChatModel, "agent_model": b.cfg.AgentModel,
@@ -167,7 +170,9 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		}
 	})
 	mux.HandleFunc("GET /api/stream", b.serveStream)
-	if webDir != "" {
+	if len(embeddedFS) > 0 && embeddedFS[0] != nil {
+		mux.Handle("/", spaFS(embeddedFS[0], webDir))
+	} else if webDir != "" {
 		mux.Handle("/", spa(webDir))
 	}
 	return mux
@@ -236,6 +241,38 @@ func spa(dir string) http.Handler {
 		}
 		if _, err := os.Stat(filepath.Join(dir, filepath.Clean("/"+r.URL.Path))); err != nil {
 			http.ServeFile(w, r, index)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
+}
+
+func spaFS(efs fs.FS, fallbackDir string) http.Handler {
+	if fallbackDir != "" {
+		if _, err := os.Stat(filepath.Join(fallbackDir, "index.html")); err == nil {
+			return spa(fallbackDir)
+		}
+	}
+	sub, err := fs.Sub(efs, "dist")
+	if err != nil {
+		sub = efs
+	}
+	files := http.FileServer(http.FS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clean := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
+		clean = strings.TrimPrefix(clean, "\\")
+		if clean == "" || clean == "." {
+			clean = "index.html"
+		}
+		if _, err := fs.Stat(sub, clean); err != nil {
+			idx, err := sub.Open("index.html")
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			defer idx.Close()
+			stat, _ := idx.Stat()
+			http.ServeContent(w, r, "index.html", stat.ModTime(), idx.(io.ReadSeeker))
 			return
 		}
 		files.ServeHTTP(w, r)

@@ -6,13 +6,16 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"frogbot/internal/bot"
 	"frogbot/internal/onefrog"
+	"frogbot/web"
 )
 
 func env(def string, keys ...string) string {
@@ -72,9 +75,11 @@ func main() {
 			webDir = "web/dist"
 		}
 	}
-	srv := &http.Server{Addr: addr, Handler: b.Handler(webDir)}
+	srv := &http.Server{Addr: addr, Handler: b.Handler(webDir, web.DistFS)}
 	go func() {
 		log.Printf("frog bot 已启动：http://%s （聊天模型 %s，agent 模型 %s）", addr, chatModel, agentModel)
+		time.Sleep(300 * time.Millisecond)
+		openBrowser("http://" + addr)
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
@@ -86,4 +91,15 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(sctx)
 	b.Close()
+}
+
+func openBrowser(url string) {
+	switch runtime.GOOS {
+	case "windows":
+		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		_ = exec.Command("open", url).Start()
+	case "linux":
+		_ = exec.Command("xdg-open", url).Start()
+	}
 }
