@@ -11,10 +11,11 @@ const message = (err: unknown) => err instanceof TypeError ? '无法连接 Frog 
 type Tab = 'api' | 'connections' | 'update' | 'account';
 type Feedback = { error: boolean; text: string };
 
-export default function SettingsDialog({ onClose, devices, initialDevice, onSettingsSaved }: {
+export default function SettingsDialog({ onClose, devices, initialDevice, initialBot, onSettingsSaved }: {
   onClose: () => void;
   devices: DeviceGroup[];
   initialDevice: string;
+  initialBot: string;
   onSettingsSaved: (device: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -24,7 +25,9 @@ export default function SettingsDialog({ onClose, devices, initialDevice, onSett
   const [auth, setAuth] = useState<AuthInfo>();
   const [selectedDevice, setSelectedDevice] = useState(initialDevice);
   const device = devices.find(d => d.id === selectedDevice) ?? devices.find(d => d.id === initialDevice) ?? devices[0];
-  const target = useMemo(() => createDeviceSettingsAPI(device.id), [device.id]);
+  const [selectedBot, setSelectedBot] = useState(initialBot);
+  const bot = device.bots.find(b => b.id === selectedBot) ?? device.bots[0];
+  const target = useMemo(() => createDeviceSettingsAPI(device.id, bot?.id ?? 'main'), [device.id, bot?.id]);
   const showAccount = device.id === 'local' && auth?.enabled;
 
   useEffect(() => { api.me().then(setAuth).catch(() => {}); }, []);
@@ -47,8 +50,18 @@ export default function SettingsDialog({ onClose, devices, initialDevice, onSett
               <Monitor className="sidebar-device-icon" size={13} aria-hidden="true" />
               <span className="sidebar-device-name">{device.name}</span>
               <ChevronDown className="sidebar-device-chevron" size={12} aria-hidden="true" />
-              <select aria-label="管理设备" value={device.id} disabled={saving} onChange={e => setSelectedDevice(e.target.value)}>
+              <select aria-label="管理设备" value={device.id} disabled={saving} onChange={e => { const next = devices.find(d => d.id === e.target.value); setSelectedDevice(e.target.value); setSelectedBot(next?.bots[0]?.id ?? 'main'); }}>
                 {devices.map(d => <option key={d.id} value={d.id}>{d.name}{d.id === 'local' ? '（本机）' : d.online ? '' : '（离线）'}</option>)}
+              </select>
+            </label>
+          )}
+          {device.bots.length > 1 && (
+            <label className="sidebar-device-picker" title={`管理 Bot：${bot?.name ?? 'Frog'}`}>
+              <BotAvatar id={bot?.id ?? 'frog'} slotIndex={bot?.avatarSlot ?? 0} size={15} />
+              <span className="sidebar-device-name">{bot?.name ?? 'Frog'}</span>
+              <ChevronDown className="sidebar-device-chevron" size={12} aria-hidden="true" />
+              <select aria-label="管理 Bot" value={bot?.id ?? 'main'} disabled={saving} onChange={e => setSelectedBot(e.target.value)}>
+                {device.bots.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </label>
           )}
@@ -141,7 +154,7 @@ function ConnectionsPanel({ target, deviceName, saving, setSaving }: {
   return (
     <>
       <h3 id="settings-connections-title">连接</h3>
-      <p className="settings-description">选择「{deviceName}」上的 Bot 执行新任务时使用的 Agent。未配置 API 渠道时，聊天消息会直接交给选中的 CLI。</p>
+      <p className="settings-description">为当前 Bot 的后台任务选择执行方式。选择 Codex CLI 或 Claude Code 时，任务通过该设备上的 CLI 登录运行，可使用对应官方账户订阅；CLI 登录需先在服务器终端完成。</p>
       <div className="settings-agents-heading">
         <h4>Agent 工具</h4>
         <button type="button" className="settings-button" disabled={busy} onClick={() => void detect()}>
@@ -162,7 +175,7 @@ function ConnectionsPanel({ target, deviceName, saving, setSaving }: {
               </span>
               <h5>{agent.name}</h5>
             </div>
-            <p className="settings-agent-description">{agent.id ? <><code>{agent.id}</code> · {agent.installed ? '已安装' : '未检测到'}</> : '使用 API 渠道中的默认模型'}</p>
+            <p className="settings-agent-description">{agent.id ? <><code>{agent.id}</code> · {agent.installed ? '已安装 · 使用 CLI 自身认证' : '未检测到'}</> : '使用上方 Agent API 模型'}</p>
             <div className="settings-agent-actions">
               {active
                 ? <span className="settings-agent-status"><Check size={12} aria-hidden="true" /> 当前选择</span>
@@ -172,7 +185,7 @@ function ConnectionsPanel({ target, deviceName, saving, setSaving }: {
         })}
       </ul>}
       {feedback && <p className={`settings-agents-note ${feedback.error ? 'text-danger' : 'text-ok'}`} role={feedback.error ? 'alert' : 'status'}>{feedback.text}</p>}
-      <p className="settings-agents-note">检测的是「{deviceName}」上的安装状态。请在该设备用运行 Frog Bot 的账户完成 CLI 登录或模型配置。</p>
+      <p className="settings-agents-note">选择 CLI 会让该 Bot 的后台任务使用 CLI 自身的认证与模型设置；聊天回复仍使用 API 渠道页中单独配置的聊天模型。API 密钥与 Bot 配置彼此隔离。</p>
       <div className="settings-agents-note">
         <h4 className="font-medium text-fg">设备互联</h4>
         <p>在各台设备的数据目录配置 <code>devices.json</code> 并重启 Frog Bot。连通后，侧栏会按设备显示 Bot。</p>

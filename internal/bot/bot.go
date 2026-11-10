@@ -60,9 +60,11 @@ type Bot struct {
 	modelMu        sync.RWMutex
 	memoryMu       sync.Mutex
 	model          modelConnection
+	agentModel     modelConnection // 后台 Agent 连接，可与聊天层分开
 	envModel       modelConnection // 环境变量提供的模型连接，非空时优先
 	channels       []storedChannel
 	defaultChannel string
+	agentChannel   string
 	connection     agentConnection // 全局设置，由 modelMu 保护
 	modelOwner     *Bot
 	slots          *taskSlots // 所有 Bot 共用的后台任务并发上限
@@ -75,8 +77,9 @@ type Bot struct {
 	wg         sync.WaitGroup
 	background sync.WaitGroup
 
-	turnMu     sync.Mutex
-	turnCancel context.CancelCauseFunc
+	turnMu         sync.Mutex
+	turnCancel     context.CancelCauseFunc
+	turnGeneration uint64 // invalidates pending snapshots when Stop wins the race
 }
 
 var (
@@ -146,13 +149,11 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	} else {
 		b.slots = newTaskSlots(cfg.MaxConcurrent)
 	}
-	if modelOwner == nil {
-		if err := b.loadSettings(); err != nil {
-			return nil, fmt.Errorf("读取模型设置失败: %w", err)
-		}
-		if err := b.loadAgentConnection(); err != nil {
-			return nil, fmt.Errorf("读取 Agent 连接设置失败: %w", err)
-		}
+	if err := b.loadSettings(); err != nil {
+		return nil, fmt.Errorf("读取模型设置失败: %w", err)
+	}
+	if err := b.loadAgentConnection(); err != nil {
+		return nil, fmt.Errorf("读取 Agent 连接设置失败: %w", err)
 	}
 
 	reviewer := cfg.Reviewer
@@ -273,17 +274,19 @@ func (b *Bot) Send(text string, files ...Attachment) (Message, error) {
 
 // Stop 立刻停止所有任务（运行中、排队中、暂停中）和正在进行的聊天回合，并回一句确定的话。
 func (b *Bot) Stop(extraHandled ...string) int {
+	// Serialize cancellation, dispatch tools and pending-turn registration.
+	b.turnMu.Lock()
+	defer b.turnMu.Unlock()
+	b.turnGeneration++
+	if b.turnCancel != nil {
+		b.turnCancel(errStopped)
+	}
 	n := 0
 	for _, t := range b.store.Tasks() {
 		if t.Open() && b.CancelTask(t.ID, "user") == nil {
 			n++
 		}
 	}
-	b.turnMu.Lock()
-	if b.turnCancel != nil {
-		b.turnCancel(errStopped)
-	}
-	b.turnMu.Unlock()
 	ids := extraHandled
 	for _, m := range b.store.Unhandled() { // 排队中的输入也一并作废
 		ids = append(ids, m.ID)

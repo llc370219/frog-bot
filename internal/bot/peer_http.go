@@ -161,7 +161,7 @@ var peerRouteID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,100}$`)
 func peerBotRoute(method, rest string) bool {
 	if method == http.MethodGet {
 		switch rest {
-		case "info", "stream", "files", "schedules":
+		case "info", "stream", "files", "schedules", "settings", "settings/connections":
 			return true
 		}
 	}
@@ -169,7 +169,7 @@ func peerBotRoute(method, rest string) bool {
 		return false
 	}
 	switch rest {
-	case "messages", "stop", "regenerate", "uploads":
+	case "messages", "stop", "regenerate", "uploads", "settings", "settings/connections", "settings/models", "settings/test":
 		return true
 	}
 	parts := strings.Split(rest, "/")

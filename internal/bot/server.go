@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -44,27 +44,24 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		writeJSON(w, b.GetSettings(), nil)
 	})
 	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		payload, err := readAPISettings(w, r)
-		if err != nil {
-			writeJSON(w, nil, err)
+		var payload APISettings
+		if !decodeJSON(w, r, &payload, maxJSONBody) {
 			return
 		}
 		saved, err := b.SaveSettings(payload)
 		writeJSON(w, saved, err)
 	})
 	mux.HandleFunc("POST /api/settings/models", func(w http.ResponseWriter, r *http.Request) {
-		p, err := readAPISettings(w, r)
-		if err != nil {
-			writeJSON(w, nil, err)
+		var p APISettings
+		if !decodeJSON(w, r, &p, maxJSONBody) {
 			return
 		}
 		models, err := b.FetchRemoteModels(r.Context(), p)
 		writeJSON(w, map[string]any{"models": models}, err)
 	})
 	mux.HandleFunc("POST /api/settings/test", func(w http.ResponseWriter, r *http.Request) {
-		p, err := readAPISettings(w, r)
-		if err != nil {
-			writeJSON(w, nil, err)
+		var p APISettings
+		if !decodeJSON(w, r, &p, maxJSONBody) {
 			return
 		}
 		latency, err := b.TestConnection(r.Context(), p)
@@ -75,15 +72,13 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		writeJSON(w, b.connections(), nil)
 	})
 	mux.HandleFunc("POST /api/settings/connections", func(w http.ResponseWriter, r *http.Request) {
-		media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if media != "application/json" {
-			w.WriteHeader(http.StatusUnsupportedMediaType)
-			return
-		}
 		var draft struct {
 			CLI *string `json:"cli"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&draft); err != nil || draft.CLI == nil {
+		if !decodeJSON(w, r, &draft, 1024) {
+			return
+		}
+		if draft.CLI == nil {
 			writeJSON(w, nil, errors.New("请选择一个 Agent"))
 			return
 		}
@@ -110,7 +105,9 @@ func (b *Bot) Handler(webDir string) http.Handler {
 			Text  string
 			Files []Attachment
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !decodeJSON(w, r, &body, maxJSONBody) {
+			return
+		}
 		m, err := b.Send(body.Text, body.Files...)
 		writeJSON(w, m, err)
 	})
@@ -126,30 +123,51 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	})
 	mux.HandleFunc("POST /api/messages/{id}/edit", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Text string }
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !decodeJSON(w, r, &body, maxJSONBody) {
+			return
+		}
 		m, err := b.EditLast(r.PathValue("id"), body.Text)
 		writeJSON(w, m, err)
 	})
 	mux.HandleFunc("POST /api/messages/{id}/react", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Emoji string }
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !decodeJSON(w, r, &body, 1024) {
+			return
+		}
 		writeJSON(w, map[string]bool{"ok": true}, b.React(r.PathValue("id"), body.Emoji))
 	})
 	mux.HandleFunc("POST /api/uploads", func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxUpload+1<<20)
+		r.Body = http.MaxBytesReader(w, r.Body, maxUpload+(1<<20))
 		mr, err := r.MultipartReader()
 		if err != nil {
 			writeJSON(w, nil, fmt.Errorf("需要 multipart 上传"))
 			return
 		}
-		var out []Attachment
+		out := []Attachment{}
+		committed := false
+		defer func() {
+			if !committed {
+				for _, a := range out {
+					_ = os.Remove(filepath.Join(b.cfg.Workspace, filepath.FromSlash(a.Path)))
+				}
+			}
+		}()
 		for {
 			part, err := mr.NextPart()
-			if err != nil {
+			if err == io.EOF {
 				break
 			}
+			if err != nil {
+				writeJSON(w, nil, fmt.Errorf("上传未完成或超过大小限制"))
+				return
+			}
 			if part.FileName() == "" {
+				_ = part.Close()
 				continue
+			}
+			if len(out) >= 16 {
+				writeJSON(w, nil, fmt.Errorf("一次最多上传 16 个文件"))
+				return
 			}
 			a, err := b.Upload(part.FileName(), part)
 			if err != nil {
@@ -158,6 +176,11 @@ func (b *Bot) Handler(webDir string) http.Handler {
 			}
 			out = append(out, a)
 		}
+		if len(out) == 0 {
+			writeJSON(w, nil, fmt.Errorf("请选择要上传的文件"))
+			return
+		}
+		committed = true
 		writeJSON(w, out, nil)
 	})
 	mux.HandleFunc("GET /api/files", b.serveFile)
@@ -167,7 +190,9 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	})
 	mux.HandleFunc("POST /api/approvals/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Decision string }
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !decodeJSON(w, r, &body, 1024) {
+			return
+		}
 		writeJSON(w, map[string]bool{"ok": true}, b.Decide(r.PathValue("id"), body.Decision))
 	})
 	mux.HandleFunc("POST /api/cards/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +200,9 @@ func (b *Bot) Handler(webDir string) http.Handler {
 			Answer  string
 			Dismiss bool
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !decodeJSON(w, r, &body, maxJSONBody) {
+			return
+		}
 		writeJSON(w, map[string]bool{"ok": true}, b.AnswerCard(r.PathValue("id"), body.Answer, body.Dismiss))
 	})
 	mux.HandleFunc("GET /api/secrets", func(w http.ResponseWriter, r *http.Request) {
@@ -188,8 +215,7 @@ func (b *Bot) Handler(webDir string) http.Handler {
 			Value       string `json:"value"`
 			Description string `json:"description"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
-			writeJSON(w, nil, fmt.Errorf("请求格式不对"))
+		if !decodeJSON(w, r, &body, 64<<10) {
 			return
 		}
 		name, err := b.SaveSecret(body.RequestID, body.Name, body.Value, body.Description)
@@ -263,6 +289,9 @@ func (b *Bot) streamEvents(w http.ResponseWriter, r *http.Request, filter func(E
 	b.turnMu.Unlock()
 	defer unsub()
 	send := func(e Event) {
+		if r.Context().Err() != nil {
+			return
+		}
 		if filter != nil {
 			var keep bool
 			e, keep = filter(e)
@@ -379,21 +408,9 @@ func LocalOnly(next http.Handler) http.Handler {
 	})
 }
 
-func readAPISettings(w http.ResponseWriter, r *http.Request) (APISettings, error) {
-	var s APISettings
-	// Cross-origin HTML forms must not be able to change or probe credentials.
-	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if media != "application/json" {
-		return s, fmt.Errorf("请求必须使用 JSON")
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&s); err != nil {
-		return s, fmt.Errorf("请求格式不正确: %w", err)
-	}
-	return s, nil
-}
-
 func writeJSON(w http.ResponseWriter, v any, err error) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	if err != nil {
 		w.WriteHeader(400)
 		v = map[string]string{"error": err.Error()}

@@ -28,6 +28,8 @@ type APISettings struct {
 	HasAPIKey         bool         `json:"has_api_key"`
 	Providers         []APIChannel `json:"providers,omitempty"`
 	DefaultProviderID string       `json:"default_provider_id,omitempty"`
+	AgentProviderID   string       `json:"agent_provider_id,omitempty"`
+	AgentModel        string       `json:"agent_model,omitempty"`
 	ProviderID        string       `json:"provider_id,omitempty"`
 	// EnvOverride 表示模型连接由环境变量（BASE_URL / API_KEY / CHAT_MODEL / AGENT_MODEL）提供，
 	// 优先于网页里保存的渠道；网页上的修改要等去掉环境变量后才生效。
@@ -110,7 +112,14 @@ func (b *Bot) migrateSettings() error {
 			}
 			key = vals["MODEL_API_KEY"]
 		}
-		baseURL, models = f.BaseURL, []string{f.ChatModel, f.AgentModel}
+		chatModel, agentModel := strings.TrimSpace(f.ChatModel), strings.TrimSpace(f.AgentModel)
+		if chatModel == "" {
+			chatModel = agentModel
+		}
+		if agentModel == "" {
+			agentModel = chatModel
+		}
+		baseURL, models = f.BaseURL, []string{chatModel, agentModel}
 		old = []string{filepath.Join(betaDir, "model.json"), filepath.Join(betaDir, "secrets.json")}
 	} else {
 		return nil // 全新安装
@@ -120,7 +129,11 @@ func (b *Bot) migrateSettings() error {
 	if strings.TrimSpace(baseURL) == "" || len(models) == 0 {
 		return nil
 	}
-	if _, err := b.saveChannelsLocked(APISettings{DefaultProviderID: "primary", Model: models[0], Providers: []APIChannel{{
+	chatModel, agentModel := models[0], models[0]
+	if len(models) > 1 {
+		agentModel = models[1]
+	}
+	if _, err := b.saveChannelsLocked(APISettings{DefaultProviderID: "primary", Model: chatModel, AgentProviderID: "primary", AgentModel: agentModel, Providers: []APIChannel{{
 		ID: "primary", Name: "主力 API", BaseURL: baseURL, Enabled: true, AuthRequired: key != "", APIKey: &key, Models: models,
 	}}}); err != nil {
 		return fmt.Errorf("迁移旧的模型设置失败: %w", err)
@@ -163,19 +176,20 @@ func normalizeBaseURL(raw string) (string, error) {
 }
 
 func (b *Bot) resolveModel(chat bool) (onefrog.Provider, string) {
-	if b.modelOwner != nil {
-		return b.modelOwner.resolveModel(chat)
-	}
 	b.modelMu.RLock()
 	defer b.modelMu.RUnlock()
 	if b.envModel.provider != nil {
 		return b.envModel.provider, b.envModel.model
 	}
-	if b.model.provider != nil {
-		if b.model.model == "" {
+	connection := b.agentModel
+	if chat {
+		connection = b.model
+	}
+	if connection.provider != nil {
+		if connection.model == "" {
 			return nil, ""
 		}
-		return b.model.provider, b.model.model
+		return connection.provider, connection.model
 	}
 	if chat {
 		return b.cfg.ChatProvider, b.cfg.ChatModel
@@ -203,6 +217,8 @@ func (b *Bot) GetSettings() APISettings {
 	s := b.model.public()
 	s.Providers = b.publicChannels()
 	s.DefaultProviderID = b.defaultChannel
+	s.AgentProviderID = b.agentChannel
+	s.AgentModel = b.agentModel.model
 	if s.DefaultProviderID == "" && len(s.Providers) > 0 {
 		s.DefaultProviderID = s.Providers[0].ID
 	}
@@ -247,7 +263,7 @@ func (b *Bot) SaveSettings(draft APISettings) (APISettings, error) {
 		p.Models = append(slices.Clone(p.Models), model)
 	}
 	p.HiddenModels = slices.DeleteFunc(slices.Clone(p.HiddenModels), func(m string) bool { return m == model })
-	return b.saveChannelsLocked(APISettings{Providers: providers, DefaultProviderID: id, Model: model})
+	return b.saveChannelsLocked(APISettings{Providers: providers, DefaultProviderID: id, Model: model, AgentProviderID: b.agentChannel, AgentModel: b.agentModel.model})
 }
 
 var modelCatalogClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: noRedirect}

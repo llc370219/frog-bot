@@ -131,6 +131,67 @@ func TestLoginFlow(t *testing.T) {
 	}
 }
 
+func TestPasswordChangeCancelsActiveRequest(t *testing.T) {
+	dir := t.TempDir()
+	if err := SetPassword(dir, "admin", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	app := http.NewServeMux()
+	app.HandleFunc("GET /api/long", func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+		close(canceled)
+	})
+	srv := httptest.NewServer(a.Middleware(app))
+	defer srv.Close()
+
+	login := do(t, "POST", srv.URL+"/api/auth/login", `{"username":"admin","password":"correct-horse"}`, "", "")
+	token := cookieOf(login)
+	if token == "" {
+		t.Fatal("login did not issue a session")
+	}
+	req, err := http.NewRequest("GET", srv.URL+"/api/long", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Cookie", CookieName+"="+token)
+	requestDone := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		requestDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("authenticated handler did not start")
+	}
+	if _, err := a.ChangePassword("correct-horse", "new-correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("password change did not cancel the active request")
+	}
+	select {
+	case err := <-requestDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("request did not finish after its session was revoked")
+	}
+}
+
 func TestLoginRateLimit(t *testing.T) {
 	_, srv := newServer(t)
 	for i := 0; i < 5; i++ {

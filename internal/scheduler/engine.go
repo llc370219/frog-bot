@@ -25,7 +25,7 @@ type TaskStatus string
 
 const (
 	TaskUnknown   TaskStatus = ""
-	TaskOpen      TaskStatus = "open"      // queued/running/paused
+	TaskOpen      TaskStatus = "open" // queued/running/paused
 	TaskCompleted TaskStatus = "completed"
 	TaskFailed    TaskStatus = "failed"
 	TaskCancelled TaskStatus = "cancelled"
@@ -46,10 +46,10 @@ type Host interface {
 
 // Config 是引擎策略。
 type Config struct {
-	TickEvery     time.Duration // 默认 15s
-	MisfireGrace  time.Duration // 周期性：迟到超过这个就跳过本趟，默认 5m
-	OneOffGrace   time.Duration // 单次：超过预定时间但仍在宽限内可补跑，默认 24h
-	MaxCatchUp    int           // 单次 Tick 最多处理多少个过期点，默认 8
+	TickEvery    time.Duration // 默认 15s
+	MisfireGrace time.Duration // 周期性：迟到超过这个就跳过本趟，默认 5m
+	OneOffGrace  time.Duration // 单次：超过预定时间但仍在宽限内可补跑，默认 24h
+	MaxCatchUp   int           // 单次 Tick 最多处理多少个过期点，默认 8
 }
 
 // Engine 是无模型的定时循环。
@@ -146,7 +146,6 @@ func (e *Engine) recoverLocked() {
 			}
 		case TaskCompleted, TaskFailed, TaskCancelled:
 			_, _ = e.Store.UpdateClaim(c.Key, string(st), "重启后对账")
-			e.refreshNext(c.PlanID)
 		case TaskMissing, TaskUnknown:
 			updated, _ := e.Store.UpdateClaim(c.Key, "needs_verify", "重启后找不到对应任务；请核实外部副作用，不要自动重放")
 			if p, ok := e.Store.Get(c.PlanID); ok {
@@ -156,11 +155,13 @@ func (e *Engine) recoverLocked() {
 					p, &updated)
 				e.Host.Emit("schedule.run", map[string]any{"plan": p.Public(), "claim": updated})
 			}
-			e.refreshNext(c.PlanID)
 		}
 	}
 	for _, p := range e.Store.List() {
-		e.refreshNext(p.ID)
+		// Keep persisted due occurrences: Tick applies grace and claim deduplication.
+		if p.NextRun == nil {
+			e.refreshNext(p.ID)
+		}
 	}
 }
 
@@ -375,12 +376,12 @@ func (e *Engine) emitPlan(id string) {
 // ---------- 计划 CRUD（供 bot 层调用；审批由 bot 层做） ----------
 
 type Draft struct {
-	Title    string
-	Prompt   string
-	Spec     Spec
-	Overlap  string
-	Enabled  bool
-	ID       string // 更新时必填；创建时可空
+	Title   string
+	Prompt  string
+	Spec    Spec
+	Overlap string
+	Enabled bool
+	ID      string // 更新时必填；创建时可空
 }
 
 func NewID() string {

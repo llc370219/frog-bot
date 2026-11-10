@@ -44,7 +44,13 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "拒绝跨站请求"})
 			return
 		}
-		if !public(r.URL.Path) && !a.Authenticated(r) {
+		if !public(r.URL.Path) {
+			ctx, cancel, ok := a.sessionContext(r)
+			if ok {
+				defer cancel()
+				mux.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录", "login": "/login"})
 				return

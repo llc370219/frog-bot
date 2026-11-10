@@ -164,7 +164,9 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// No global WriteTimeout: SSE connections intentionally stay open.
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20,
 		BaseContext: func(net.Listener) context.Context { return ctx }}
 	var peerServer *http.Server
 	if deviceCfg != nil {

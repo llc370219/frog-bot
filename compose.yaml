@@ -1,0 +1,21 @@
+services:
+  frogbot:
+    build: .
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      FROGBOT_USER: ${FROGBOT_USER:-admin}
+      FROGBOT_PASSWORD: ${FROGBOT_PASSWORD:-}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-4}
+    volumes:
+      - frogbot-data:/var/lib/frogbot
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 15s
+
+volumes:
+  frogbot-data:

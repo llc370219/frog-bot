@@ -289,6 +289,15 @@ var grepTool = FuncTool{"grep", "在工作区里用正则搜索文件内容，�
 				}
 				return nil
 			}
+			// WalkDir does not descend into symlink directories, but ReadFile would
+			// follow symlink files. Skip links (and devices/FIFOs) entirely.
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			p, err = ResolvePath(env.Workspace, p)
+			if err != nil {
+				return nil
+			}
 			if info, err := d.Info(); err != nil || info.Size() > 2<<20 {
 				return nil
 			}
@@ -313,13 +322,14 @@ var grepTool = FuncTool{"grep", "在工作区里用正则搜索文件内容，�
 		return strings.Join(hits, "\n"), nil
 	}}
 
-var safeShell = regexp.MustCompile(`^\s*(ls|pwd|cat|head|tail|wc|grep|rg|find|echo|which|file|stat|du|tree|git\s+(status|diff|log|show|branch))(\s|$)`)
+var literalEcho = regexp.MustCompile(`^echo( [a-zA-Z0-9_,.!:=@%+ -]*)?$`)
+var literalLS = regexp.MustCompile(`^ls( -[alh]+)*$`)
 
-// ShellRisk 只把简单的只读命令（不含管道、重定向、绝对路径、..）算作只读。
+// Shell syntax, command options, git helpers and symlinks make general shell
+// commands unsafe to classify by prefix. File reads use the bounded file tools;
+// only these literal, side-effect-free forms bypass command approval.
 func ShellRisk(cmd string) Risk {
-	if safeShell.MatchString(cmd) && !strings.ContainsAny(cmd, "><;&|`$~") &&
-		!strings.Contains(cmd, "..") && !strings.Contains(cmd, " /") &&
-		!strings.Contains(cmd, "-exec") && !strings.Contains(cmd, "-delete") {
+	if cmd == "pwd" || literalEcho.MatchString(cmd) || literalLS.MatchString(cmd) {
 		return RiskRead
 	}
 	return RiskExec
@@ -373,7 +383,7 @@ var ShellTool = FuncTool{"shell", "在工作区目录中用 bash 执行命令，
 
 // 这些环境变量是 frog bot 自己的模型 Key / 主密钥，不传给 shell 命令。
 var hiddenEnv = map[string]bool{"API_KEY": true, "CHAT_API_KEY": true, "FROGBOT_API_KEY": true, "XAI_API_KEY": true,
-	"OPENAI_API_KEY": true, "FROGBOT_MASTER_KEY": true}
+	"OPENAI_API_KEY": true, "FROGBOT_MASTER_KEY": true, "FROGBOT_PASSWORD": true}
 
 // SafeEnviron 返回去掉了 frog bot 自身密钥的环境变量。
 func SafeEnviron() []string {

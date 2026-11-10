@@ -59,11 +59,14 @@ func (b *Bot) chatLoop() {
 		case <-b.kick:
 		}
 		for b.ctx.Err() == nil {
+			b.turnMu.Lock()
 			pending := b.store.Unhandled()
+			generation := b.turnGeneration
+			b.turnMu.Unlock()
 			if len(pending) == 0 {
 				break
 			}
-			b.runTurn(pending)
+			b.runTurnGeneration(pending, generation)
 		}
 	}
 }
@@ -99,9 +102,39 @@ func noticeText(m Message) string {
 // 一轮里如果先说了一句（例如"我查一下"）再调用工具，前面那句会立刻作为单独一条消息发出去，
 // 这样用户最快看到回应，长回复也自然分成几条。
 func (b *Bot) runTurn(pending []Message) {
+	b.turnMu.Lock()
+	generation := b.turnGeneration
+	b.turnMu.Unlock()
+	b.runTurnGeneration(pending, generation)
+}
+
+func (b *Bot) runTurnGeneration(pending []Message, generation uint64) {
+	b.turnMu.Lock()
+	if generation != b.turnGeneration || b.ctx.Err() != nil {
+		b.turnMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancelCause(b.ctx)
+	ctx, cancelT := context.WithTimeout(ctx, b.cfg.TurnTimeout)
+	b.turnCancel = cancel
+	b.store.Broadcast("chat.status", map[string]bool{"busy": true})
+	b.turnMu.Unlock()
+	defer func() {
+		b.turnMu.Lock()
+		b.turnCancel = nil
+		b.store.Broadcast("chat.status", map[string]bool{"busy": false})
+		b.turnMu.Unlock()
+		cancelT()
+		cancel(nil)
+	}()
 	provider, model := b.resolveModel(true)
 	if cli := b.selectedCLI(); provider == nil && cli != "" {
-		b.runDirectCLI(pending, cli)
+		b.turnMu.Lock()
+		canRun := generation == b.turnGeneration && ctx.Err() == nil
+		b.turnMu.Unlock()
+		if canRun {
+			b.runDirectCLI(ctx, pending, cli)
+		}
 		return
 	}
 	ids := make([]string, len(pending))
@@ -128,21 +161,6 @@ func (b *Bot) runTurn(pending []Message) {
 			history = append(history, onefrog.Message{Role: role, Content: b.vault.Redact(text)})
 		}
 	}
-
-	ctx, cancel := context.WithCancelCause(b.ctx)
-	ctx, cancelT := context.WithTimeout(ctx, b.cfg.TurnTimeout)
-	defer cancelT()
-	b.turnMu.Lock()
-	b.turnCancel = cancel
-	b.store.Broadcast("chat.status", map[string]bool{"busy": true})
-	b.turnMu.Unlock()
-	defer func() {
-		b.turnMu.Lock()
-		b.turnCancel = nil
-		b.store.Broadcast("chat.status", map[string]bool{"busy": false})
-		b.turnMu.Unlock()
-		cancel(nil)
-	}()
 
 	// 当前这一段（一条消息）的内容
 	var out, think strings.Builder
@@ -241,9 +259,12 @@ func (b *Bot) runTurn(pending []Message) {
 
 // Without an API channel, user turns go straight to the task queue. Internal
 // notices are never treated as instructions for an external CLI.
-func (b *Bot) runDirectCLI(pending []Message, cli string) {
+func (b *Bot) runDirectCLI(ctx context.Context, pending []Message, cli string) {
 	var input, ids []string
 	for _, m := range pending {
+		if ctx.Err() != nil {
+			return
+		}
 		ids = append(ids, m.ID)
 		if m.Role == "user" {
 			if !b.directPeerCommand(m.Text) {
@@ -272,9 +293,19 @@ func (b *Bot) runDirectCLI(pending []Message, cli string) {
 			}
 		}
 		text := b.vault.Redact(strings.Join(input, "\n\n"))
-		if _, err := b.createTask(text, "", TaskOpts{}, cli, true, history); err != nil {
+		b.turnMu.Lock()
+		if ctx.Err() != nil {
+			b.turnMu.Unlock()
+			return
+		}
+		_, err := b.createTask(text, "", TaskOpts{}, cli, true, history)
+		b.turnMu.Unlock()
+		if err != nil && ctx.Err() == nil {
 			b.say(err.Error())
 		}
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	b.store.Append("message.handled", ids, true)
 }
@@ -387,7 +418,14 @@ func (b *Bot) chatTools() []onefrog.Tool {
 	tool := func(name, desc, schema string, fn func(json.RawMessage) (string, error)) onefrog.Tool {
 		// 管理类工具只把占位符当普通文字传递（例如 start_task 里写 {{secret:X}} 交给 agent），从不替换
 		return onefrog.PassSecrets{FuncTool: onefrog.FuncTool{ToolName: name, Desc: desc, JSONSchema: schema, RiskFn: safe,
-			Fn: func(_ context.Context, _ onefrog.ToolEnv, a json.RawMessage) (string, error) { return fn(a) }}}
+			Fn: func(ctx context.Context, _ onefrog.ToolEnv, a json.RawMessage) (string, error) {
+				b.turnMu.Lock()
+				defer b.turnMu.Unlock()
+				if ctx.Err() != nil {
+					return "", ctx.Err()
+				}
+				return fn(a)
+			}}}
 	}
 	return append([]onefrog.Tool{
 		tool("list_agents", "列出本机及已连接设备上的 Bot 地址。远程地址为 设备ID/BotID。", `{"type":"object","properties":{}}`,

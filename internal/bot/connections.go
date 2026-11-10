@@ -39,9 +39,6 @@ func (b *Bot) loadAgentConnection() error {
 }
 
 func (b *Bot) selectedCLI() string {
-	if b.modelOwner != nil {
-		return b.modelOwner.selectedCLI()
-	}
 	b.modelMu.RLock()
 	defer b.modelMu.RUnlock()
 	return b.connection.CLI
@@ -52,9 +49,6 @@ func (b *Bot) connections() connectionsView {
 }
 
 func (b *Bot) saveAgentConnection(id string) error {
-	if b.modelOwner != nil {
-		return b.modelOwner.saveAgentConnection(id)
-	}
 	if id != "" {
 		if onefrog.CLIName(id) == "" {
 			return errors.New("请选择支持的 Agent CLI")

@@ -119,7 +119,7 @@ func TestDevicePairChatStreamAndCollaboration(t *testing.T) {
 	reqClose("POST", base+"/approvals/id", `{"decision":"once"}`, false, 404)
 	reqClose("POST", base+"/secrets", `{"name":"EXAMPLE","value":"example"}`, false, 404)
 	reqClose("POST", second.URL+peerPrefix+"/bots/main/secrets", `{"name":"EXAMPLE","value":"example"}`, true, 404)
-	reqClose("GET", base+"/settings/connections", "", false, 404)
+	reqClose("GET", base+"/settings/connections", "", false, 200)
 	reqClose("POST", base+"/messages", `{"text":"not sent","files":[{"path":"local.txt"}]}`, false, 400)
 	reqClose("GET", base+"/info", "", false, 200)
 	reqClose("GET", base+"/schedules", "", false, 200)

@@ -110,8 +110,8 @@ func TestBotsKeepSeparateConversationsAndTasksAcrossRestart(t *testing.T) {
 		t.Fatalf("unexpected SSE history: default=%q, created=%q", legacy, created)
 	}
 	request("POST", "/api/settings", `{"base_url":"http://127.0.0.1:1/v1","model":"updated-model"}`, http.StatusOK)
-	if got := request("GET", base+"/info", "", http.StatusOK); !strings.Contains(got, `"chat_model":"updated-model"`) {
-		t.Fatalf("child did not inherit the updated model: %s", got)
+	if got := request("GET", base+"/info", "", http.StatusOK); !strings.Contains(got, `"chat_model":"chat"`) {
+		t.Fatalf("child should retain its independent default model: %s", got)
 	}
 }
 

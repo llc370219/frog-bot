@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"frogbot/internal/atomicfile"
 )
 
 var nameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
@@ -206,12 +208,7 @@ func (v *Vault) save() error {
 	if err := os.MkdirAll(filepath.Dir(v.path), 0o700); err != nil {
 		return err
 	}
-	tmp := v.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	_ = os.Remove(v.path)
-	return os.Rename(tmp, v.path)
+	return atomicfile.Write(v.path, b, 0o600)
 }
 
 // Set 新建或更新一个密钥。value 不会出现在任何错误信息里。
@@ -232,16 +229,20 @@ func (v *Vault) Set(name, value, desc string, scope *Scope) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	now := v.now()
-	r := v.recs[name]
-	if r == nil {
+	previous := v.recs[name]
+	var r *record
+	if previous == nil {
 		r = &record{Info: Info{Name: name, CreatedAt: now}}
+	} else {
+		cp := *previous
+		r = &cp
 	}
 	r.Cipher, r.UpdatedAt = c, now
 	if desc != "" {
 		r.Description = desc
 	}
 	if scope != nil {
-		r.Scope = *scope
+		r.Scope = Scope{Tools: append([]string(nil), scope.Tools...), Domains: append([]string(nil), scope.Domains...)}
 	}
 	v.recs[name] = r
 	old, had := v.plain[name]
@@ -249,6 +250,7 @@ func (v *Vault) Set(name, value, desc string, scope *Scope) error {
 	if err := v.save(); err != nil {
 		if had {
 			v.plain[name] = old
+			v.recs[name] = previous
 		} else {
 			delete(v.plain, name)
 			delete(v.recs, name)
@@ -266,9 +268,11 @@ func (v *Vault) Delete(name string) error {
 	if v.recs[name] == nil {
 		return fmt.Errorf("没有叫 %s 的密钥", name)
 	}
+	previous, plain := v.recs[name], v.plain[name]
 	delete(v.recs, name)
 	delete(v.plain, name) // 删掉后旧值不再脱敏：它已经不会被注入任何工具
 	if err := v.save(); err != nil {
+		v.recs[name], v.plain[name] = previous, plain
 		return err
 	}
 	v.rebuild()
@@ -350,10 +354,21 @@ func (v *Vault) Values(names []string) (map[string]string, error) {
 			return nil, fmt.Errorf("密钥 %s 不存在", n)
 		}
 		out[n] = p
+	}
+	previous := map[string]*time.Time{}
+	for _, n := range names {
+		if _, seen := previous[n]; !seen {
+			previous[n] = v.recs[n].LastUsed
+		}
 		t := now
 		v.recs[n].LastUsed = &t
 	}
-	_ = v.save()
+	if err := v.save(); err != nil {
+		for n, used := range previous {
+			v.recs[n].LastUsed = used
+		}
+		return nil, fmt.Errorf("保存密钥使用记录失败: %w", err)
+	}
 	return out, nil
 }
 

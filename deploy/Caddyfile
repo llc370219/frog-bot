@@ -1,0 +1,8 @@
+# Run Caddy on the host; replace the domain before starting it.
+bot.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8080 {
+        # Deliver SSE frames immediately instead of buffering streamed replies.
+        flush_interval -1
+    }
+}

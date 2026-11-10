@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -417,7 +416,17 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 	}
 	mux.HandleFunc("/api/", http.NotFound)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"ok": true, "version": currentVersion()}, nil)
+		writeJSON(w, map[string]any{"ok": true, "version": currentVersion(), "api_version": 1}, nil)
+	})
+	mux.HandleFunc("GET /api/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{
+			"api_version": 1, "version": currentVersion(),
+			"clients": []string{"web", "android", "macos"},
+			"auth":    map[string]any{"session": "cookie", "status_path": "/api/auth/me"},
+			"events":  map[string]any{"transport": "sse", "resume": "Last-Event-ID", "heartbeat_sec": 20},
+			"limits": map[string]any{"json_bytes": maxJSONBody, "upload_file_bytes": maxUpload,
+				"upload_request_bytes": maxUpload + (1 << 20), "upload_files": 16, "bots": maxBots},
+		}, nil)
 	})
 	mux.HandleFunc("GET /api/auth/me", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"enabled": false}, nil) // 本机模式没有登录；服务器模式由登录中间件接管这个地址
@@ -437,14 +446,8 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 	mux.HandleFunc("/api/devices/{device}/bots/{bot}/{rest...}", bs.proxyPeerBot)
 	bs.mountDeviceSettings(mux, "/api/devices/{device}", true)
 	save := func(w http.ResponseWriter, r *http.Request) {
-		mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if mediaType != "application/json" {
-			w.WriteHeader(http.StatusUnsupportedMediaType)
-			return
-		}
 		var p BotProfile
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&p); err != nil {
-			writeJSON(w, nil, errors.New("请求格式不正确"))
+		if !decodeJSON(w, r, &p, 64<<10) {
 			return
 		}
 		p, err := bs.setProfile(r.PathValue("id"), p)

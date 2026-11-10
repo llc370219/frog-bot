@@ -33,9 +33,11 @@ type storedChannel struct {
 }
 
 type channelFile struct {
-	Providers []storedChannel `json:"providers"`
-	DefaultID string          `json:"default_provider_id"`
-	Model     string          `json:"model"`
+	Providers       []storedChannel `json:"providers"`
+	DefaultID       string          `json:"default_provider_id"`
+	Model           string          `json:"model"`
+	AgentProviderID string          `json:"agent_provider_id,omitempty"`
+	AgentModel      string          `json:"agent_model,omitempty"`
 }
 
 func (b *Bot) channelPath() string { return filepath.Join(b.cfg.DataDir, "channels.json") }
@@ -52,7 +54,7 @@ func (b *Bot) loadChannels() error {
 	if err = json.Unmarshal(raw, &f); err != nil {
 		return err
 	}
-	b.model = newConnection("", "", "")
+	b.model, b.agentModel = newConnection("", "", ""), newConnection("", "", "")
 	for i := range f.Providers {
 		if f.Providers[i].Sealed != "" {
 			f.Providers[i].key, err = b.vault.OpenAPIKey(f.Providers[i].Sealed)
@@ -63,8 +65,15 @@ func (b *Bot) loadChannels() error {
 		if f.Providers[i].ID == f.DefaultID {
 			b.model = newConnection(f.Providers[i].BaseURL, f.Model, f.Providers[i].key)
 		}
+		if f.Providers[i].ID == f.AgentProviderID {
+			b.agentModel = newConnection(f.Providers[i].BaseURL, f.AgentModel, f.Providers[i].key)
+		}
 	}
-	b.channels, b.defaultChannel = f.Providers, f.DefaultID
+	b.channels, b.defaultChannel, b.agentChannel = f.Providers, f.DefaultID, f.AgentProviderID
+	// Older versions shared one route; preserve that behavior on upgrade.
+	if b.agentChannel == "" && f.AgentModel == "" {
+		b.agentChannel, b.agentModel = f.DefaultID, b.model
+	}
 	return nil
 }
 
@@ -109,7 +118,7 @@ func (b *Bot) saveChannelsLocked(d APISettings) (APISettings, error) {
 	}
 	providers := make([]storedChannel, 0, len(d.Providers))
 	seen := map[string]bool{}
-	var selected *storedChannel
+	var selected, selectedAgent *storedChannel
 	for _, c := range d.Providers {
 		c.ID, c.Name = strings.TrimSpace(c.ID), strings.TrimSpace(c.Name)
 		if c.ID == "" || c.Name == "" || seen[c.ID] {
@@ -146,14 +155,25 @@ func (b *Bot) saveChannelsLocked(d APISettings) (APISettings, error) {
 		if providers[i].ID == d.DefaultProviderID {
 			selected = &providers[i]
 		}
+		if providers[i].ID == d.AgentProviderID {
+			selectedAgent = &providers[i]
+		}
 	}
 	model := strings.TrimSpace(d.Model)
+	agentModel := strings.TrimSpace(d.AgentModel)
 	if len(providers) == 0 {
-		d.DefaultProviderID, model = "", ""
+		d.DefaultProviderID, d.AgentProviderID, model, agentModel = "", "", "", ""
 	} else if selected == nil || !selected.Enabled || model == "" || slices.Contains(selected.HiddenModels, model) || !slices.Contains(selected.Models, model) {
 		return APISettings{}, errors.New("请为默认模型选择已启用渠道中的可用模型")
+	} else {
+		if d.AgentProviderID == "" && d.AgentModel == "" {
+			d.AgentProviderID, agentModel, selectedAgent = d.DefaultProviderID, model, selected
+		}
+		if selectedAgent == nil || !selectedAgent.Enabled || agentModel == "" || slices.Contains(selectedAgent.HiddenModels, agentModel) || !slices.Contains(selectedAgent.Models, agentModel) {
+			return APISettings{}, errors.New("请为 Agent 选择已启用渠道中的可用模型")
+		}
 	}
-	f := channelFile{Providers: providers, DefaultID: d.DefaultProviderID, Model: model}
+	f := channelFile{Providers: providers, DefaultID: d.DefaultProviderID, Model: model, AgentProviderID: d.AgentProviderID, AgentModel: agentModel}
 	raw, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return APISettings{}, err
@@ -173,14 +193,19 @@ func (b *Bot) saveChannelsLocked(d APISettings) (APISettings, error) {
 	if err = os.Rename(tmp.Name(), b.channelPath()); err != nil {
 		return APISettings{}, err
 	}
-	b.channels, b.defaultChannel = providers, d.DefaultProviderID
+	b.channels, b.defaultChannel, b.agentChannel = providers, d.DefaultProviderID, d.AgentProviderID
 	b.model = newConnection("", "", "")
+	b.agentModel = newConnection("", "", "")
 	if selected != nil {
 		b.model = newConnection(selected.BaseURL, model, selected.key)
+	}
+	if selectedAgent != nil {
+		b.agentModel = newConnection(selectedAgent.BaseURL, agentModel, selectedAgent.key)
 	}
 	s := b.model.public()
 	s.Providers = b.publicChannels()
 	s.DefaultProviderID = d.DefaultProviderID
+	s.AgentProviderID, s.AgentModel = d.AgentProviderID, agentModel
 	return s, nil
 }
 

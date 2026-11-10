@@ -113,7 +113,10 @@ func (b *Bot) Upload(name string, r io.Reader) (Attachment, error) {
 	if name == "" || name == "." || strings.HasPrefix(name, ".") {
 		name = "file" + name
 	}
-	dir := filepath.Join(b.cfg.Workspace, "uploads")
+	dir, err := onefrog.ResolvePath(b.cfg.Workspace, "uploads")
+	if err != nil {
+		return Attachment{}, err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Attachment{}, err
 	}
@@ -131,7 +134,9 @@ func (b *Bot) Upload(name string, r io.Reader) (Attachment, error) {
 		return Attachment{}, err
 	}
 	n, err := io.Copy(f, io.LimitReader(r, maxUpload+1))
-	f.Close()
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
 	if err == nil && n > maxUpload {
 		err = fmt.Errorf("文件太大（最多 %d MB）", maxUpload>>20)
 	}

@@ -19,15 +19,19 @@ import SettingsDialog from './components/SettingsDialog';
 import TopActions from './components/TopActions';
 
 const NOTIFY_KEY = 'frogbot-notify';
+const launchParams = new URLSearchParams(window.location.search);
+const launchAction = launchParams.get('mac_action');
+const launchDevice = launchParams.get('mac_device') || 'local';
+const launchBot = launchParams.get('mac_bot');
 
 export default function App() {
   const [directory, setDirectory] = useState<DeviceGroup[]>([]);
   const [loadError, setLoadError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [editor, setEditor] = useState<{ device: DeviceGroup; profile?: BotProfile } | null>(null);
-  const [schedulerOpen, setSchedulerOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activeBotId, setActiveBotId] = useState(() => localStorage.getItem('frogbot-active-bot'));
+  const [schedulerOpen, setSchedulerOpen] = useState(launchAction === 'scheduler');
+  const [settingsOpen, setSettingsOpen] = useState(launchAction === 'settings');
+  const [activeBotId, setActiveBotId] = useState(() => launchBot ? botKey(launchDevice, launchBot) : localStorage.getItem('frogbot-active-bot'));
   const devices = directory.length ? directory : [{ id: 'local', name: '本机', online: true, bots: [] }];
   const local = devices[0];
   const device = devices.find(d => d.bots.some(b => botKey(d.id, b.id) === activeBotId)) ?? devices[0];
@@ -59,7 +63,7 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)} onCreateBot={device => setEditor({ device })}
         onEditBot={profile => setEditor({ device: local, profile })} />
       {activeBot ? (
-        <BotView key={activeKey} bot={activeBot} device={device} devices={devices} schedulerOpen={schedulerOpen}
+        <BotView key={activeKey} bot={activeBot} device={device} devices={devices} settingsInitialDevice={device.id} schedulerOpen={schedulerOpen}
           settingsOpen={settingsOpen} onCloseSettings={() => setSettingsOpen(false)}
           modalOpen={editor !== null} />
       ) : (
@@ -91,14 +95,14 @@ export default function App() {
 }
 
 function BotView({ bot, device, ...props }: {
-  bot: BotProfile; device: DeviceGroup; devices: DeviceGroup[]; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+  bot: BotProfile; device: DeviceGroup; devices: DeviceGroup[]; settingsInitialDevice: string; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
 }) {
   const botAPI = useMemo(() => createBotAPI(bot.id, device.id), [bot.id, device.id]);
   return <BotContext.Provider value={{ bot, device, api: botAPI }}><ChatView {...props} /></BotContext.Provider>;
 }
 
-function ChatView({ devices, schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
-  devices: DeviceGroup[]; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+function ChatView({ devices, settingsInitialDevice, schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
+  devices: DeviceGroup[]; settingsInitialDevice: string; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
 }) {
   const { bot, device, api } = useActiveBot();
   const activeBotName = bot.name;
@@ -224,7 +228,8 @@ function ChatView({ devices, schedulerOpen, settingsOpen, onCloseSettings, modal
       {settingsOpen && <SettingsDialog
         onClose={onCloseSettings}
         devices={devices}
-        initialDevice={device.id}
+        initialDevice={settingsInitialDevice}
+        initialBot={bot.id}
         onSettingsSaved={id => {
           if (id === device.id) api.info().then(setInfo).catch(() => {});
         }}

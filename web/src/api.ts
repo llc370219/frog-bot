@@ -14,6 +14,8 @@ export type APIChannel = {
 export type APISettings = {
   base_url: string;
   model: string;
+  agent_provider_id?: string;
+  agent_model?: string;
   api_key?: string;
   has_api_key: boolean;
   providers?: APIChannel[];
@@ -326,8 +328,9 @@ export function useActiveBot() {
   return context;
 }
 
-export function createDeviceSettingsAPI(device: string) {
-  const base = device === 'local' ? '/api' : `/api/devices/${encodeURIComponent(device)}`;
+export function createDeviceSettingsAPI(device: string, bot = 'main') {
+  const base = device === 'local' ? `/api/bots/${encodeURIComponent(bot)}` : `/api/devices/${encodeURIComponent(device)}/bots/${encodeURIComponent(bot)}`;
+  const settingsBase = device === 'local' ? '/api' : `/api/devices/${encodeURIComponent(device)}`;
   return {
     connections: (signal?: AbortSignal): Promise<AgentConnections> => get(`${base}/settings/connections`, signal),
     saveConnection: (cli: string): Promise<AgentConnections> => post(`${base}/settings/connections`, { cli }),
@@ -341,7 +344,7 @@ export function createDeviceSettingsAPI(device: string) {
     saveSettings: (s: APISettings): Promise<APISettings> => post(`${base}/settings`, s),
     providerModels: (s: APISettings): Promise<{ models: string[] }> => post(`${base}/settings/models`, s),
     testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post(`${base}/settings/test`, s),
-    checkUpdate: (signal?: AbortSignal): Promise<UpdateStatus> => get(`${base}/update`, signal),
+    checkUpdate: (signal?: AbortSignal): Promise<UpdateStatus> => get(`${settingsBase}/update`, signal),
     version: async (signal?: AbortSignal) => (await get<Info>(`${botPath('main', device)}/info`, signal)).version,
   };
 }

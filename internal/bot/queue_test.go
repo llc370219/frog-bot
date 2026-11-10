@@ -296,7 +296,10 @@ func TestQueueToolsAndStopAll(t *testing.T) {
 	if tk, _ := b.store.Task(id); tk.Status != "queued" || b.QueuePosition(id) != 1 {
 		t.Errorf("resumed to-do should be next in queue: %+v pos=%d", tk, b.QueuePosition(id))
 	}
-	_, _ = b.Send("谢谢")
+	// Set up the reaction target without waking the fake chat model. Send then
+	// mark-handled races chatLoop: the fake model treats every user turn as a new
+	// task, which can be created after Stop's task snapshot under instrumentation.
+	b.store.Append("message", Message{ID: onefrog.NewID("msg"), Role: "user", Text: "谢谢", CreatedAt: time.Now()}, false)
 	b.store.Append("message.handled", []string{b.store.LastUserMessageID()}, true)
 	run("react", map[string]any{"emoji": "👍"})
 	m, _ := b.store.Message(b.store.LastUserMessageID())

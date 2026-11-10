@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -49,9 +50,11 @@ type Auth struct {
 	mu   sync.RWMutex
 	f    file
 
-	lim   *limiter
-	now   func() time.Time
-	mtime time.Time // auth.json 的修改时间；命令行 reset-password 改了文件后，运行中的程序自动重新读取
+	lim     *limiter
+	now     func() time.Time
+	mtime   time.Time     // auth.json 的修改时间；命令行 reset-password 改了文件后，运行中的程序自动重新读取
+	revoked chan struct{} // closed whenever the authentication generation changes
+	active  map[context.Context]context.CancelFunc
 }
 
 // Exists 表示数据目录里已经有管理员账号。
@@ -78,13 +81,13 @@ func Open(dataDir string) (*Auth, error) {
 
 // refresh 在 auth.json 被别的进程（reset-password）改过时重新读取。
 func (a *Auth) refresh() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	st, err := os.Stat(a.path)
 	if err != nil {
 		return
 	}
-	a.mu.RLock()
 	same := st.ModTime().Equal(a.mtime)
-	a.mu.RUnlock()
 	if same {
 		return
 	}
@@ -96,9 +99,74 @@ func (a *Auth) refresh() {
 	if json.Unmarshal(raw, &f) != nil || f.Username == "" || f.Hash == "" || len(f.Secret) < 32 {
 		return
 	}
-	a.mu.Lock()
+	if f.Gen != a.f.Gen || f.Secret != a.f.Secret || f.Username != a.f.Username || f.Hash != a.f.Hash {
+		a.revokeLocked()
+	}
 	a.f, a.mtime = f, st.ModTime()
+}
+
+func (a *Auth) revokeLocked() {
+	for _, cancel := range a.active {
+		cancel()
+	}
+	if a.revoked != nil {
+		close(a.revoked)
+	}
+	a.revoked = make(chan struct{})
+}
+
+// Bind the request lifetime to this credential generation. Snapshot the channel
+// before validating the token so a simultaneous password change cannot be missed.
+func (a *Auth) sessionContext(r *http.Request) (context.Context, context.CancelFunc, bool) {
+	a.refresh()
+	a.mu.Lock()
+	if a.revoked == nil {
+		a.revoked = make(chan struct{})
+	}
+	revoked := a.revoked
 	a.mu.Unlock()
+	c, err := r.Cookie(CookieName)
+	if err != nil || !a.valid(c.Value) {
+		return nil, nil, false
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	a.mu.Lock()
+	if revoked != a.revoked {
+		a.mu.Unlock()
+		cancel()
+		return nil, nil, false
+	}
+	if a.active == nil {
+		a.active = map[context.Context]context.CancelFunc{}
+	}
+	a.active[ctx] = cancel
+	a.mu.Unlock()
+	go func() {
+		// Also detect out-of-process reset-password and cookie expiration on idle
+		// streams. Short requests stop this watcher as soon as their handler exits.
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		defer cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-revoked:
+				return
+			case <-ticker.C:
+				a.refresh()
+				if !a.valid(c.Value) {
+					return
+				}
+			}
+		}
+	}()
+	return ctx, func() {
+		cancel()
+		a.mu.Lock()
+		delete(a.active, ctx)
+		a.mu.Unlock()
+	}, true
 }
 
 // SetPassword 创建或覆盖管理员账号（命令行 reset-password / 安装脚本用）。所有旧会话失效。
@@ -226,6 +294,7 @@ func (a *Auth) ChangePassword(old, next string) (string, error) {
 	if st, err := os.Stat(a.path); err == nil {
 		a.mtime = st.ModTime()
 	}
+	a.revokeLocked()
 	a.mu.Unlock()
 	return a.issue(), nil
 }

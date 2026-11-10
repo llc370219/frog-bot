@@ -15,6 +15,8 @@ export default function APIChannels({ target, saving, setSaving, onSaved }: {
   const [selected, setSelected] = useState('');
   const [defaultID, setDefaultID] = useState('');
   const [model, setModel] = useState('');
+  const [agentProviderID, setAgentProviderID] = useState('');
+  const [agentModel, setAgentModel] = useState('');
   const [dirty, setDirty] = useState(false);
   const [adding, setAdding] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -29,7 +31,8 @@ export default function APIChannels({ target, saving, setSaving, onSaved }: {
   function apply(s: APISettings) {
     const rows = (s.providers ?? []).map(p => ({ ...p, models: p.models ?? [], hidden_models: p.hidden_models ?? [] }));
     setState(s); setChannels(rows); setDefaultID(s.default_provider_id ?? rows[0]?.id ?? '');
-    setModel(s.model); setDirty(false);
+    setModel(s.model); setAgentProviderID(s.agent_provider_id ?? s.default_provider_id ?? rows[0]?.id ?? '');
+    setAgentModel(s.agent_model ?? s.model); setDirty(false);
   }
   useEffect(() => {
     const controller = new AbortController();
@@ -40,6 +43,7 @@ export default function APIChannels({ target, saving, setSaving, onSaved }: {
   const provider = channels.find(p => p.id === selected);
   const testingModel = provider ? (visible(provider).includes(testModel) ? testModel : visible(provider)[0] ?? '') : '';
   const route = channels.find(p => p.id === defaultID);
+  const agentRoute = channels.find(p => p.id === agentProviderID);
   const busy = saving || !!work;
   function changed() { setDirty(true); setNotice(undefined); }
   function patch(update: Partial<APIChannel>) {
@@ -72,18 +76,19 @@ export default function APIChannels({ target, saving, setSaving, onSaved }: {
   async function save() {
     if (!state || (channels.length > 0 && (!route || !model))) return; setSaving(true); setNotice(undefined);
     try {
-      const s = await target.saveSettings({ ...state, base_url: route?.base_url ?? '', model, providers: channels, default_provider_id: defaultID });
-      apply(s); setAdding(false); setNotice({ error: false, text: '配置已加密保存，下一轮对话和任务使用新配置。' }); onSaved();
+      const s = await target.saveSettings({ ...state, base_url: route?.base_url ?? '', model, providers: channels, default_provider_id: defaultID, agent_provider_id: agentProviderID, agent_model: agentModel });
+      apply(s); setAdding(false); setNotice({ error: false, text: '本 Bot 的配置已加密保存，下一轮对话和任务使用新配置。' }); onSaved();
     } catch (e) { setNotice({ error: true, text: message(e) }); } finally { setSaving(false); }
   }
   function removeProvider() {
     const remaining = channels.filter(p => p.id !== selected); setChannels(remaining);
     if (defaultID === selected) { const next = remaining.find(p => p.enabled); setDefaultID(next?.id ?? ''); setModel(next ? visible(next)[0] ?? '' : ''); }
+    if (agentProviderID === selected) { const next = remaining.find(p => p.enabled); setAgentProviderID(next?.id ?? ''); setAgentModel(next ? visible(next)[0] ?? '' : ''); }
     setSelected(''); setRemove(false); changed();
   }
-  const valid = channels.length === 0 || (!!route?.enabled && visible(route).includes(model) && channels.every(p => p.name.trim() && p.base_url.trim()));
+  const valid = channels.length === 0 || (!!route?.enabled && visible(route).includes(model) && !!agentRoute?.enabled && visible(agentRoute).includes(agentModel) && channels.every(p => p.name.trim() && p.base_url.trim()));
   return <div className="settings-channel-page">
-    <div className="settings-channel-title"><div><h3 id="settings-api-title">API 渠道</h3><p className="settings-description">管理模型服务渠道，选择聊天和任务使用的默认模型。</p></div>
+    <div className="settings-channel-title"><div><h3 id="settings-api-title">API 渠道</h3><p className="settings-description">设置仅属于当前 Bot；渠道密钥加密保存在对应设备。</p></div>
       {state && !provider && <button className="settings-button settings-primary" disabled={busy} onClick={add}><Plus size={15} />添加渠道</button>}
     </div>
     {state?.env_override && <p className="settings-env-note">当前模型由启动时的环境变量（BASE_URL / API_KEY / CHAT_MODEL）指定，优先于这里的设置；这里保存的内容要等去掉环境变量、重启后才生效。</p>}
@@ -120,7 +125,8 @@ export default function APIChannels({ target, saving, setSaving, onSaved }: {
         <ul className="settings-channel-grid">{channels.map(p => <li key={p.id} className="settings-channel-card"><div className="settings-channel-card-head"><Plug size={18} /><h4>{p.name}</h4><span className="settings-agent-status">{p.id === defaultID ? '默认渠道' : p.enabled ? '已启用' : '已停用'}</span></div><p title={p.base_url}>{p.base_url || '尚未配置接口地址'}</p><small>{visible(p).length} 个可选模型 · {p.auth_required ? 'API Key' : '无需密钥'}</small><div className="settings-agent-actions"><button role="switch" aria-checked={p.enabled} aria-label={`启用渠道 ${p.name}`} className={`settings-agent-switch${p.enabled ? ' is-on' : ''}`} disabled={busy} onClick={() => { setChannels(rows => rows.map(c => c.id === p.id ? { ...c, enabled: !c.enabled } : c)); changed(); }}><span /></button><button className="settings-button" disabled={busy} onClick={() => edit(p.id)}>设置</button></div></li>)}
         {!channels.length && <li className="settings-channels-empty"><Plug size={26} /><h4>还没有 API 渠道</h4><p>添加服务商或本地模型接口，然后选择默认模型。</p><button className="settings-button" onClick={add}><Plus size={14} />添加第一个渠道</button></li>}</ul>
       </>}
-      <div className="settings-default-route"><div><h4>默认模型</h4><p>用于聊天与后台任务</p></div><div className="settings-channel-form-grid"><div className="settings-field"><label htmlFor="default-channel">API 渠道</label><select id="default-channel" value={defaultID} disabled={busy} onChange={e => { const p = channels.find(c => c.id === e.target.value); setDefaultID(e.target.value); setModel(p ? visible(p)[0] ?? '' : ''); changed(); }}><option value="" disabled>选择渠道</option>{channels.map(p => <option key={p.id} value={p.id} disabled={!p.enabled}>{p.name}{p.enabled ? '' : '（已停用）'}</option>)}</select></div><div className="settings-field"><label htmlFor="default-model">模型</label><select id="default-model" value={model} disabled={busy} onChange={e => { setModel(e.target.value); changed(); }}><option value="">选择模型</option>{route && visible(route).map(m => <option key={m}>{m}</option>)}</select></div></div></div>
+        <div className="settings-default-route"><div><h4>聊天模型</h4><p>用于当前 Bot 的聊天回复</p></div><div className="settings-channel-form-grid"><div className="settings-field"><label htmlFor="default-channel">API 渠道</label><select id="default-channel" value={defaultID} disabled={busy} onChange={e => { const p = channels.find(c => c.id === e.target.value); setDefaultID(e.target.value); setModel(p ? visible(p)[0] ?? '' : ''); changed(); }}><option value="" disabled>选择渠道</option>{channels.map(p => <option key={p.id} value={p.id} disabled={!p.enabled}>{p.name}{p.enabled ? '' : '（已停用）'}</option>)}</select></div><div className="settings-field"><label htmlFor="default-model">模型</label><select id="default-model" value={model} disabled={busy} onChange={e => { setModel(e.target.value); changed(); }}><option value="">选择模型</option>{route && visible(route).map(m => <option key={m}>{m}</option>)}</select></div></div></div>
+        <div className="settings-default-route"><div><h4>Agent API 模型</h4><p>用于后台 Agent；也可在「连接」选择官方 CLI 订阅</p></div><div className="settings-channel-form-grid"><div className="settings-field"><label htmlFor="agent-channel">API 渠道</label><select id="agent-channel" value={agentProviderID} disabled={busy} onChange={e => { const p = channels.find(c => c.id === e.target.value); setAgentProviderID(e.target.value); setAgentModel(p ? visible(p)[0] ?? '' : ''); changed(); }}><option value="" disabled>选择渠道</option>{channels.map(p => <option key={p.id} value={p.id} disabled={!p.enabled}>{p.name}{p.enabled ? '' : '（已停用）'}</option>)}</select></div><div className="settings-field"><label htmlFor="agent-model">模型</label><select id="agent-model" value={agentModel} disabled={busy} onChange={e => { setAgentModel(e.target.value); changed(); }}><option value="">选择模型</option>{agentRoute && visible(agentRoute).map(m => <option key={m}>{m}</option>)}</select></div></div></div>
       <footer className="settings-channels-footer"><span><KeyRound size={13} />{dirty ? '有未保存的修改' : '配置已保存 · 密钥加密存储'}</span><button type="button" className="settings-button settings-primary" disabled={busy || !dirty || !valid} onClick={save}>{saving && !work && <Loader2 size={14} className="animate-spin" />}保存设置</button></footer>
     </>}
   </div>;

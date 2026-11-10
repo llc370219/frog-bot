@@ -183,8 +183,11 @@ func TestBetaConfigMigratesToChannels(t *testing.T) {
 	defer b.Close()
 	s := b.GetSettings()
 	if s.BaseURL != "https://beta.example/v1" || s.Model != "fast" || !s.HasAPIKey || len(s.Providers) != 1 ||
-		strings.Join(s.Providers[0].Models, ",") != "fast,smart" {
+		strings.Join(s.Providers[0].Models, ",") != "fast,smart" || s.AgentProviderID != "primary" || s.AgentModel != "smart" {
 		t.Fatalf("beta settings not migrated: %+v", s)
+	}
+	if _, model := b.resolveModel(false); model != "smart" {
+		t.Fatalf("beta Agent model not migrated: %q", model)
 	}
 	b.modelMu.RLock()
 	got := b.model.key

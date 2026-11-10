@@ -239,6 +239,9 @@ func (a *Agent) Run(ctx context.Context, t Task) (Result, error) {
 			func(d string) { em.emit(EvTextDelta, map[string]any{"text": d}) })
 		pc.setLLM(nil)
 		lcancel()
+		if ctx.Err() != nil {
+			return fail(ctx.Err())
+		}
 		if err != nil && ctx.Err() == nil && pc.isRequested() {
 			return paused() // 模型请求被暂停打断：这一步不算
 		}
@@ -255,6 +258,9 @@ func (a *Agent) Run(ctx context.Context, t Task) (Result, error) {
 			return finish(StatusCompleted, reply.Content, nil)
 		}
 		for _, call := range reply.ToolCalls {
+			if ctx.Err() != nil {
+				return fail(ctx.Err())
+			}
 			out := a.runTool(ctx, t, tools, em, call)
 			msgs = append(msgs, Message{Role: "tool", ToolCallID: call.ID, Content: out})
 		}
@@ -312,6 +318,9 @@ func drainSteer(ch chan string, msgs []Message, em *emitter) []Message {
 }
 
 func (a *Agent) runTool(ctx context.Context, t Task, tools *Registry, em *emitter, call ToolCall) string {
+	if ctx.Err() != nil {
+		return "error: " + ctx.Err().Error()
+	}
 	em.emit(EvToolCall, map[string]any{"call_id": call.ID, "tool": call.Name, "args": call.Args})
 	result := func(out string, isErr, denied bool) string {
 		out = Truncate(out, a.MaxToolOutput)
@@ -329,6 +338,9 @@ func (a *Agent) runTool(ctx context.Context, t Task, tools *Registry, em *emitte
 	}
 	if v := g.Check(ctx, t, tool, call.Args, em.emit); v.Decision != Allow {
 		return result(DeniedMessage(v), false, true)
+	}
+	if ctx.Err() != nil {
+		return result("error: "+ctx.Err().Error(), true, false)
 	}
 	out, err := g.Execute(ctx, tool, ToolEnv{Workspace: t.Workspace, TaskID: t.ID}, call.Args)
 	if err != nil {

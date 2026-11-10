@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"frogbot/internal/atomicfile"
 )
 
 const storeVersion = 1
@@ -41,7 +43,7 @@ func OpenStore(dir string) (*Store, error) {
 		return nil, err
 	}
 	if len(raw) == 0 {
-		return s, nil
+		return nil, fmt.Errorf("schedules.json 为空，拒绝静默丢失计划")
 	}
 	if err := json.Unmarshal(raw, &s.data); err != nil {
 		return nil, fmt.Errorf("读取 schedules.json：%w", err)
@@ -61,19 +63,52 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	return atomicfile.Write(s.path, raw, 0o600)
+}
+
+func cloneTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	return &cp
+}
+
+func clonePlan(p Plan) Plan {
+	p.NextRun, p.LastRun = cloneTime(p.NextRun), cloneTime(p.LastRun)
+	p.Spec.Weekdays = append([]time.Weekday(nil), p.Spec.Weekdays...)
+	return p
+}
+
+func cloneClaim(c Claim) Claim {
+	c.DispatchedAt, c.FinishedAt = cloneTime(c.DispatchedAt), cloneTime(c.FinishedAt)
+	return c
+}
+
+// Mutate a detached snapshot so an unsuccessful save leaves no phantom state.
+func (s *Store) updateLocked(change func()) error {
+	prev := s.data
+	s.data = fileFormat{Version: storeVersion, Plans: map[string]*Plan{}, Claims: map[string]*Claim{}}
+	for id, p := range prev.Plans {
+		cp := clonePlan(*p)
+		s.data.Plans[id] = &cp
+	}
+	for id, c := range prev.Claims {
+		cp := cloneClaim(*c)
+		s.data.Claims[id] = &cp
+	}
+	change()
+	if err := s.saveLocked(); err != nil {
+		s.data = prev
 		return err
 	}
-	return os.WriteFile(s.path, raw, 0o600)
+	return nil
 }
 
 func (s *Store) Put(p *Plan) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := *p
-	s.data.Plans[p.ID] = &cp
-	return s.saveLocked()
+	return s.updateLocked(func() { cp := clonePlan(*p); s.data.Plans[p.ID] = &cp })
 }
 
 func (s *Store) Delete(id string) error {
@@ -82,8 +117,7 @@ func (s *Store) Delete(id string) error {
 	if _, ok := s.data.Plans[id]; !ok {
 		return errors.New("没有这个计划")
 	}
-	delete(s.data.Plans, id)
-	return s.saveLocked()
+	return s.updateLocked(func() { delete(s.data.Plans, id) })
 }
 
 func (s *Store) Get(id string) (Plan, bool) {
@@ -93,7 +127,7 @@ func (s *Store) Get(id string) (Plan, bool) {
 	if !ok {
 		return Plan{}, false
 	}
-	return *p, true
+	return clonePlan(*p), true
 }
 
 func (s *Store) List() []Plan {
@@ -101,7 +135,7 @@ func (s *Store) List() []Plan {
 	defer s.mu.Unlock()
 	out := make([]Plan, 0, len(s.data.Plans))
 	for _, p := range s.data.Plans {
-		out = append(out, *p)
+		out = append(out, clonePlan(*p))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Enabled != out[j].Enabled {
@@ -127,47 +161,52 @@ func (s *Store) TryClaim(c Claim) (Claim, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.data.Claims[c.Key]; ok {
-		return *old, false, nil
+		return cloneClaim(*old), false, nil
 	}
-	cp := c
-	s.data.Claims[c.Key] = &cp
-	if p := s.data.Plans[c.PlanID]; p != nil {
-		t := c.IntendedAt
-		p.LastRun, p.LastStatus, p.LastTaskID, p.LastClaim = &t, c.Status, c.TaskID, c.Key
-		p.UpdatedAt = time.Now().UTC()
-	}
-	if err := s.saveLocked(); err != nil {
+	err := s.updateLocked(func() {
+		cp := cloneClaim(c)
+		s.data.Claims[c.Key] = &cp
+		if p := s.data.Plans[c.PlanID]; p != nil {
+			t := c.IntendedAt
+			p.LastRun, p.LastStatus, p.LastTaskID, p.LastClaim = &t, c.Status, c.TaskID, c.Key
+			p.UpdatedAt = time.Now().UTC()
+		}
+	})
+	if err != nil {
 		return Claim{}, false, err
 	}
-	return cp, true, nil
+	return cloneClaim(c), true, nil
 }
 
 func (s *Store) UpdateClaim(key, status, note string) (Claim, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c, ok := s.data.Claims[key]
+	_, ok := s.data.Claims[key]
 	if !ok {
 		return Claim{}, errors.New("没有这条认领")
 	}
-	c.Status = status
-	if note != "" {
-		c.Note = note
-	}
-	now := time.Now().UTC()
-	switch status {
-	case "dispatched":
-		c.DispatchedAt = &now
-	case "completed", "failed", "needs_verify", "skipped_misfire", "skipped_overlap", "expired":
-		c.FinishedAt = &now
-	}
-	if p := s.data.Plans[c.PlanID]; p != nil {
-		p.LastStatus = status
-		p.UpdatedAt = now
-	}
-	if err := s.saveLocked(); err != nil {
+	err := s.updateLocked(func() {
+		c := s.data.Claims[key]
+		c.Status = status
+		if note != "" {
+			c.Note = note
+		}
+		now := time.Now().UTC()
+		switch status {
+		case "dispatched":
+			c.DispatchedAt = &now
+		case "completed", "failed", "needs_verify", "skipped_misfire", "skipped_overlap", "expired":
+			c.FinishedAt = &now
+		}
+		if p := s.data.Plans[c.PlanID]; p != nil {
+			p.LastStatus = status
+			p.UpdatedAt = now
+		}
+	})
+	if err != nil {
 		return Claim{}, err
 	}
-	return *c, nil
+	return cloneClaim(*s.data.Claims[key]), nil
 }
 
 func (s *Store) Claim(key string) (Claim, bool) {
@@ -177,7 +216,7 @@ func (s *Store) Claim(key string) (Claim, bool) {
 	if !ok {
 		return Claim{}, false
 	}
-	return *c, true
+	return cloneClaim(*c), true
 }
 
 func (s *Store) Claims() []Claim {
@@ -185,7 +224,7 @@ func (s *Store) Claims() []Claim {
 	defer s.mu.Unlock()
 	out := make([]Claim, 0, len(s.data.Claims))
 	for _, c := range s.data.Claims {
-		out = append(out, *c)
+		out = append(out, cloneClaim(*c))
 	}
 	return out
 }
@@ -194,13 +233,15 @@ func (s *Store) Claims() []Claim {
 func (s *Store) SetNext(id string, next *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, ok := s.data.Plans[id]
+	_, ok := s.data.Plans[id]
 	if !ok {
 		return errors.New("没有这个计划")
 	}
-	p.NextRun = next
-	p.UpdatedAt = time.Now().UTC()
-	return s.saveLocked()
+	return s.updateLocked(func() {
+		p := s.data.Plans[id]
+		p.NextRun = cloneTime(next)
+		p.UpdatedAt = time.Now().UTC()
+	})
 }
 
 // OpenClaimsFor 返回某计划仍未结束的认领。
@@ -214,7 +255,7 @@ func (s *Store) OpenClaimsFor(planID string) []Claim {
 		}
 		switch c.Status {
 		case "claimed", "dispatched":
-			out = append(out, *c)
+			out = append(out, cloneClaim(*c))
 		}
 	}
 	return out
