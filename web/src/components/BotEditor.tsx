@@ -2,8 +2,8 @@ import { Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, type BotProfile } from '../api';
 
-export default function BotEditor({ profile, onClose, onSaved, onDeleted }: {
-  profile?: BotProfile; onClose: () => void; onSaved: (profile: BotProfile) => void; onDeleted: (id: string) => void;
+export default function BotEditor({ profile, device, onClose, onSaved, onDeleted }: {
+  profile?: BotProfile; device: { id: string; name: string }; onClose: () => void; onSaved: (profile: BotProfile) => void; onDeleted: (id: string) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [name, setName] = useState(profile?.name ?? '');
@@ -36,7 +36,7 @@ export default function BotEditor({ profile, onClose, onSaved, onDeleted }: {
     setError('');
     const draft = { name: name.trim(), instructions: instructions.trim() };
     try {
-      onSaved(await (profile ? api.editBot(profile.id, draft) : api.createBot(draft)));
+      onSaved(await (profile ? api.editBot(profile.id, draft) : api.createBot(draft, device.id)));
     } catch (err) {
       setError((err as Error).message);
       setSaving(false);
@@ -84,7 +84,7 @@ export default function BotEditor({ profile, onClose, onSaved, onDeleted }: {
         </div>
       ) : (
       <form onSubmit={submit} className="flex flex-col gap-4">
-        <h2 id="bot-editor-title" className="text-lg font-semibold">{profile ? '编辑 Bot' : '创建 Bot'}</h2>
+        <h2 id="bot-editor-title" className="break-words text-lg font-semibold">{profile ? '编辑 Bot' : `在「${device.name}」新建 Bot`}</h2>
         <label className="text-sm">名称
           <input className={input} required autoFocus maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
         </label>

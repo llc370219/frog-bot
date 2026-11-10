@@ -1,6 +1,6 @@
 import { ArrowUp, FileText, Loader2, Paperclip, Pencil, Square, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useActiveBot, isImage, type Attachment } from '../api';
+import { botKey, useActiveBot, isImage, type Attachment } from '../api';
 import { sizeOf } from '../lib/format';
 
 type Pending = { key: string; name: string; size: number; mime: string; preview?: string; att?: Attachment; error?: string };
@@ -15,8 +15,8 @@ export default function Composer({ name, connected, chatBusy, working, lastUser,
   onEdit: (id: string, t: string) => Promise<void>;
   onStopReply: () => void; onStopAll: () => void;
 }) {
-  const { api, bot } = useActiveBot();
-  const key = `frogbot-draft:bot:${bot.id}`;
+  const { api, bot, device } = useActiveBot();
+  const key = `frogbot-draft:bot:${botKey(device.id, bot.id)}`;
   const [text, setText] = useState(() => localStorage.getItem(key) || '');
   const [files, setFiles] = useState<Pending[]>([]);
   const [editing, setEditing] = useState<string | null>(null);

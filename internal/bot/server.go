@@ -2,6 +2,7 @@ package bot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"mime"
@@ -68,6 +69,29 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		}
 		latency, err := b.TestConnection(r.Context(), p)
 		writeJSON(w, map[string]any{"latency_ms": latency}, err)
+	})
+	mux.HandleFunc("GET /api/settings/connections", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, b.connections(), nil)
+	})
+	mux.HandleFunc("POST /api/settings/connections", func(w http.ResponseWriter, r *http.Request) {
+		media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if media != "application/json" {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			return
+		}
+		var draft struct {
+			CLI *string `json:"cli"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&draft); err != nil || draft.CLI == nil {
+			writeJSON(w, nil, errors.New("请选择一个 Agent"))
+			return
+		}
+		if err := b.saveAgentConnection(*draft.CLI); err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		writeJSON(w, b.connections(), nil)
 	})
 	mux.HandleFunc("GET /api/update", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -217,6 +241,10 @@ func (b *Bot) Handler(webDir string) http.Handler {
 }
 
 func (b *Bot) serveStream(w http.ResponseWriter, r *http.Request) {
+	b.streamEvents(w, r, nil)
+}
+
+func (b *Bot) streamEvents(w http.ResponseWriter, r *http.Request, filter func(Event) (Event, bool)) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", 500)
@@ -235,6 +263,13 @@ func (b *Bot) serveStream(w http.ResponseWriter, r *http.Request) {
 	b.turnMu.Unlock()
 	defer unsub()
 	send := func(e Event) {
+		if filter != nil {
+			var keep bool
+			e, keep = filter(e)
+			if !keep {
+				return
+			}
+		}
 		if e.Seq > 0 {
 			if e.Seq <= last {
 				return

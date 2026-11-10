@@ -5,7 +5,7 @@ import { useActiveBot, type SecretReq } from '../api';
 // SecretCard：请用户保存一个密钥。值只通过 POST /api/secrets 发给后端加密保存，
 // 不会进入聊天记录、事件流或模型上下文；卡片里也不会再显示它。
 export default function SecretCard({ req }: { req: SecretReq }) {
-  const { api } = useActiveBot();
+  const { api, device } = useActiveBot();
   const [value, setValue] = useState('');
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -22,6 +22,12 @@ export default function SecretCard({ req }: { req: SecretReq }) {
   if (req.status === 'cancelled') return (
     <div className="rise flex items-center gap-2 rounded-xl border border-line bg-s1/60 px-3.5 py-2 text-[13px] text-fg3">
       <X size={15} className="shrink-0" />已取消，未保存 <code className="font-mono text-[12.5px]">{req.name}</code>
+    </div>
+  );
+  if (device.id !== 'local') return (
+    <div className="rise flex items-center gap-2 rounded-xl border border-line bg-s1 px-3.5 py-3 text-[13px] text-fg3">
+      <KeyRound size={15} className="shrink-0 text-accent" />
+      <span>请在「{device.name}」的 Frog Bot 界面填写 <code className="font-mono text-fg">{req.name}</code>。</span>
     </div>
   );
 

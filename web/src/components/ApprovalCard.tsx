@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useActiveBot, type Approval } from '../api';
 
 const riskLabel: Record<string, string> = { danger: '高风险', exec: '执行命令', write: '写入文件', read: '只读' };
-const toolLabel: Record<string, string> = { shell: '执行命令', write_file: '写入文件', edit_file: '修改文件', read_file: '读取文件', list_dir: '查看目录', grep: '搜索', delete_secret: '删除密钥' };
+const toolLabel: Record<string, string> = { shell: '执行命令', run_agent_cli: '启动外部 Agent', write_file: '写入文件', edit_file: '修改文件', read_file: '读取文件', list_dir: '查看目录', grep: '搜索', delete_secret: '删除密钥' };
 
 // refs 把 {{secret:NAME}} 占位符高亮出来：卡片上永远只显示名字，不显示值。
 function refs(text: unknown) {
@@ -16,6 +16,7 @@ function Detail({ a }: { a: Approval }) {
   const g = a.args as Record<string, string>;
   const box = 'mt-3 max-h-64 overflow-auto rounded-xl border border-line bg-code px-3.5 py-2.5 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap break-all';
   if (a.tool_name === 'shell') return <pre className={box}><span className="select-none text-fg4">$ </span>{refs(g.command)}</pre>;
+  if (a.tool_name === 'run_agent_cli') return <div className={box}><div className="mb-1 text-fg3">{g.cli}</div>{g.task}</div>;
   if (a.tool_name === 'delete_secret') return <pre className={box}>删除密钥 <span className="secret-ref">{g.name}</span>（删除后无法恢复）</pre>;
   if (a.tool_name === 'edit_file') return (
     <div className={box}>
@@ -31,7 +32,7 @@ function Detail({ a }: { a: Approval }) {
 }
 
 export default function ApprovalCard({ a, taskTitle, fromChat }: { a: Approval; taskTitle?: string; fromChat?: boolean }) {
-  const { api } = useActiveBot();
+  const { api, device } = useActiveBot();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const decide = async (d: 'once' | 'session' | 'deny') => {
@@ -49,7 +50,7 @@ export default function ApprovalCard({ a, taskTitle, fromChat }: { a: Approval; 
       <div className="rise flex items-center gap-2 rounded-xl border border-line bg-s1/60 px-3.5 py-2 text-[13px]">
         <span className={done.tone}>{done.icon}</span>
         <span className={done.tone}>{done.text}</span>
-        <code className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg3">{toolLabel[a.tool_name] || a.tool_name} · {(a.args as Record<string, string>).command || (a.args as Record<string, string>).path}</code>
+        <code className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg3">{toolLabel[a.tool_name] || a.tool_name} · {(a.args as Record<string, string>).cli || (a.args as Record<string, string>).command || (a.args as Record<string, string>).path}</code>
       </div>
     );
   }
@@ -66,6 +67,7 @@ export default function ApprovalCard({ a, taskTitle, fromChat }: { a: Approval; 
           <p className="mt-0.5 text-[13px] text-fg3">{taskTitle ? `任务「${taskTitle}」想要${toolLabel[a.tool_name] || a.tool_name}` : fromChat ? `我想直接${toolLabel[a.tool_name] || a.tool_name}` : toolLabel[a.tool_name]}{a.reason ? `：${a.reason}` : ''}</p>
         </div>
       </div>
+      {device.id === 'local' ? <>
       <Detail a={a} />
       <div className="mt-3.5 flex flex-wrap gap-2">
         <button disabled={busy} onClick={() => decide('once')} className="inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-[13px] font-medium text-on-accent transition hover:bg-accent-hover disabled:opacity-50"><Check size={14} />批准一次</button>
@@ -74,6 +76,7 @@ export default function ApprovalCard({ a, taskTitle, fromChat }: { a: Approval; 
       </div>
       {err && <p className="mt-2 text-xs text-danger">{err}</p>}
       <p className="mt-2.5 text-[11.5px] text-fg4">只批准上面这一条具体操作；参数变了需要重新确认。不处理会在 10 分钟后自动拒绝。</p>
+      </> : <p className="mt-3 text-[13px] text-fg3">请在「{device.name}」的 Frog Bot 界面查看详情并审批。</p>}
     </div>
   );
 }

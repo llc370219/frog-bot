@@ -42,6 +42,7 @@ type Config struct {
 	Timezone       string // 默认 Asia/Shanghai，用于展示与新建计划
 	InitialBaseURL string
 	InitialKey     string
+	Devices        *DeviceConfig
 }
 
 type Bot struct {
@@ -62,6 +63,7 @@ type Bot struct {
 	envModel       modelConnection // 环境变量提供的模型连接，非空时优先
 	channels       []storedChannel
 	defaultChannel string
+	connection     agentConnection // 全局设置，由 modelMu 保护
 	modelOwner     *Bot
 	slots          *taskSlots // 所有 Bot 共用的后台任务并发上限
 	coordinator    *Bots
@@ -147,6 +149,9 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	if modelOwner == nil {
 		if err := b.loadSettings(); err != nil {
 			return nil, fmt.Errorf("读取模型设置失败: %w", err)
+		}
+		if err := b.loadAgentConnection(); err != nil {
+			return nil, fmt.Errorf("读取 Agent 连接设置失败: %w", err)
 		}
 	}
 

@@ -47,6 +47,9 @@ func (b *Bot) chatBusy() bool {
 
 // Regenerate 让聊天层重新回答最后一条用户消息（旧回复从对话里隐藏；已经派出的任务不受影响）。
 func (b *Bot) Regenerate() error {
+	if provider, _ := b.resolveModel(true); provider == nil && b.selectedCLI() != "" {
+		return errors.New("CLI 可能已执行过操作。请发一条新消息说明要重新回答的内容")
+	}
 	if b.chatBusy() {
 		return errors.New("正在回复中，稍等一下")
 	}

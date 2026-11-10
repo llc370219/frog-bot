@@ -1,6 +1,6 @@
 import { Eye, FolderSearch, ListTodo, SquareTerminal, WifiOff } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { api, BotContext, createBotAPI, isImage, isOpen, useActiveBot, useBot, type Attachment, type BotProfile, type Info, type Msg, type State } from './api';
+import { api, botKey, BotContext, createBotAPI, isImage, isOpen, useActiveBot, useBot, type Attachment, type BotProfile, type DeviceGroup, type Info, type Msg, type State } from './api';
 import ApprovalCard from './components/ApprovalCard';
 import Artifact from './components/Artifact';
 import Composer from './components/Composer';
@@ -21,21 +21,30 @@ import TopActions from './components/TopActions';
 const NOTIFY_KEY = 'frogbot-notify';
 
 export default function App() {
-  const [bots, setBots] = useState<BotProfile[]>([]);
+  const [directory, setDirectory] = useState<DeviceGroup[]>([]);
   const [loadError, setLoadError] = useState('');
   const [attempt, setAttempt] = useState(0);
-  const [editor, setEditor] = useState<BotProfile | 'new' | null>(null);
+  const [editor, setEditor] = useState<{ device: DeviceGroup; profile?: BotProfile } | null>(null);
   const [schedulerOpen, setSchedulerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeBotId, setActiveBotId] = useState(() => localStorage.getItem('frogbot-active-bot'));
-  const activeBot = bots.find((bot) => bot.id === activeBotId) ?? bots[0];
+  const devices = directory.length ? directory : [{ id: 'local', name: '本机', online: true, bots: [] }];
+  const local = devices[0];
+  const device = devices.find(d => d.bots.some(b => botKey(d.id, b.id) === activeBotId)) ?? devices[0];
+  const activeBot = device.bots.find(b => botKey(device.id, b.id) === activeBotId) ?? device.bots[0];
+  const activeKey = activeBot && botKey(device.id, activeBot.id);
   useEffect(() => {
     const request = new AbortController();
-    api.bots(request.signal).then((profiles) => {
-      if (!Array.isArray(profiles) || !profiles.length) throw new Error('未读到 Bot 列表，请检查后端版本');
-      setBots(profiles);
+    const refresh = () => api.devices(request.signal).then(groups => {
+      if (!Array.isArray(groups) || groups[0]?.id !== 'local' || !groups[0].bots.length) throw new Error('未读到设备列表，请检查后端版本');
+      if (!request.signal.aborted) {
+        setDirectory(groups);
+        setLoadError('');
+      }
     }).catch((error: Error) => { if (!request.signal.aborted) setLoadError(error.message); });
-    return () => request.abort();
+    void refresh();
+    const timer = window.setInterval(refresh, 10_000);
+    return () => { request.abort(); window.clearInterval(timer); };
   }, [attempt]);
 
   const handleSelectBot = (id: string) => {
@@ -45,48 +54,56 @@ export default function App() {
   };
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-canvas text-fg">
-      <Sidebar bots={bots} activeBotId={activeBot?.id} schedulerActive={schedulerOpen}
+      <Sidebar devices={devices} activeBotId={activeKey} schedulerActive={schedulerOpen}
         onSelectBot={handleSelectBot} onOpenScheduler={() => setSchedulerOpen(true)}
-        onOpenSettings={() => setSettingsOpen(true)} onCreateBot={() => setEditor('new')}
-        onEditBot={setEditor} />
+        onOpenSettings={() => setSettingsOpen(true)} onCreateBot={device => setEditor({ device })}
+        onEditBot={profile => setEditor({ device: local, profile })} />
       {activeBot ? (
-        <BotView key={activeBot.id} bot={activeBot} schedulerOpen={schedulerOpen}
-          settingsOpen={settingsOpen} onCloseSettings={() => setSettingsOpen(false)} modalOpen={editor !== null} />
+        <BotView key={activeKey} bot={activeBot} device={device} devices={devices} schedulerOpen={schedulerOpen}
+          settingsOpen={settingsOpen} onCloseSettings={() => setSettingsOpen(false)}
+          modalOpen={editor !== null} />
       ) : (
         <main className="grid flex-1 place-content-center gap-3 px-4 text-center text-sm text-fg3" role="status">
           {loadError || '正在加载 Bot…'}
           {loadError && <button className="underline" onClick={() => { setLoadError(''); setAttempt((n) => n + 1); }}>重试</button>}
         </main>
       )}
-      {editor && <BotEditor profile={editor === 'new' ? undefined : editor} onClose={() => setEditor(null)}
+      {editor && <BotEditor profile={editor.profile} device={editor.device} onClose={() => setEditor(null)}
         onDeleted={(id) => {
-          const remaining = bots.filter((b) => b.id !== id);
-          setBots(remaining);
-          if (activeBot?.id === id && remaining[0]) handleSelectBot(remaining[0].id);
+          const remaining = local.bots.filter((b) => b.id !== id);
+          setDirectory(groups => groups.map(d => d.id === 'local' ? { ...d, bots: remaining } : d));
+          if (activeKey === id && remaining[0]) handleSelectBot(remaining[0].id);
+          setAttempt(n => n + 1);
           setEditor(null);
         }}
         onSaved={(profile) => {
-          setBots((list) => editor === 'new' ? [...list, profile] : list.map((b) => b.id === profile.id ? profile : b));
-          if (editor === 'new') handleSelectBot(profile.id);
+          const target = editor.device.id;
+          setDirectory(groups => groups.map(d => d.id === target ? {
+            ...d,
+            bots: d.bots.some(b => b.id === profile.id) ? d.bots.map(b => b.id === profile.id ? profile : b) : [...d.bots, profile],
+          } : d));
+          if (!editor.profile) handleSelectBot(botKey(target, profile.id));
+          setAttempt(n => n + 1);
           setEditor(null);
         }} />}
     </div>
   );
 }
 
-function BotView({ bot, ...props }: {
-  bot: BotProfile; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+function BotView({ bot, device, ...props }: {
+  bot: BotProfile; device: DeviceGroup; devices: DeviceGroup[]; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
 }) {
-  const botAPI = useMemo(() => createBotAPI(bot.id), [bot.id]);
-  return <BotContext.Provider value={{ bot, api: botAPI }}><ChatView {...props} /></BotContext.Provider>;
+  const botAPI = useMemo(() => createBotAPI(bot.id, device.id), [bot.id, device.id]);
+  return <BotContext.Provider value={{ bot, device, api: botAPI }}><ChatView {...props} /></BotContext.Provider>;
 }
 
-function ChatView({ schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
-  schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+function ChatView({ devices, schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
+  devices: DeviceGroup[]; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
 }) {
-  const { bot, api } = useActiveBot();
+  const { bot, device, api } = useActiveBot();
   const activeBotName = bot.name;
-  const s = useBot(bot.id);
+  const isLocal = device.id === 'local';
+  const s = useBot(bot.id, device.id);
   const [info, setInfo] = useState<Info | null>(null);
   const [error, setError] = useState('');
   const [notify, setNotify] = useState(() => localStorage.getItem(NOTIFY_KEY) === '1' && typeof Notification !== 'undefined' && Notification.permission === 'granted');
@@ -107,15 +124,15 @@ function ChatView({ schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
 
   // 标签页标题：在工作时带一个标记；页面在后台时累计未读
   useEffect(() => {
-    document.title = `${unread ? `(${unread}) ` : ''}${waiting ? '⚠ ' : working || s.busy ? '● ' : ''}${activeBotName}`;
-  }, [unread, working, s.busy, waiting, activeBotName]);
+    document.title = `${unread ? `(${unread}) ` : ''}${waiting ? '⚠ ' : working || s.busy ? '● ' : ''}${activeBotName}${isLocal ? '' : ` · ${device.name}`}`;
+  }, [unread, working, s.busy, waiting, activeBotName, isLocal, device.name]);
   const seen = useRef(0);
   useEffect(() => {
     const delta = s.news - seen.current;
     seen.current = s.news;
     if (delta <= 0 || !document.hidden) return;
     setUnread((n) => n + delta);
-    if (notify) try { new Notification(activeBotName, { body: s.lastNews.slice(0, 140), icon: botAvatarById(bot.id, bot.avatarSlot), tag: `frogbot-${bot.id}` }); } catch { /* 浏览器不支持 */ }
+    if (notify) try { new Notification(activeBotName, { body: s.lastNews.slice(0, 140), icon: botAvatarById(bot.id, bot.avatarSlot), tag: `frogbot-${botKey(device.id, bot.id)}` }); } catch { /* 浏览器不支持 */ }
   }, [s.news]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const v = () => { if (!document.hidden) setUnread(0); };
@@ -173,9 +190,9 @@ function ChatView({ schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
       <div className="flex flex-1 flex-col h-full min-w-0 overflow-hidden relative">
         <TopActions notify={notify} onNotify={toggleNotify} />
 
-        {!s.connected && s.ready && (
+        {!s.connected && (s.ready || !device.online) && (
           <div className="flex items-center justify-center gap-2 border-b border-line bg-s2 px-4 py-1.5 text-[12.5px] text-fg3" role="status">
-            <WifiOff size={13} />连接中断，正在重新连接。任务在服务器上照常进行，连上后会自动补齐。
+            <WifiOff size={13} />正在重新连接「{device.name}」。已开始的任务会继续运行，连接后自动补齐消息。
           </div>
         )}
 
@@ -206,9 +223,10 @@ function ChatView({ schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
 
       {settingsOpen && <SettingsDialog
         onClose={onCloseSettings}
-        version={info?.version}
-        onSettingsSaved={() => {
-          api.info().then(setInfo).catch(() => {});
+        devices={devices}
+        initialDevice={device.id}
+        onSettingsSaved={id => {
+          if (id === device.id) api.info().then(setInfo).catch(() => {});
         }}
       />}
     </>

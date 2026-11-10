@@ -1,13 +1,15 @@
 import { ArrowLeft, Check, CircleAlert, Download, Eye, EyeOff, FlaskConical, KeyRound, Loader2, Plus, Plug, Search, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { api, type APIChannel, type APISettings } from '../api';
+import type { APIChannel, APISettings, DeviceSettingsAPI } from '../api';
 
 const message = (e: unknown) => e instanceof Error ? e.message : '请求失败，请重试';
 const visible = (p: APIChannel) => p.models.filter(m => !p.hidden_models.includes(m));
 const addressKey = (url: string) => url.trim().replace(/\/+$/, '').replace(/\/(chat\/completions|models)$/, '');
 type Notice = { error: boolean; text: string };
 
-export default function APIChannels({ saving, setSaving, onSaved }: { saving: boolean; setSaving: (v: boolean) => void; onSaved: () => void }) {
+export default function APIChannels({ target, saving, setSaving, onSaved }: {
+  target: DeviceSettingsAPI; saving: boolean; setSaving: (v: boolean) => void; onSaved: () => void;
+}) {
   const [state, setState] = useState<APISettings>();
   const [channels, setChannels] = useState<APIChannel[]>([]);
   const [selected, setSelected] = useState('');
@@ -31,11 +33,10 @@ export default function APIChannels({ saving, setSaving, onSaved }: { saving: bo
   }
   useEffect(() => {
     const controller = new AbortController();
-    api.settings(controller.signal).then(s => { if (!controller.signal.aborted) apply(s); })
+    target.settings(controller.signal).then(s => { if (!controller.signal.aborted) apply(s); })
       .catch(e => { if (!controller.signal.aborted) setNotice({ error: true, text: message(e) }); });
     return () => controller.abort();
-  }, [attempt]);
-
+  }, [attempt, target]);
   const provider = channels.find(p => p.id === selected);
   const testingModel = provider ? (visible(provider).includes(testModel) ? testModel : visible(provider)[0] ?? '') : '';
   const route = channels.find(p => p.id === defaultID);
@@ -56,7 +57,7 @@ export default function APIChannels({ saving, setSaving, onSaved }: { saving: bo
   async function discover() {
     if (!provider) return; setWork('models'); setNotice(undefined); setSaving(true);
     try {
-      const { models } = await api.providerModels(payload(provider));
+      const { models } = await target.providerModels(payload(provider));
       patch({ models, hidden_models: provider.hidden_models.filter(m => models.includes(m)) });
       setNotice({ error: false, text: `已读取 ${models.length} 个模型，可选择需要显示的模型。` });
     } catch (e) { setNotice({ error: true, text: message(e) }); }
@@ -64,14 +65,14 @@ export default function APIChannels({ saving, setSaving, onSaved }: { saving: bo
   }
   async function test() {
     if (!provider) return; setWork('test'); setNotice(undefined); setSaving(true);
-    try { const r = await api.testProvider(payload(provider)); setNotice({ error: false, text: `连接可用 · ${r.latency_ms} ms（文本调用测试）` }); }
+    try { const r = await target.testProvider(payload(provider)); setNotice({ error: false, text: `连接可用 · ${r.latency_ms} ms（文本调用测试）` }); }
     catch (e) { setNotice({ error: true, text: message(e) }); }
     finally { setWork(''); setSaving(false); }
   }
   async function save() {
     if (!state || (channels.length > 0 && (!route || !model))) return; setSaving(true); setNotice(undefined);
     try {
-      const s = await api.saveSettings({ ...state, base_url: route?.base_url ?? '', model, providers: channels, default_provider_id: defaultID });
+      const s = await target.saveSettings({ ...state, base_url: route?.base_url ?? '', model, providers: channels, default_provider_id: defaultID });
       apply(s); setAdding(false); setNotice({ error: false, text: '配置已加密保存，下一轮对话和任务使用新配置。' }); onSaved();
     } catch (e) { setNotice({ error: true, text: message(e) }); } finally { setSaving(false); }
   }
@@ -101,11 +102,11 @@ export default function APIChannels({ saving, setSaving, onSaved }: { saving: bo
           <div className="settings-field"><label htmlFor="settings-api-url">接口基础地址</label><input id="settings-api-url" type="url" value={provider.base_url} placeholder="https://example.com/v1" onChange={e => {
             const reset = addressKey(e.target.value) !== addressKey(provider.base_url);
             patch({ base_url: e.target.value, ...(reset ? { api_key: '', has_api_key: false, models: [], hidden_models: [] } : {}) });
-          }} /><p className="settings-field-hint">修改服务地址后，需要重新填写密钥并拉取模型。</p></div>
+          }} /><p className="settings-field-hint">接口由所选设备访问；localhost 指所选设备。修改地址后需重新填写密钥并拉取模型。</p></div>
           <div className="settings-field"><label htmlFor="channel-protocol">接口协议</label><select id="channel-protocol" value="chat_completions" disabled><option value="chat_completions">Chat Completions</option></select></div>
           {provider.auth_required && <div className="settings-field"><div className="settings-field-head"><label htmlFor="channel-key">API Key</label>{provider.has_api_key && <button type="button" className="settings-link" onClick={() => patch({ api_key: provider.api_key === '' ? undefined : '' })}>{provider.api_key === '' ? '撤销清除' : '清除已存密钥'}</button>}</div>
             <div className="settings-key-input"><input id="channel-key" type={showKey ? 'text' : 'password'} autoComplete="new-password" value={provider.api_key ?? ''} placeholder={provider.has_api_key ? '已加密保存，留空保留' : '输入服务商的 API 密钥'} onChange={e => patch({ api_key: e.target.value || undefined })} /><button type="button" aria-label={showKey ? '隐藏密钥' : '显示密钥'} onClick={() => setShowKey(!showKey)}>{showKey ? <EyeOff size={16} /> : <Eye size={16} />}</button></div>
-            <p className="settings-field-hint">{provider.api_key === '' && provider.has_api_key ? '保存时将清除原密钥。' : '密钥加密保存在本机，不会回显。'}</p></div>}
+            <p className="settings-field-hint">{provider.api_key === '' && provider.has_api_key ? '保存时将清除原密钥。' : '密钥加密保存在所选设备，不会回显。'}</p></div>}
         </fieldset>
         <div className="settings-catalog-title"><div><h4>可选模型</h4><p>拉取模型后，开启希望出现在选择菜单中的模型。</p></div><button className="settings-button" disabled={busy || !provider.base_url.trim()} onClick={discover}>{work === 'models' ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}拉取模型</button></div>
         <div className="settings-catalog-toolbar"><span>{provider.models.length} 个模型 · {visible(provider).length} 个显示</span><label className="settings-model-search"><Search size={13} /><input aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={e => setQuery(e.target.value)} /></label></div>

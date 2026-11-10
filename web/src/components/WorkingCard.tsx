@@ -5,7 +5,7 @@ import { ago, describe, dur, elapsedOf, nowDoing, useNow } from '../lib/format';
 import Artifact from './Artifact';
 import { inline } from './Markdown';
 
-const icons: Record<string, typeof Wrench> = { read_file: FileText, write_file: FilePen, edit_file: FilePen, list_dir: FolderOpen, grep: Search, shell: SquareTerminal };
+const icons: Record<string, typeof Wrench> = { read_file: FileText, write_file: FilePen, edit_file: FilePen, list_dir: FolderOpen, grep: Search, shell: SquareTerminal, run_agent_cli: SquareTerminal };
 export const QUIET_MS = 15_000; // 这么久没有新动作，就明确告诉用户"还在工作"
 
 function act(api: ReturnType<typeof useActiveBot>['api'], id: string, a: TaskAction) { api.task(id, a).catch((e) => alert((e as Error).message)); }
@@ -73,7 +73,7 @@ export default function WorkingCard({ task: t, pos, stallMs }: { task: Task; pos
       {running && <div className="progress-line" />}
 
       {running && quiet >= QUIET_MS && (
-        quiet >= stallMs
+        quiet >= stallMs && !t.steps.some(s => s.tool === 'run_agent_cli')
           ? <div className="flex flex-wrap items-center gap-2 border-t border-line bg-warn-soft px-4 py-2.5 text-[12.5px] text-warn">
               <AlertTriangle size={14} className="shrink-0" />
               <span className="min-w-0 flex-1">已经 {ago(quiet).replace('前', '')}没有新进展了。可能在等一个很慢的命令，也可能卡住了。</span>

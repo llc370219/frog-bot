@@ -31,6 +31,7 @@ export function localTime(iso: string | number) {
 export function describe(tool: string, args: Record<string, unknown>): { verb: string; target: string } {
   const a = args as Record<string, string>;
   switch (tool) {
+    case 'run_agent_cli': return { verb: '运行', target: a.cli || '外部 Agent' };
     case 'read_file': return { verb: '读取', target: base(a.path || '') };
     case 'write_file': return { verb: '写入', target: base(a.path || '') };
     case 'edit_file': return { verb: '修改', target: base(a.path || '') };

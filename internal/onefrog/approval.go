@@ -226,6 +226,9 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 	if g.denyTools[name] {
 		return Verdict{Deny, "该工具已被禁用", "rule"}, RiskDanger
 	}
+	if name == CLITool {
+		return Verdict{AskUser, "启动外部 CLI 后，文件与命令权限由该 CLI 管理", "policy"}, RiskDanger
+	}
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
 	if p, ok := m["path"].(string); ok {

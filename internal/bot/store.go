@@ -38,6 +38,7 @@ type Message struct {
 	ToBotID      string       `json:"to_bot_id,omitempty"`
 	RequestID    string       `json:"request_id,omitempty"`
 	ReplyTo      string       `json:"reply_to,omitempty"`
+	WantsReply   bool         `json:"wants_reply,omitempty"`
 	MessageState string       `json:"message_state,omitempty"` // pending | handled | replied
 	Hop          int          `json:"hop,omitempty"`
 	Card         *Card        `json:"card,omitempty"`
@@ -87,23 +88,27 @@ type SecretReq struct {
 }
 
 type TaskRec struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	Input        string    `json:"input"`
-	Status       string    `json:"status"`         // queued | running | paused | completed | failed | cancelled
-	Prio         float64   `json:"prio,omitempty"` // 排队顺序，小的先跑
-	Output       string    `json:"output,omitempty"`
-	Error        string    `json:"error,omitempty"`
-	Steps        int       `json:"steps,omitempty"`
-	StopReason   string    `json:"stop_reason,omitempty"` // 结束：user | stall | restart；暂停：user | chat | restart | held（待办，还没开始过）
-	CreatedAt    time.Time `json:"created_at"`
-	createdSeq   int64     // event order breaks ties on clocks with coarse resolution
-	EndedAt      time.Time `json:"ended_at,omitempty"`
-	LastActivity time.Time `json:"-"`
-	Awaiting     int       `json:"-"` // 正在等待的审批数
-	Reported     bool      `json:"-"`
-	Pausing      bool      `json:"-"` // 已请求暂停，等下一个安全点
-	Notes        []string  `json:"-"` // 暂停期间收到的补充要求，恢复时交给 agent
+	ID           string            `json:"id"`
+	Title        string            `json:"title"`
+	Input        string            `json:"input"`
+	CLI          string            `json:"cli,omitempty"`
+	DirectChat   bool              `json:"direct_chat,omitempty"`
+	PeerRequest  string            `json:"peer_request,omitempty"`
+	History      []onefrog.Message `json:"history,omitempty"`
+	Status       string            `json:"status"`         // queued | running | paused | completed | failed | cancelled
+	Prio         float64           `json:"prio,omitempty"` // 排队顺序，小的先跑
+	Output       string            `json:"output,omitempty"`
+	Error        string            `json:"error,omitempty"`
+	Steps        int               `json:"steps,omitempty"`
+	StopReason   string            `json:"stop_reason,omitempty"` // 结束：user | stall | restart；暂停：user | chat | restart | held（待办，还没开始过）
+	CreatedAt    time.Time         `json:"created_at"`
+	createdSeq   int64             // event order breaks ties on clocks with coarse resolution
+	EndedAt      time.Time         `json:"ended_at,omitempty"`
+	LastActivity time.Time         `json:"-"`
+	Awaiting     int               `json:"-"` // 正在等待的审批数
+	Reported     bool              `json:"-"`
+	Pausing      bool              `json:"-"` // 已请求暂停，等下一个安全点
+	Notes        []string          `json:"-"` // 暂停期间收到的补充要求，恢复时交给 agent
 	// 以下由事件重放得到，供聊天层的 list_tasks / read_task 使用
 	StartedAt time.Time `json:"-"`
 	Summary   string    `json:"-"` // agent 的最终总结（task.summary 事件）
@@ -153,7 +158,7 @@ func (t TaskRec) Duration() time.Duration {
 func target(tool string, args json.RawMessage) string {
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
-	for _, k := range []string{"command", "path", "pattern", "task_id", "schedule_id", "query", "name", "title"} {
+	for _, k := range []string{"command", "path", "pattern", "task_id", "schedule_id", "query", "name", "title", "cli"} {
 		if v, ok := m[k].(string); ok && v != "" {
 			return v
 		}

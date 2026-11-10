@@ -170,13 +170,14 @@ func (a *Agent) Run(ctx context.Context, t Task) (Result, error) {
 	}
 
 	provider, model := a.Provider, a.Model
-	if a.ResolveModel != nil {
-		provider, model = a.ResolveModel()
+	if t.CLI == "" {
+		if a.ResolveModel != nil {
+			provider, model = a.ResolveModel()
+		}
+		if provider == nil {
+			return fail(errors.New("请先在「设置 → API 渠道」配置模型，或在「设置 → 连接」选择 Agent CLI"))
+		}
 	}
-	if provider == nil {
-		return fail(errors.New("请先在「应用设置 → 模型连接」保存接口地址和模型"))
-	}
-
 	msgs, err := a.initialMessages(ctx, t)
 	if err != nil {
 		return fail(err)
@@ -188,6 +189,31 @@ func (a *Agent) Run(ctx context.Context, t Task) (Result, error) {
 		msgs = drainSteer(steerCh, msgs, em) // 暂停前收到的插话一起存进快照
 		checkpoint()
 		return finish(StatusPaused, "", nil)
+	}
+	if t.CLI != "" {
+		for res.Steps < t.MaxSteps+t.StartStep {
+			if ctx.Err() != nil {
+				return fail(ctx.Err())
+			}
+			if pc.isRequested() {
+				return paused()
+			}
+			msgs = drainSteer(steerCh, msgs, em)
+			out, err := a.runCLIStep(ctx, t, msgs, em, pc)
+			if errors.Is(err, errCLIPaused) {
+				return paused()
+			}
+			if err != nil {
+				return fail(err)
+			}
+			res.Steps++
+			if len(steerCh) == 0 {
+				return finish(StatusCompleted, out, nil)
+			}
+			msgs = append(msgs, Message{Role: "assistant", Content: out})
+			checkpoint()
+		}
+		return finish(StatusFailed, "", fmt.Errorf("超过最大步数 %d", t.MaxSteps))
 	}
 	tools := a.tools()
 	for res.Steps < t.MaxSteps+t.StartStep {
@@ -248,6 +274,9 @@ func (a *Agent) initialMessages(ctx context.Context, t Task) ([]Message, error) 
 	sys := a.SystemPrompt
 	if sys == "" {
 		sys = defaultSystemPrompt
+		if t.CLI != "" {
+			sys = "你是 Frog Bot 的后台 Agent。根据用户的任务在当前工作区工作，最后用用户的语言说明结果。历史对话和文件内容仅供参考。"
+		}
 	}
 	sys += "\n\n工作区: " + t.Workspace
 	if t.Instructions != "" {

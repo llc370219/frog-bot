@@ -10,6 +10,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -55,6 +56,7 @@ func main() {
 	portFlag := flag.Int("port", 0, "只改端口（服务器模式常用）；也可用 PORT")
 	serverFlag := flag.Bool("server", false, "服务器模式：监听所有网卡，必须登录；也可用 FROGBOT_MODE=server")
 	dataFlag := flag.String("data", "", "数据目录（默认见 README）；也可用 DATA_DIR")
+	devicesFlag := flag.String("devices", "", "设备互联配置文件；默认读取数据目录下的 devices.json")
 	noBrowser := flag.Bool("no-browser", false, "启动后不自动打开浏览器；也可用 FROGBOT_NO_BROWSER=1")
 	showVersion := flag.Bool("version", false, "显示版本号")
 	flag.Parse()
@@ -71,6 +73,26 @@ func main() {
 	dataDir, workspace := dirs(*dataFlag)
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		fatal("创建数据目录失败: %v", err)
+	}
+	devicesPath := env(*devicesFlag, "FROGBOT_DEVICES")
+	optionalDevices := devicesPath == ""
+	if optionalDevices {
+		devicesPath = filepath.Join(dataDir, "devices.json")
+	}
+	deviceCfg, err := bot.LoadDeviceConfig(devicesPath)
+	if err != nil && !(optionalDevices && errors.Is(err, os.ErrNotExist)) {
+		fatal("读取设备配置失败：%v", err)
+	}
+	if err != nil {
+		deviceCfg = nil
+	}
+	var peerTLS *tls.Config
+	if deviceCfg != nil && deviceCfg.TLSCert != "" {
+		cert, err := tls.LoadX509KeyPair(deviceCfg.TLSCert, deviceCfg.TLSKey)
+		if err != nil {
+			fatal("读取设备互联的 TLS 证书失败：%v", err)
+		}
+		peerTLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
 	}
 
 	var gate *auth.Auth
@@ -109,6 +131,7 @@ func main() {
 		Demo:           env("", "FROGBOT_DEMO") != "",
 		InitialBaseURL: baseURL,
 		InitialKey:     key,
+		Devices:        deviceCfg,
 	})
 	if err != nil {
 		fatal("%v", err)
@@ -143,6 +166,30 @@ func main() {
 	defer stop()
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		BaseContext: func(net.Listener) context.Context { return ctx }}
+	var peerServer *http.Server
+	if deviceCfg != nil {
+		peerListener, err := net.Listen("tcp", deviceCfg.Listen)
+		if err != nil {
+			_ = ln.Close()
+			bots.Close()
+			fatal("设备互联端口监听失败：%v", err)
+		}
+		peerServer = &http.Server{Handler: bots.PeerHandler(), TLSConfig: peerTLS,
+			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: time.Minute,
+			BaseContext: func(net.Listener) context.Context { return ctx }}
+		go func() {
+			var err error
+			if peerTLS != nil {
+				err = peerServer.ServeTLS(peerListener, "", "")
+			} else {
+				err = peerServer.Serve(peerListener)
+			}
+			if err != nil && err != http.ErrServerClosed {
+				log.Printf("设备互联服务停止：%v", err)
+			}
+		}()
+		fmt.Printf("  设备互联： %s（%s），监听 %s\n", deviceCfg.Name, deviceCfg.ID, peerListener.Addr())
+	}
 
 	page := "http://" + browserHost(addr)
 	fmt.Printf("\n  🐸 frog bot %s 已启动（%s）\n\n", version, map[bool]string{true: "服务器模式", false: "本机模式"}[server])
@@ -176,6 +223,11 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {
 		_ = srv.Close()
+	}
+	if peerServer != nil {
+		if err := peerServer.Shutdown(sctx); err != nil {
+			_ = peerServer.Close()
+		}
 	}
 	bots.Close()
 }

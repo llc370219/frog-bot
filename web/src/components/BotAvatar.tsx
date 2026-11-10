@@ -30,7 +30,7 @@ export function BotAvatar({
   const src = botAvatarById(id, slotIndex);
   return (
     <span
-      className={`inline-grid place-items-center shrink-0 overflow-hidden rounded-xl bg-white dark:bg-neutral-800 ring-1 ring-line2 shadow-2xs ${className}`}
+      className={`inline-grid place-items-center shrink-0 overflow-hidden rounded-xl bg-white ring-1 ring-line2 shadow-2xs ${className}`}
       style={{ width: size, height: size }}
     >
       <img

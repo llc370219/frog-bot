@@ -46,15 +46,17 @@ func (b *Bot) botProfile() BotProfile {
 // Bots owns one runtime per profile. Keep the original runtime and its paths
 // for the default Bot so existing data and API clients keep working.
 type Bots struct {
-	mu       sync.RWMutex
-	main     *Bot
-	workRoot string
-	profiles []BotProfile
-	runtimes map[string]*Bot
-	handlers map[string]*botEndpoint
-	retired  sync.WaitGroup
-	sharedMu sync.Mutex
-	closed   bool
+	mu         sync.RWMutex
+	main       *Bot
+	workRoot   string
+	profiles   []BotProfile
+	runtimes   map[string]*Bot
+	handlers   map[string]*botEndpoint
+	retired    sync.WaitGroup
+	sharedMu   sync.Mutex
+	deliveryMu sync.Mutex
+	network    *peerNetwork
+	closed     bool
 }
 
 type botEndpoint struct {
@@ -65,6 +67,11 @@ type botEndpoint struct {
 var botIDPattern = regexp.MustCompile(`^bot_[a-f0-9]{16}$`)
 
 func OpenBots(cfg Config) (*Bots, error) {
+	network, err := newPeerNetwork(cfg.Devices)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Devices = nil // peer credentials stay with the device network
 	workspace, err := filepath.Abs(cfg.Workspace)
 	if err != nil {
 		return nil, err
@@ -73,7 +80,7 @@ func OpenBots(cfg Config) (*Bots, error) {
 	if err != nil {
 		return nil, err
 	}
-	bs := &Bots{main: main, workRoot: workspace + "-bots", profiles: []BotProfile{main.botProfile()},
+	bs := &Bots{main: main, workRoot: workspace + "-bots", profiles: []BotProfile{main.botProfile()}, network: network,
 		runtimes: map[string]*Bot{defaultBotID: main}, handlers: map[string]*botEndpoint{defaultBotID: {Handler: main.Handler("")}}}
 	main.coordinator = bs
 	raw, err := os.ReadFile(bs.path())
@@ -160,6 +167,12 @@ func (bs *Bots) Deliver(fromID, toID, text, requestID, replyTo string) (string, 
 }
 
 func (bs *Bots) deliver(fromID, toID, text, requestID, replyTo string) (string, string, error) {
+	if strings.Contains(toID, "/") {
+		if requestID != "" {
+			return "", "", errors.New("request_id 由系统生成，发送方不能指定")
+		}
+		return bs.deliverPeer(fromID, toID, text, replyTo, false)
+	}
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 8000 {
 		return "", "", errors.New("消息不能为空且最多 8000 字节")
@@ -167,20 +180,18 @@ func (bs *Bots) deliver(fromID, toID, text, requestID, replyTo string) (string, 
 	if fromID == toID {
 		return "", "", errors.New("不能给自己发消息")
 	}
-	bs.mu.RLock()
-	if bs.closed {
-		bs.mu.RUnlock()
-		return "", "", errors.New("Bot 管理器正在关闭")
-	}
-	recipient := bs.runtimes[toID]
-	_, senderExists := bs.runtimes[fromID]
-	bs.mu.RUnlock()
-	if !senderExists || recipient == nil {
+	sender, releaseSender := bs.acquireBot(fromID)
+	defer releaseSender()
+	recipient, releaseRecipient := bs.acquireBot(toID)
+	defer releaseRecipient()
+	if sender == nil || recipient == nil {
 		return "", "", fmt.Errorf("发送方或接收方 Bot 不存在")
 	}
+	bs.deliveryMu.Lock()
+	defer bs.deliveryMu.Unlock()
 	var original *Message
 	if replyTo != "" {
-		for _, m := range bs.runtimes[fromID].store.Inbox(true) {
+		for _, m := range sender.store.Inbox(true) {
 			if m.RequestID == replyTo && m.FromBotID == toID && m.ToBotID == fromID {
 				copy := m
 				original = &copy
@@ -205,9 +216,9 @@ func (bs *Bots) deliver(fromID, toID, text, requestID, replyTo string) (string, 
 	hop := 1
 	if replyTo != "" {
 		hop = 2
-		bs.runtimes[fromID].store.Append("message.state", map[string]string{"ID": original.ID, "State": "handled"}, true)
+		sender.store.Append("message.state", map[string]string{"ID": original.ID, "State": "handled"}, true)
 	}
-	bs.runtimes[fromID].store.Append("message", Message{ID: id, Role: "notice", Text: text, FromBotID: fromID, ToBotID: toID, RequestID: requestID, ReplyTo: replyTo, MessageState: "sent", Hop: hop, Silent: true, CreatedAt: now}, true)
+	sender.store.Append("message", Message{ID: id, Role: "notice", Text: text, FromBotID: fromID, ToBotID: toID, RequestID: requestID, ReplyTo: replyTo, MessageState: "sent", Hop: hop, Silent: true, CreatedAt: now}, true)
 	recipient.store.Append("message", Message{ID: id, Role: "notice", Text: text, FromBotID: fromID, ToBotID: toID, RequestID: requestID, ReplyTo: replyTo, MessageState: "pending", Hop: hop, CreatedAt: now}, false)
 	recipient.wake()
 	return id, requestID, nil
@@ -227,7 +238,13 @@ func (b *Bot) askAgent(to, question string) (string, error) {
 	if b.coordinator == nil {
 		return "", errors.New("当前未启用多 Bot")
 	}
-	_, requestID, err := b.coordinator.deliver(b.ID(), to, "请回答以下问题，并使用 message_agent 将答复发回请求方；reply_to 必须使用请求 ID。问题：\n"+question, "", "")
+	var requestID string
+	var err error
+	if strings.Contains(to, "/") {
+		_, requestID, err = b.coordinator.deliverPeer(b.ID(), to, question, "", true)
+	} else {
+		_, requestID, err = b.coordinator.deliver(b.ID(), to, "请回答以下问题，并使用 message_agent 将答复发回请求方；reply_to 必须使用请求 ID。问题：\n"+question, "", "")
+	}
 	if err != nil {
 		return "", err
 	}
@@ -257,6 +274,10 @@ func (bs *Bots) Close() {
 	}
 	bs.closed = true
 	bs.mu.Unlock()
+	if bs.network != nil {
+		bs.network.client.CloseIdleConnections()
+		bs.network.settingsClient.CloseIdleConnections()
+	}
 	var wg sync.WaitGroup
 	for _, b := range bs.runtimes {
 		wg.Add(1)
@@ -374,9 +395,9 @@ func (bs *Bots) setProfile(id string, p BotProfile) (BotProfile, error) {
 			b.Close()
 			return BotProfile{}, err
 		}
-		b.Start()
 		bs.runtimes[p.ID], bs.handlers[p.ID] = b, &botEndpoint{Handler: b.Handler("")}
 		b.coordinator = bs
+		b.Start()
 	}
 	bs.profiles = next
 	return p, nil
@@ -408,6 +429,13 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, profiles, nil)
 	})
+	mux.HandleFunc("GET /api/devices", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, bs.deviceGroups(r.Context()), nil)
+	})
+	mux.HandleFunc("POST /api/devices/{device}/bots", bs.proxyPeerCreateBot)
+	mux.HandleFunc("/api/devices/{device}/bots/{bot}/{rest...}", bs.proxyPeerBot)
+	bs.mountDeviceSettings(mux, "/api/devices/{device}", true)
 	save := func(w http.ResponseWriter, r *http.Request) {
 		mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if mediaType != "application/json" {
@@ -449,24 +477,28 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 		writeJSON(w, map[string]bool{"ok": true}, err)
 	})
 	mux.HandleFunc("/api/bots/{id}/{rest...}", func(w http.ResponseWriter, r *http.Request) {
-		bs.mu.RLock()
-		h := bs.handlers[r.PathValue("id")]
-		if h == nil || bs.closed {
-			bs.mu.RUnlock()
-			http.NotFound(w, r)
-			return
-		}
-		h.requests.Add(1)
-		bs.mu.RUnlock()
-		defer h.requests.Done()
 		rest := r.PathValue("rest")
 		if rest == "settings" || strings.HasPrefix(rest, "settings/") || rest == "update" {
 			http.NotFound(w, r)
 			return
 		}
-		scoped := r.Clone(r.Context())
-		scoped.URL.Path, scoped.URL.RawPath = "/api/"+rest, ""
-		h.ServeHTTP(w, scoped)
+		bs.serveBotRoute(w, r, r.PathValue("id"), rest, false)
 	})
 	return mux
+}
+
+func (bs *Bots) serveBotRoute(w http.ResponseWriter, r *http.Request, id, rest string, peer bool) {
+	b, endpoint, release := bs.acquireBotEndpoint(id)
+	defer release()
+	if endpoint == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if peer && rest == "stream" {
+		b.streamEvents(w, r, peerChatEvent)
+		return
+	}
+	scoped := r.Clone(r.Context())
+	scoped.URL.Path, scoped.URL.RawPath = "/api/"+rest, ""
+	endpoint.ServeHTTP(w, scoped)
 }

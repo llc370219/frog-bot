@@ -4,7 +4,7 @@ frog bot 是一个能聊天、也能在后台干活的 AI 助理。它就是我�
 
 点左侧 Bots 旁的「＋」创建助理，填写名称和可选职责，例如代码审查或资料整理。点头像所在的行切换助理，点行内的铅笔编辑或删除。默认 Bot 可以编辑，不能删除。删除其他 Bot 会停止它的任务和定时计划；默认只从列表里移除，聊天记录、记忆、密钥和工作区文件仍保留在磁盘上（确认框里会显示具体目录），勾选「彻底删除」才会连这些数据一起删掉。最多 32 个 Bot。每个 Bot 有独立的对话、任务队列、审批、记忆、密钥和定时计划；切换时，原 Bot 的后台任务继续运行。
 
-所有 Bot 共用「设置 → API 渠道」。原有单 Bot 数据继续由默认 Bot 使用。新 Bot 的记录保存在 `DATA_DIR/bots/<id>/`，独立工作区在 `WORKSPACE-bots/<id>/`（默认 `./workspace-bots/<id>/`）。备份时请保留数据目录和两个工作区目录。
+同一设备的 Bot 共用「设置 → API 渠道」。原有单 Bot 数据继续由默认 Bot 使用。新 Bot 的记录保存在 `DATA_DIR/bots/<id>/`，独立工作区在 `WORKSPACE-bots/<id>/`（默认 `./workspace-bots/<id>/`）。备份时请保留数据目录和两个工作区目录。
 
 ## 下载和使用
 
@@ -47,6 +47,40 @@ curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/ins
 服务器版的登录：密码用 bcrypt 哈希保存在 `数据目录/auth.json`；会话 Cookie 是 HttpOnly + SameSite=Strict（HTTPS 下加 Secure），7 天有效，改密码后旧会话全部失效；同一 IP 连续输错 5 次锁 1 分钟并逐次翻倍（最长 1 小时），全局 15 分钟内错 30 次暂停所有登录 15 分钟；所有 `/api/*`（包括 SSE 事件流和审批接口）都要登录，跨站写请求一律拒绝。
 
 交流讨论：[Telegram 群](https://t.me/+pKQYEaxzidU4ZjZh)（与 [OneFrog](https://github.com/llc370219/onefrog) 同一交流群）
+
+### 连接 Agent CLI
+
+在「设置 → 连接」点「重新检测」，然后选择 **Codex CLI**（`codex`）、**Claude Code**（`claude`）、**Pi**（`pi`）、**Grok CLI**（`grok`）或 **Antigravity CLI**（`agy`）。CLI 要装在运行 Frog Bot 后端的机器上，并能被后端账户从 `PATH` 找到。服务器版需要用服务账户完成登录或配置模型。安装检测不检查登录；如果刚改过 `PATH`，先重启后端。
+
+选择会保存并用于所有 Bot 的新任务，可随时切回内置 Agent。配置了 API 渠道时，聊天层继续负责对话和派活；未配置时，你的聊天消息直接排队交给所选 CLI。每次启动外部 CLI 前需要在任务卡片中批准，启动后按 CLI 自身的权限运行。Frog Bot 显示运行状态和最终回复；CLI 内部步骤不会逐条显示，暂停只能在 CLI 调用之间生效。
+
+### 设备互联
+
+每台设备运行完整的 Frog Bot，保留自己的工作区、模型、任务和审批。在启动时打印的**数据目录**中创建 `devices.json`，或用 `frogbot -devices 路径` 指定配置文件。设备要互相添加，下面是设备 A 的示例：
+
+```json
+{
+  "id": "desk",
+  "name": "台式机",
+  "listen": "127.0.0.1:8081",
+  "peers": [
+    {
+      "id": "laptop",
+      "name": "笔记本",
+      "url": "https://frog-peer-laptop.example.com",
+      "token": "<replace-with-your-random-pair-token>"
+    }
+  ]
+}
+```
+
+在设备 B 上把自己的 ID 设成 `laptop`，把对端改成 `desk` 及 A 的 HTTPS 地址，使用同一个**随机令牌**（例如用 `openssl rand -hex 32` 生成）。每对设备用不同令牌。两边重启后，侧栏会按设备显示 Bot；点设备名可展开或折叠，右侧「＋」在该设备上新建 Bot。本机和远程 Bot 使用同一套聊天、附件、任务和调度界面，实际执行和数据保存在目标设备。需要审批或填写密钥时，请在目标设备的 Frog Bot 界面处理。
+
+其他设备可以用 `frogbot -no-browser` 启动，只在主机打开界面。从主机打开「设置」，用顶部的「管理设备」切换目标。API 渠道、模型拉取和测试、CLI 检测和切换，以及版本检查都在所选设备生效。API Key 加密保存在目标设备，不会回显。版本页提供发布入口；安装和重启在目标设备完成。各台机器需运行支持此功能的新版。
+
+示例中的 `8081` 是独立的互联端口：将 HTTPS 反向代理指向该端口，普通 Frog Bot 界面仍用原端口。也可以在配置中加入 `tls_cert` 和 `tls_key`（受信任证书和私钥的文件路径），直接监听可达地址，例如 `0.0.0.0:8081`。HTTP 仅允许回环地址，可用于本机测试或隧道。只添加你信任的设备：配对设备可以操作 Bot 会话、工作区文件、任务和调度，以及管理 API 渠道和 Agent 连接。
+
+配置了 API 渠道的 Bot 可用 `list_agents` 找到远程地址，并用 `ask_agent` 或 `message_agent` 协作；地址形如 `laptop/main`。仅用 CLI 时，可以在聊天中输入 `/ask laptop/main 问题` 或 `/message laptop/main 消息`。接收方如果用 CLI 回答，仍在接收方设备上启动并审批。设备离线时投递会报错，可以等连接恢复后再发。
 
 <p align="center"><img src="docs/images/architecture-minimal.png" alt="frog bot / OneFrog 目标架构示意" width="720"></p>
 

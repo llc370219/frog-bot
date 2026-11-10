@@ -18,9 +18,10 @@ import (
 
 // TaskOpts 是创建任务时的选项。
 type TaskOpts struct {
-	Hold       bool   // true = 只记成待办（暂停状态），等用户或聊天层说"开始"再跑
-	ID         string // 可选：确定性任务 ID（定时唤醒器用，避免重启后重复派发）
-	ScheduleID string // 可选：来源定时计划
+	Hold        bool   // true = 只记成待办（暂停状态），等用户或聊天层说"开始"再跑
+	ID          string // 可选：确定性任务 ID（定时唤醒器用，避免重启后重复派发）
+	ScheduleID  string // 可选：来源定时计划
+	peerRequest string // CLI 回答远程 Bot 时关联原收件箱消息
 }
 
 type sched struct {
@@ -80,6 +81,10 @@ func (b *Bot) StartTask(input, title string) (string, error) {
 }
 
 func (b *Bot) CreateTask(input, title string, o TaskOpts) (string, error) {
+	return b.createTask(input, title, o, b.selectedCLI(), false, nil)
+}
+
+func (b *Bot) createTask(input, title string, o TaskOpts, cli string, direct bool, history []onefrog.Message) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", errors.New("任务内容为空")
 	}
@@ -97,7 +102,8 @@ func (b *Bot) CreateTask(input, title string, o TaskOpts) (string, error) {
 		b.schedule()
 		return id, nil
 	}
-	rec := TaskRec{ID: id, Title: title, Input: input, Status: "queued", Prio: float64(time.Now().UnixNano()), CreatedAt: time.Now()}
+	rec := TaskRec{ID: id, Title: title, Input: input, CLI: cli, DirectChat: direct, History: history, PeerRequest: o.peerRequest,
+		Status: "queued", Prio: float64(time.Now().UnixNano()), CreatedAt: time.Now()}
 	if o.Hold {
 		rec.Status, rec.StopReason = "paused", "held"
 	}
@@ -154,8 +160,11 @@ func (b *Bot) schedule() {
 			return // 全局空位满了；有任务结束时会再叫我
 		}
 		profile := b.botProfile()
-		task := onefrog.Task{ID: t.ID, BotID: profile.ID, Input: t.Input, Workspace: b.cfg.Workspace,
-			Policy: b.cfg.Policy, MaxDuration: b.cfg.TaskMaxTime, Instructions: b.secretsBrief()}
+		task := onefrog.Task{ID: t.ID, BotID: profile.ID, CLI: t.CLI, Input: t.Input, History: t.History,
+			Workspace: b.cfg.Workspace, Policy: b.cfg.Policy, MaxDuration: b.cfg.TaskMaxTime}
+		if t.CLI == "" {
+			task.Instructions = b.secretsBrief()
+		}
 		if profile.Instructions != "" {
 			task.Instructions += "\n\n职责与工作偏好：\n" + profile.Instructions
 		}
@@ -317,7 +326,8 @@ func (b *Bot) RetryTask(id string) (string, error) {
 	if t.Open() {
 		_ = b.CancelTask(t.ID, "user")
 	}
-	return b.StartTask(t.Input, t.Title)
+	cli := b.selectedCLI()
+	return b.createTask(t.Input, t.Title, TaskOpts{peerRequest: t.PeerRequest}, cli, t.DirectChat && cli != "", t.History)
 }
 
 func (b *Bot) findTaskRec(id string) (TaskRec, bool) {
@@ -420,6 +430,9 @@ func (b *Bot) onAgentEvent(e onefrog.Event) {
 	case e.Type == onefrog.EvApprovalRequested:
 		if r, ok := e.Data.(onefrog.ApprovalRequest); ok {
 			t, _ := b.store.Task(e.TaskID)
+			if t.DirectChat {
+				return // 审批卡片本身已显示在对话里
+			}
 			b.notify(fmt.Sprintf("任务「%s」(%s) 需要用户批准才能继续：%s %s。原因：%s。审批卡片已经显示给用户。用一句话说明为什么需要确认；不要替用户批准，也不要催。",
 				t.Title, t.ID, r.ToolName, onefrog.Truncate(string(r.Args), 500), r.Reason))
 		}
@@ -438,8 +451,23 @@ func (b *Bot) report(id string) {
 	}
 	b.store.Append("task.summary", TaskSummary{ID: t.ID, Status: t.Status, Summary: summary, Steps: len(t.StepLog),
 		Files: t.Files, DurationSec: int(t.Duration().Seconds()), Error: t.Error}, false)
+	if t.PeerRequest != "" && t.Status == "completed" {
+		if m, ok := b.store.Message(t.PeerRequest); ok && m.MessageState == "pending" {
+			if _, err := b.messageAgent(m.FromBotID, onefrog.Truncate(t.Output, 7900), m.RequestID); err != nil {
+				b.say("远程答复未送达：" + err.Error())
+			}
+		}
+	}
 	if t.Status == "cancelled" && t.StopReason == "user" {
 		return // 用户自己叫停的，不用再汇报
+	}
+	if t.DirectChat {
+		if t.Status == "completed" {
+			b.say(t.Output)
+		} else {
+			b.say(fmt.Sprintf("%s：%s", onefrog.CLIName(t.CLI), summary))
+		}
+		return
 	}
 	var msg string
 	switch {
@@ -479,7 +507,7 @@ func (b *Bot) watchStalls() {
 			return
 		case <-tk.C:
 			for _, t := range b.store.Tasks() {
-				if t.Status == "running" && t.Awaiting == 0 && time.Since(t.LastActivity) > b.cfg.StallTimeout {
+				if t.CLI == "" && t.Status == "running" && t.Awaiting == 0 && time.Since(t.LastActivity) > b.cfg.StallTimeout {
 					b.store.Append("task.updated", TaskRec{ID: t.ID, StopReason: "stall"}, false)
 					_ = b.mgr.Cancel(t.ID)
 				}

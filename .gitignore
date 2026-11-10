@@ -8,6 +8,7 @@
 *.pfx
 credentials*
 secrets.json
+devices.json
 master.key
 data/
 workspace/

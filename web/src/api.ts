@@ -3,7 +3,9 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
 export type BotDraft = { name: string; instructions: string };
 export type BotProfile = BotDraft & { id: string; avatarSlot: number };
-const botPath = (id: string) => `/api/bots/${encodeURIComponent(id)}`;
+export type DeviceGroup = { id: string; name: string; online: boolean; bots: BotProfile[] };
+const botPath = (id: string, device = 'local') => (device === 'local' ? '/api/bots' : `/api/devices/${encodeURIComponent(device)}/bots`) + '/' + encodeURIComponent(id);
+export const botKey = (device: string, id: string) => device === 'local' ? id : `${device}/${id}`;
 
 export type APIChannel = {
   id: string; name: string; base_url: string; enabled: boolean; auth_required: boolean;
@@ -56,6 +58,7 @@ export type Approval = {
 };
 export type Item = { type: 'msg' | 'task' | 'approval'; id: string };
 export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string; version?: string };
+export type AgentConnections = { cli: string; clis: { id: string; name: string; installed: boolean }[] };
 export type Schedule = {
   id: string; title: string; prompt: string; enabled: boolean; kind: string; timezone: string;
   hour?: number; minute?: number; weekdays?: number[]; overlap?: string;
@@ -227,7 +230,7 @@ function applyAgent(s: State, e: AgentEv, persisted: boolean) {
 
 // useBot 连接 SSE，维护整个界面的状态。断线后带 Last-Event-ID（或 ?after=）重连补齐。
 // The caller keys the chat view by Bot ID, so replay and live events start from a clean state.
-export function useBot(id: string) {
+export function useBot(id: string, device = 'local') {
   const ref = useRef<State>(empty());
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -236,7 +239,7 @@ export function useBot(id: string) {
     const render = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; setTick((n) => n + 1); }); };
     const connect = () => {
       const s = ref.current;
-      es = new EventSource(`${botPath(id)}/stream${s.lastSeq ? `?after=${s.lastSeq}` : ''}`);
+      es = new EventSource(`${botPath(id, device)}/stream${s.lastSeq ? `?after=${s.lastSeq}` : ''}`);
       es.onopen = () => { s.connected = true; s.busy = false; resetTurn(s); render(); };
       es.onmessage = (m) => {
         const ev = JSON.parse(m.data) as Wire;
@@ -258,7 +261,7 @@ export function useBot(id: string) {
     };
     connect();
     return () => { closed = true; es?.close(); clearTimeout(retry); cancelAnimationFrame(raf); };
-  }, [id]);
+  }, [id, device]);
   return ref.current;
 }
 
@@ -284,8 +287,8 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
 
 export type TaskAction = 'pause' | 'resume' | 'cancel' | 'retry' | 'top' | 'up';
 
-export function createBotAPI(botID: string) {
-  const base = botPath(botID);
+export function createBotAPI(botID: string, device = 'local') {
+  const base = botPath(botID, device);
   return {
     info: (signal?: AbortSignal): Promise<Info> => get(`${base}/info`, signal),
     send: (text: string, files: Attachment[] = []) => post(`${base}/messages`, { text, files }),
@@ -316,33 +319,46 @@ export function createBotAPI(botID: string) {
   };
 }
 
-export const BotContext = createContext<{ bot: BotProfile; api: ReturnType<typeof createBotAPI> } | null>(null);
+export const BotContext = createContext<{ bot: BotProfile; device: DeviceGroup; api: ReturnType<typeof createBotAPI> } | null>(null);
 export function useActiveBot() {
   const context = useContext(BotContext);
   if (!context) throw new Error('Missing active Bot');
   return context;
 }
 
+export function createDeviceSettingsAPI(device: string) {
+  const base = device === 'local' ? '/api' : `/api/devices/${encodeURIComponent(device)}`;
+  return {
+    connections: (signal?: AbortSignal): Promise<AgentConnections> => get(`${base}/settings/connections`, signal),
+    saveConnection: (cli: string): Promise<AgentConnections> => post(`${base}/settings/connections`, { cli }),
+    settings: async (signal?: AbortSignal): Promise<APISettings> => {
+      const settings = await get<APISettings>(`${base}/settings`, signal);
+      if (typeof settings.base_url !== 'string' || typeof settings.model !== 'string') {
+        throw new Error('目标设备的后端版本与网页不匹配，请升级后重试');
+      }
+      return settings;
+    },
+    saveSettings: (s: APISettings): Promise<APISettings> => post(`${base}/settings`, s),
+    providerModels: (s: APISettings): Promise<{ models: string[] }> => post(`${base}/settings/models`, s),
+    testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post(`${base}/settings/test`, s),
+    checkUpdate: (signal?: AbortSignal): Promise<UpdateStatus> => get(`${base}/update`, signal),
+    version: async (signal?: AbortSignal) => (await get<Info>(`${botPath('main', device)}/info`, signal)).version,
+  };
+}
+
+export type DeviceSettingsAPI = ReturnType<typeof createDeviceSettingsAPI>;
+
 export const api = {
+  devices: (signal?: AbortSignal): Promise<DeviceGroup[]> => get('/api/devices', signal),
   bots: (signal?: AbortSignal): Promise<BotProfile[]> => get('/api/bots', signal),
-  createBot: (draft: BotDraft): Promise<BotProfile> => post('/api/bots', draft),
+  createBot: (draft: BotDraft, device = 'local'): Promise<BotProfile> =>
+    post(device === 'local' ? '/api/bots' : `/api/devices/${encodeURIComponent(device)}/bots`, draft),
   editBot: (id: string, draft: BotDraft): Promise<BotProfile> => post(botPath(id), draft, 'PATCH'),
   deleteBot: (id: string, purge = false): Promise<{ ok: boolean }> => post(`${botPath(id)}${purge ? '?purge=1' : ''}`, {}, 'DELETE'),
   botPaths: (id: string): Promise<{ data_dir: string; workspace: string }> => get(`${botPath(id)}/paths`),
   me: (): Promise<AuthInfo> => get('/api/auth/me'),
   logout: () => post('/api/auth/logout'),
   changePassword: (oldPassword: string, newPassword: string) => post('/api/auth/password', { old_password: oldPassword, new_password: newPassword }),
-  settings: async (signal?: AbortSignal): Promise<APISettings> => {
-    const settings = await get<APISettings>('/api/settings', signal);
-    if (typeof settings.base_url !== 'string' || typeof settings.model !== 'string') {
-      throw new Error('后端版本与网页不匹配，请重启 Frog Bot 后端并刷新网页');
-    }
-    return settings;
-  },
-  saveSettings: (s: APISettings): Promise<APISettings> => post('/api/settings', s),
-  providerModels: (s: APISettings): Promise<{ models: string[] }> => post('/api/settings/models', s),
-  testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post('/api/settings/test', s),
-  checkUpdate: (): Promise<UpdateStatus> => get('/api/update'),
 };
 
 export const isActive = (t: Task) => t.status === 'queued' || t.status === 'running';
