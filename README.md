@@ -11,9 +11,11 @@
   <a href="https://t.me/+pKQYEaxzidU4ZjZh">Telegram 群</a>
 </p>
 
+**frog bot 是一个装在你自己服务器上的 AI 助理平台。** 你可以通过网页、Mac 或 Android 同时使用多个 AI 助理。它们平时陪你对话，需要动手时就在后台读写文件、执行命令、按计划定时干活。模型方面，既能接任意 OpenAI 兼容模型，也能直接用你已有的 ChatGPT、Claude 等订阅。所有危险操作都要你亲手批准，密钥加密保存，模型永远看不到明文，数据全部留在你自己的机器上。
+
 ## 项目介绍
 
-在服务器上运行 frog bot，再用网页、Mac 或 Android 和它对话。每个 Bot 分两层：**聊天层**用快模型和你交流、派活、汇报；**后台执行器**负责读写文件、执行命令，可以用内置 Agent（任意 OpenAI 兼容 API），也可以接入你已订阅的 Codex CLI、Claude Code、Pi、Grok CLI、Antigravity CLI。
+每个 Bot 分两层：**聊天层**用快模型和你交流、派活、汇报；**后台执行器**负责读写文件、执行命令，可以用内置 Agent（任意 OpenAI 兼容 API），也可以接入你已订阅的 Codex CLI、Claude Code、Pi、Grok CLI、Antigravity CLI。
 
 最多可以建 32 个 Bot，每个 Bot 的对话、任务、记忆、密钥、定时计划和工作区都相互独立。
 
