@@ -1,5 +1,12 @@
 package io.github.llc370219.frogbot.claude.ui
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
@@ -114,32 +121,47 @@ fun SettingsScreen(state: AppState, nav: Nav, updater: ClientUpdater, onInstall:
             ListRow("Bot 互联", if (state.relay.enabled) "已打开" else "已关闭", Icons.Outlined.Hub, chevron = true, onClick = { nav.push(Screen.Relay) })
             ListRow("外观", when (state.appearance) { "light" -> "浅色"; "dark" -> "深色"; else -> "跟随系统" }, Icons.Outlined.Palette, chevron = true,
                 onClick = { nav.push(Screen.Appearance) })
-            if (updater.enabled) ClientUpdateRow(updater, onInstall)
-            Note("${context.getString(R.string.app_name)} ${BuildConfig.VERSION_NAME}")
+            SectionLabel("客户端")
+            ClientUpdateRow(updater, onInstall, "${context.getString(R.string.app_name)} ${BuildConfig.VERSION_NAME}")
         }
     }
 }
 
+/** 设置 › 客户端：图标、版本号，右边一个「检查更新 / 安装更新」按钮，下面一行状态 */
 @Composable
-private fun ClientUpdateRow(updater: ClientUpdater, onInstall: () -> Unit) {
+private fun ClientUpdateRow(updater: ClientUpdater, onInstall: () -> Unit, version: String) {
     val status = updater.status
-    val supporting = when (status) {
-        ClientUpdateStatus.Idle -> null
-        ClientUpdateStatus.Checking -> "正在检查…"
-        is ClientUpdateStatus.Downloading -> "正在下载 ${status.version}…"
-        is ClientUpdateStatus.Ready -> "${status.version} 已下载"
-        ClientUpdateStatus.Current -> "已是最新版本"
-        is ClientUpdateStatus.Failed -> status.message
+    val supporting = when {
+        !updater.enabled -> "这个安装包不支持自动更新"
+        else -> when (status) {
+            ClientUpdateStatus.Idle -> "会自动检查 GitHub 上的正式版"
+            ClientUpdateStatus.Checking -> "正在检查…"
+            is ClientUpdateStatus.Downloading -> "正在下载 ${status.version}…"
+            is ClientUpdateStatus.Ready -> "${status.version} 已下载，点安装"
+            ClientUpdateStatus.Current -> "已是最新版本"
+            is ClientUpdateStatus.Failed -> status.message
+        }
     }
-    val action: (() -> Unit)? = when (status) {
-        ClientUpdateStatus.Checking, is ClientUpdateStatus.Downloading -> null
-        is ClientUpdateStatus.Ready -> onInstall
-        else -> ({ updater.check(manual = true) })
-    }
+    val busy = status == ClientUpdateStatus.Checking || status is ClientUpdateStatus.Downloading
     ListRow(
-        if (status is ClientUpdateStatus.Ready) "安装客户端更新" else "检查客户端更新",
-        supporting, Icons.Outlined.SystemUpdate, onClick = action,
-    )
+        version, supporting,
+        leading = {
+            Image(
+                painterResource(R.mipmap.ic_launcher), null,
+                Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)),
+            )
+        },
+    ) {
+        if (updater.enabled) {
+            if (busy) {
+                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+            } else if (status is ClientUpdateStatus.Ready) {
+                Button(onClick = onInstall) { Text("安装更新") }
+            } else {
+                FilledTonalButton(onClick = { updater.check(manual = true) }) { Text("检查更新") }
+            }
+        }
+    }
 }
 
 @Composable

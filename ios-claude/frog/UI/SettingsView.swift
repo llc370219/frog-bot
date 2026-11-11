@@ -49,14 +49,29 @@ struct SettingsView: View {
                 }
             }
             Section {
-                LabeledContent("版本", value: version)
+                HStack(spacing: 14) {
+                    FrogMark(size: 52)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("frog").font(.headline)
+                        Text("版本 \(version)").font(.subheadline).monospacedDigit().foregroundStyle(Theme.fg3)
+                    }
+                    Spacer()
+                    updateButton
+                }
+                .padding(.vertical, 4)
+                if let note = updateNote {
+                    Text(note.0).font(.footnote).foregroundStyle(note.1)
+                }
+                if let url = updateURL {
+                    Link(destination: url) { Label("查看新版本", systemImage: "arrow.down.circle") }
+                }
                 Link(destination: URL(string: "https://github.com/llc370219/frog-bot")!) {
                     Label("项目主页", systemImage: "arrow.up.right.square")
                 }
             } header: {
-                Text("关于")
+                Text("客户端")
             } footer: {
-                Text("frog 的原生 iOS 客户端。可以同时连接多台服务器，统一聊天、派任务、批准操作。")
+                Text("iOS 版用 Xcode 安装，不能在 App 里自动更新；有新版本时用 Xcode 重新安装一次即可，数据会保留。")
             }
         }
         .listStyle(.insetGrouped)
@@ -64,10 +79,56 @@ struct SettingsView: View {
         .toolbar { EditButton() }
     }
 
+    @State private var checking = false
+    @State private var updateNote: (String, Color)?
+    @State private var updateURL: URL?
+
     private var version: String {
-        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        return "\(v)（\(b)）"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    }
+
+    private var updateButton: some View {
+        Button(action: checkUpdate) {
+            HStack(spacing: 5) {
+                if checking {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                }
+                Text("检查更新")
+            }
+        }
+        .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
+        .disabled(checking)
+    }
+
+    /// 对比 GitHub 上最新正式版的版本号
+    private func checkUpdate() {
+        checking = true
+        updateNote = nil
+        updateURL = nil
+        Task {
+            defer { checking = false }
+            do {
+                var req = URLRequest(url: URL(string: "https://api.github.com/repos/llc370219/frog-bot/releases/latest")!)
+                req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+                req.timeoutInterval = 15
+                let (data, _) = try await URLSession.shared.data(for: req)
+                let j = JSON.parse(data) ?? .null
+                let tag = j["tag_name"].str
+                let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+                guard !latest.isEmpty else { throw APIError.invalid("没读到最新版本号") }
+                if latest.compare(version, options: .numeric) == .orderedDescending {
+                    updateNote = ("有新版本 \(latest)，用 Xcode 重新安装即可更新。", Theme.accent)
+                    updateURL = URL(string: j["html_url"].str)
+                } else {
+                    updateNote = ("已是最新版本", Theme.ok)
+                }
+                Haptics.tap()
+            } catch {
+                updateNote = ("检查失败：\(error.localizedDescription)", Theme.danger)
+            }
+        }
     }
 }
 

@@ -267,6 +267,8 @@ private struct GeneralPane: View {
 #if canImport(Sparkle)
                 if let updater {
                     RowDivider()
+                    ClientUpdateRow(updater: updater)
+                    RowDivider()
                     ClientUpdatePreference(updater: updater)
                 }
 #endif
