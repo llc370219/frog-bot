@@ -48,6 +48,7 @@ sealed interface Screen {
     data class BotEditor(val server: String, val device: String, val ref: BotRef? = null) : Screen
     data object Appearance : Screen
     data object Notifications : Screen
+    data object Relay : Screen
 }
 
 class Nav {
@@ -109,6 +110,7 @@ private fun ScreenContent(s: Screen, state: AppState, nav: Nav) {
         is Screen.BotEditor -> state.server(s.server)?.let { BotEditorScreen(state, it, s.device, s.ref, nav) } ?: MissingScreen("服务器已移除", nav)
         Screen.Appearance -> AppearanceScreen(state, nav)
         Screen.Notifications -> NotificationsScreen(state, nav)
+        Screen.Relay -> RelayScreen(state, nav)
     }
 }
 

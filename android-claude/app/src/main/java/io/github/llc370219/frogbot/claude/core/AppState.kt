@@ -88,6 +88,9 @@ class AppState(private val context: Context) {
 
     var onNotify: ((BotSession, String, NewsKind) -> Unit)? = null
 
+    /** 客户端互联（设置 › Bot 互联） */
+    val relay = RelayManager(sp, scope)
+
     init {
         val list = runCatching { JSONArray(sp.getString("servers", "[]")) }.getOrElse { JSONArray() }
         val cookies = runCatching { JSONObject(sp.getString("sessions", "{}") ?: "{}") }.getOrElse { JSONObject() }
@@ -96,6 +99,7 @@ class AppState(private val context: Context) {
             servers.add(ServerEntry(c, cookies.strOrNull(c.id)))
         }
         servers.forEach(::wire)
+        relay.attach { servers.toList() }
     }
 
     val totalUnread: Int get() = unread.values.sum()
@@ -142,6 +146,8 @@ class AppState(private val context: Context) {
             if (e.unauthorized) s.markNeedsLogin() else s.status = ServerStatus.Offline(e.message ?: "离线")
         } catch (e: Exception) {
             s.status = ServerStatus.Offline(ServerClient.describe(e))
+        } finally {
+            relay.apply()
         }
     }
 
@@ -218,9 +224,11 @@ class AppState(private val context: Context) {
         saveCookie(s)
         if (existing == null) wire(s) else startPolling(s)
         syncSessions(s)
+        relay.apply()
     }
 
     fun remove(s: ServerEntry) {
+        relay.forget(s)
         s.poll?.cancel()
         stopSessions(s)
         sessions.keys.filter { it.startsWith(s.id + "|") }.forEach { sessions.remove(it); unread.remove(it) }
@@ -230,6 +238,7 @@ class AppState(private val context: Context) {
         saveCookie(s)
         servers.remove(s)
         persist()
+        relay.apply()
     }
 
     suspend fun logout(s: ServerEntry) {
@@ -238,6 +247,7 @@ class AppState(private val context: Context) {
         saveCookie(s)
         stopSessions(s)
         s.markNeedsLogin()
+        relay.apply()
     }
 
     suspend fun changePassword(s: ServerEntry, old: String, new: String) {

@@ -55,6 +55,7 @@ type Bots struct {
 	sharedMu   sync.Mutex
 	deliveryMu sync.Mutex
 	network    *peerNetwork
+	relay      relayHub
 	closed     bool
 }
 
@@ -166,6 +167,12 @@ func (bs *Bots) Deliver(fromID, toID, text, requestID, replyTo string) (string, 
 }
 
 func (bs *Bots) deliver(fromID, toID, text, requestID, replyTo string) (string, string, error) {
+	if isRelayAddress(toID) {
+		if requestID != "" {
+			return "", "", errors.New("request_id 由系统生成，发送方不能指定")
+		}
+		return bs.deliverRelay(fromID, toID, text, replyTo, false)
+	}
 	if strings.Contains(toID, "/") {
 		if requestID != "" {
 			return "", "", errors.New("request_id 由系统生成，发送方不能指定")
@@ -239,7 +246,9 @@ func (b *Bot) askAgent(to, question string) (string, error) {
 	}
 	var requestID string
 	var err error
-	if strings.Contains(to, "/") {
+	if isRelayAddress(to) {
+		_, requestID, err = b.coordinator.deliverRelay(b.ID(), to, question, "", true)
+	} else if strings.Contains(to, "/") {
 		_, requestID, err = b.coordinator.deliverPeer(b.ID(), to, question, "", true)
 	} else {
 		_, requestID, err = b.coordinator.deliver(b.ID(), to, "请回答以下问题，并使用 message_agent 将答复发回请求方；reply_to 必须使用请求 ID。问题：\n"+question, "", "")
@@ -422,12 +431,15 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "version": currentVersion(), "api_version": 1}, nil)
 	})
+	mux.HandleFunc("POST /api/relay/sync", bs.serveRelaySync)
+	mux.HandleFunc("POST /api/relay/inbox", bs.serveRelayInbox)
 	mux.HandleFunc("GET /api/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"api_version": 1, "version": currentVersion(),
 			"clients": []string{"web", "android", "macos"},
 			"auth":    map[string]any{"session": "cookie", "status_path": "/api/auth/me"},
 			"events":  map[string]any{"transport": "sse", "resume": "Last-Event-ID", "heartbeat_sec": 20},
+			"relay":   map[string]any{"sync": "/api/relay/sync", "inbox": "/api/relay/inbox", "ttl_sec": int(relayTTL.Seconds())},
 			"limits": map[string]any{"json_bytes": maxJSONBody, "upload_file_bytes": maxUpload,
 				"upload_request_bytes": maxUpload + (1 << 20), "upload_files": 16, "bots": maxBots},
 		}, nil)

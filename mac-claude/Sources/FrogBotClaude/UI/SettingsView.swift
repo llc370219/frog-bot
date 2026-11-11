@@ -7,6 +7,7 @@ import SwiftUI
 enum SettingsPane: Hashable {
     case general
     case notify
+    case relay
     case server(UUID)
     case channels(BotRef)
     case agents(BotRef)
@@ -68,6 +69,7 @@ struct SettingsView: View {
         List(selection: Binding(get: { sidebarSelection }, set: { if let p = $0 { pane = p } })) {
             Label("通用", systemImage: "gearshape").tag(SettingsPane.general)
             Label("通知", systemImage: "bell").tag(SettingsPane.notify)
+            Label("Bot 互联", systemImage: "point.3.connected.trianglepath.dotted").tag(SettingsPane.relay)
             Section("服务器") {
                 ForEach(model.servers) { s in
                     HStack(spacing: 6) {
@@ -132,6 +134,7 @@ struct SettingsView: View {
         switch pane {
         case .general: return "通用"
         case .notify: return "通知"
+        case .relay: return "Bot 互联"
         case .server(let id): return model.server(id)?.name ?? "服务器"
         case .channels(let r), .agents(let r): return botName(r)
         case .account: return "账号与登录"
@@ -151,6 +154,8 @@ struct SettingsView: View {
             GeneralPane()
         case .notify:
             NotifyPane()
+        case .relay:
+            RelayPane()
         case .server(let id):
             if let s = model.server(id) {
                 ServerPane(server: s, go: { pane = $0 })
@@ -307,6 +312,72 @@ private struct NotifyPane: View {
     private func row(_ title: String, _ value: Binding<Bool>) -> some View {
         FormRow(title: title) {
             Toggle("", isOn: value).toggleStyle(.switch).controlSize(.small).labelsHidden()
+        }
+    }
+}
+
+// MARK: - Bot 互联
+
+@MainActor
+private struct RelayPane: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let relay = model.relay
+        VStack(alignment: .leading, spacing: 0) {
+            FormGroup {
+                FormRow(title: "允许这些服务器上的 Bot 互相发消息") {
+                    Toggle("", isOn: Binding(get: { relay.enabled }, set: { relay.enabled = $0 }))
+                        .toggleStyle(.switch).controlSize(.small).labelsHidden()
+                }
+            }
+            .padding(.top, 16)
+            Caption(text: "聊天 Bot 之间只能互相发文字：问问对方记得什么，或者托付一件事让对方在它自己的机器上做。只在这个 App 开着时有效，消息由 App 转交，不排队；关掉 App 或开关后，对方立刻联系不上。")
+
+            if model.servers.count < 2 {
+                Caption(text: "至少要添加两台服务器才能互联。", tone: Theme.fg3)
+            }
+            ForEach(model.servers) { s in
+                GroupHeader(text: s.name)
+                FormGroup {
+                    FormRow(title: "这台服务器参与互联") {
+                        HStack(spacing: 8) {
+                            stateText(s)
+                            Toggle("", isOn: Binding(get: { relay.isOn(s) }, set: { relay.set(s, on: $0) }))
+                                .toggleStyle(.switch).controlSize(.small).labelsHidden()
+                        }
+                    }
+                    ForEach(relay.localBots(s)) { b in
+                        RowDivider()
+                        FormRow(title: b.name) {
+                            Toggle("", isOn: Binding(get: { relay.isOn(s, bot: b.id) }, set: { relay.set(s, bot: b.id, on: $0) }))
+                                .toggleStyle(.switch).controlSize(.small).labelsHidden()
+                        }
+                        .padding(.leading, 14)
+                    }
+                }
+                .disabled(!relay.enabled)
+                .opacity(relay.enabled ? 1 : 0.55)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func stateText(_ s: ServerEntry) -> some View {
+        let (text, color): (String, Color) = {
+            guard model.relay.enabled, model.relay.isOn(s) else { return ("", Theme.fg4) }
+            switch model.relay.states[s.id] ?? .off {
+            case .off: return (s.isOnline ? "" : "服务器不在线", Theme.fg4)
+            case .connecting: return ("正在连接", Theme.fg4)
+            case .waiting: return ("没有可联系的对象", Theme.fg4)
+            case .active: return ("已接入", Theme.ok)
+            case .unsupported: return ("服务器版本太旧，请先更新", Theme.warn)
+            case .failed(let e): return (e, Theme.danger)
+            }
+        }()
+        if !text.isEmpty {
+            Text(text).font(.system(size: 11.5)).foregroundStyle(color).lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: 260, alignment: .trailing)
         }
     }
 }

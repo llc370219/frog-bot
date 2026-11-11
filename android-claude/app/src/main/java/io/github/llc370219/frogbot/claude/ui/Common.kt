@@ -124,9 +124,15 @@ fun ListRow(
 }
 
 @Composable
-fun SwitchRow(title: String, supporting: String? = null, icon: ImageVector? = null, checked: Boolean, onChange: (Boolean) -> Unit) {
-    ListRow(title, supporting, icon, onClick = { onChange(!checked) }) {
-        Switch(checked = checked, onCheckedChange = onChange)
+fun SwitchRow(
+    title: String, supporting: String? = null, icon: ImageVector? = null, checked: Boolean,
+    enabled: Boolean = true, onChange: (Boolean) -> Unit,
+) {
+    ListRow(
+        title, supporting, icon, onClick = if (enabled) ({ onChange(!checked) }) else null,
+        titleColor = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+    ) {
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

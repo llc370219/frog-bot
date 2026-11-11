@@ -20,6 +20,7 @@ import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Cable
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.NotificationsActive
@@ -68,6 +69,7 @@ import io.github.llc370219.frogbot.claude.core.ApiSettings
 import io.github.llc370219.frogbot.claude.core.AppState
 import io.github.llc370219.frogbot.claude.core.BotRef
 import io.github.llc370219.frogbot.claude.core.BotSession
+import io.github.llc370219.frogbot.claude.core.RelayState
 import io.github.llc370219.frogbot.claude.core.ServerClient
 import io.github.llc370219.frogbot.claude.core.ServerEntry
 import io.github.llc370219.frogbot.claude.core.ServerStatus
@@ -105,6 +107,7 @@ fun SettingsScreen(state: AppState, nav: Nav) {
                 if (on) runCatching { KeepAliveService.start(context) } else KeepAliveService.stop(context)
             }
             ListRow("通知", "等你确认、任务结束、新回复", Icons.Outlined.Notifications, chevron = true, onClick = { nav.push(Screen.Notifications) })
+            ListRow("Bot 互联", if (state.relay.enabled) "已打开" else "已关闭", Icons.Outlined.Hub, chevron = true, onClick = { nav.push(Screen.Relay) })
             ListRow("外观", when (state.appearance) { "light" -> "浅色"; "dark" -> "深色"; else -> "跟随系统" }, Icons.Outlined.Palette, chevron = true,
                 onClick = { nav.push(Screen.Appearance) })
             Note("Frog Bot Claude 0.1.0")
@@ -132,6 +135,43 @@ fun NotificationsScreen(state: AppState, nav: Nav) {
         SwitchRow("任务完成或失败", checked = t) { t = it; state.prefs.notifyTask = it }
         SwitchRow("新回复", checked = r) { r = it; state.prefs.notifyReply = it }
         Note("App 在前台时不弹通知。想在后台及时收到，打开「设置 › 后台保持连接」。通知样式在系统设置里调整。")
+    }
+}
+
+// ---------- Bot 互联 ----------
+
+@Composable
+fun RelayScreen(state: AppState, nav: Nav) {
+    val relay = state.relay
+    SubPage("Bot 互联", nav) {
+        SwitchRow("允许这些服务器上的 Bot 互相发消息", checked = relay.enabled) { relay.changeEnabled(it) }
+        Note("聊天 Bot 之间只能互相发文字：问问对方记得什么，或者托付一件事让对方在它自己的机器上做。只在这个 App 开着时有效，消息由 App 转交，不排队；关掉 App 或开关后，对方立刻联系不上。")
+        if (state.servers.size < 2) Note("至少要添加两台服务器才能互联。")
+        state.servers.forEach { s ->
+            SectionLabel(s.name)
+            val serverOn = relay.isOn(s)
+            SwitchRow(
+                "这台服务器参与互联", relayStateText(relay.enabled && serverOn, s, relay.states[s.id]), Icons.Outlined.Dns,
+                checked = serverOn, enabled = relay.enabled,
+            ) {
+                relay.setServer(s, it)
+            }
+            relay.localBots(s).forEach { b ->
+                SwitchRow(b.name, icon = Icons.Outlined.SmartToy, checked = relay.isOn(s, b.id), enabled = relay.enabled && serverOn) { relay.setBot(s, b.id, it) }
+            }
+        }
+    }
+}
+
+private fun relayStateText(on: Boolean, s: ServerEntry, st: RelayState?): String? {
+    if (!on) return null
+    return when (val x = st ?: RelayState.Off) {
+        RelayState.Off -> if (s.online) null else "服务器不在线"
+        RelayState.Connecting -> "正在连接"
+        RelayState.Waiting -> "没有可联系的对象"
+        RelayState.Active -> "已接入"
+        RelayState.Unsupported -> "服务器版本太旧，请先更新"
+        is RelayState.Failed -> x.error
     }
 }
 

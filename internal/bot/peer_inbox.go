@@ -106,15 +106,23 @@ func (bs *Bots) receivePeerMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	from := r.Header.Get(deviceHeader) + "/" + m.From
+	if err := bs.acceptRemote(b, from, m); err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true}, nil)
+}
+
+// acceptRemote 把另一台设备（或客户端互联转来）的消息写进收件箱并唤醒聊天层。
+// from 是对方在本机看到的地址（设备ID/BotID 或 relay:服务器/BotID）；同一条消息重复送达时直接算成功。
+func (bs *Bots) acceptRemote(b *Bot, from string, m peerMessage) error {
 	bs.deliveryMu.Lock()
 	defer bs.deliveryMu.Unlock()
 	if existing, ok := b.store.Message(m.ID); ok {
 		if existing.FromBotID == from && existing.RequestID == m.RequestID && existing.ToBotID == m.To {
-			writeJSON(w, map[string]bool{"ok": true}, nil)
-		} else {
-			writeJSON(w, nil, errors.New("消息 ID 冲突"))
+			return nil
 		}
-		return
+		return errors.New("消息 ID 冲突")
 	}
 	hop := 1
 	if m.ReplyTo != "" {
@@ -127,8 +135,7 @@ func (bs *Bots) receivePeerMessage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if original == "" {
-			writeJSON(w, nil, errors.New("找不到与这条回复匹配的请求"))
-			return
+			return errors.New("找不到与这条回复匹配的请求")
 		}
 		hop = 2
 		b.store.Append("message.state", map[string]string{"ID": original, "State": "replied"}, true)
@@ -137,7 +144,7 @@ func (bs *Bots) receivePeerMessage(w http.ResponseWriter, r *http.Request) {
 		RequestID: m.RequestID, ReplyTo: m.ReplyTo, WantsReply: m.WantsReply, Hop: hop,
 		MessageState: "pending", CreatedAt: time.Now()}, true)
 	b.wake()
-	writeJSON(w, map[string]bool{"ok": true}, nil)
+	return nil
 }
 
 func (b *Bot) listAgents() string {
@@ -159,6 +166,12 @@ func (b *Bot) listAgents() string {
 				continue
 			}
 			fmt.Fprintf(&text, "- %s: %s\n", id, p.Name)
+		}
+	}
+	if peers := b.coordinator.relay.peersFor(b.ID()); len(peers) > 0 {
+		text.WriteString("客户端互联（只在用户的客户端开着时可用，只能文字交流）\n")
+		for _, p := range peers {
+			fmt.Fprintf(&text, "- %s: %s（服务器：%s）\n", p.Address, p.Name, p.Server)
 		}
 	}
 	return strings.TrimSpace(text.String())

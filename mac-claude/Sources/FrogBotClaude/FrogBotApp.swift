@@ -58,6 +58,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         MainActor.assumeIsolated { Prefs.applyAppearance() }
     }
 
+    // 退出前告诉各服务器：这个客户端不再转交互联消息（对方的通讯录马上清掉，而不是等 45 秒过期）
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            let relay = AppModel.shared.relay
+            guard relay.isRunning else { return .terminateNow }
+            Task { @MainActor in
+                await relay.shutdown()
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
+    }
+
     // 默认关掉窗口后继续在后台运行：后台任务完成、需要审批时照样通知
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         !UserDefaults.standard.bool(forKey: Prefs.keepRunning)

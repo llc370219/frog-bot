@@ -108,6 +108,8 @@ final class AppModel {
     var route: Route = .chat
     /// 打开设置窗口时要显示的服务器（从侧栏「服务器设置…」进来）
     var settingsServer: UUID?
+    /// 客户端互联（设置 › 互联）
+    let relay = RelayManager()
 
     /// 会话：一旦打开就一直连着（后台任务的进展和审批都能及时提醒）
     @ObservationIgnored private(set) var sessions: [BotRef: BotSession] = [:]
@@ -127,6 +129,7 @@ final class AppModel {
             selection = BotRef(key: key)
         }
         for s in servers { wire(s) }
+        relay.attach(self)
     }
 
     var totalUnread: Int { unread.values.reduce(0, +) }
@@ -163,6 +166,7 @@ final class AppModel {
 
     func refresh(_ s: ServerEntry) async {
         if s.status == .needsLogin { return }
+        defer { relay.apply() }
         do {
             var groups: [DeviceGroup]
             do {
@@ -277,6 +281,7 @@ final class AppModel {
             persist()
             syncSessions(s)
             startPolling(s)
+            relay.apply()
         } else {
             let s = ServerEntry(config: config)
             s.client = client
@@ -287,6 +292,7 @@ final class AppModel {
             persist()
             wire(s)
             syncSessions(s)
+            relay.apply()
             if let g = groups.first, let b = g.bots.first {
                 selection = BotRef(server: s.id, device: g.id, bot: b.id)
             }
@@ -294,6 +300,7 @@ final class AppModel {
     }
 
     func remove(_ s: ServerEntry) {
+        relay.forget(s)
         s.pollTask?.cancel()
         stopSessions(of: s)
         for ref in sessions.keys where ref.server == s.id {
@@ -325,6 +332,7 @@ final class AppModel {
         s.client.forgetSession()
         stopSessions(of: s)
         s.markNeedsLogin()
+        relay.apply()
     }
 
     func checkUpdate(_ s: ServerEntry) async throws -> UpdateStatus {
@@ -338,6 +346,7 @@ final class AppModel {
         s.client.update(config: s.config)
         persist()
         syncSessions(s)
+        relay.apply()
     }
 
     func move(from: IndexSet, to: Int) {

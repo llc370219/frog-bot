@@ -164,8 +164,10 @@ final class ServerClient {
     }
 
     @discardableResult
-    func post(_ path: String, body: [String: Any] = [:], method: String = "POST", query: [URLQueryItem] = []) async throws -> JSON {
+    func post(_ path: String, body: [String: Any] = [:], method: String = "POST", query: [URLQueryItem] = [],
+              timeout: TimeInterval? = nil) async throws -> JSON {
         var r = makeRequest(method, path, query: query)
+        if let timeout { r.timeoutInterval = timeout }
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         r.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, _) = try await send(r)

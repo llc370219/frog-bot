@@ -74,6 +74,12 @@ class ServerClient(config: ServerConfig, var cookie: String?) {
         /** 事件流：服务器每 20 秒心跳，90 秒读不到东西就当断线重连 */
         val stream: OkHttpClient = http.newBuilder().readTimeout(90, TimeUnit.SECONDS).build()
 
+        /** 互联长轮询：服务器最多等 25 秒才返回 */
+        val longPoll: OkHttpClient = http.newBuilder().readTimeout(40, TimeUnit.SECONDS).build()
+
+        /** 互联的短请求（转交消息、退出时通知），不能卡太久 */
+        val quick: OkHttpClient = http.newBuilder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).build()
+
         fun describe(e: Throwable): String = when (e) {
             is ApiException -> e.message ?: "请求失败"
             is UnknownHostException -> "找不到这个地址，请检查域名或 IP"
@@ -119,9 +125,9 @@ class ServerClient(config: ServerConfig, var cookie: String?) {
         }
     }
 
-    private suspend fun exec(r: Request): String = withContext(Dispatchers.IO) {
+    private suspend fun exec(r: Request, client: OkHttpClient = http): String = withContext(Dispatchers.IO) {
         try {
-            http.newCall(r).execute().use { check(it) }
+            client.newCall(r).execute().use { check(it) }
         } catch (e: ApiException) {
             throw e
         } catch (e: Exception) {
@@ -138,8 +144,11 @@ class ServerClient(config: ServerConfig, var cookie: String?) {
     suspend fun getObject(path: String, query: Map<String, String> = emptyMap()): JSONObject = JSONObject(getText(path, query).ifBlank { "{}" })
     suspend fun getArray(path: String, query: Map<String, String> = emptyMap()): JSONArray = JSONArray(getText(path, query).ifBlank { "[]" })
 
-    suspend fun post(path: String, body: JSONObject = JSONObject(), method: String = "POST", query: Map<String, String> = emptyMap()): JSONObject {
-        val text = exec(request(path, query).method(method, body.toString().toRequestBody(JSON_TYPE)).build())
+    suspend fun post(
+        path: String, body: JSONObject = JSONObject(), method: String = "POST", query: Map<String, String> = emptyMap(),
+        client: OkHttpClient = http,
+    ): JSONObject {
+        val text = exec(request(path, query).method(method, body.toString().toRequestBody(JSON_TYPE)).build(), client)
         errorIn(text)
         return runCatching { JSONObject(text) }.getOrElse { JSONObject() }
     }
