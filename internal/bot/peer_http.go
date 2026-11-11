@@ -66,6 +66,10 @@ var deviceSettingsRoutes = []struct{ method, endpoint string }{
 	{"POST", "/settings/models"},
 	{"POST", "/settings/test"},
 	{"GET", "/update"},
+	{"GET", "/channels"},
+	{"POST", "/channels"},
+	{"POST", "/channels/models"},
+	{"POST", "/channels/test"},
 }
 
 func (bs *Bots) mountDeviceSettings(mux *http.ServeMux, prefix string, outbound bool) {
@@ -73,6 +77,8 @@ func (bs *Bots) mountDeviceSettings(mux *http.ServeMux, prefix string, outbound 
 		mux.HandleFunc(route.method+" "+prefix+route.endpoint, func(w http.ResponseWriter, r *http.Request) {
 			if outbound {
 				bs.proxyDeviceSettings(w, r, route.endpoint)
+			} else if route.method == "GET" && route.endpoint == "/channels" {
+				writeJSON(w, bs.channelsView(), nil)
 			} else {
 				bs.serveBotRoute(w, r, defaultBotID, strings.TrimPrefix(route.endpoint, "/"), false)
 			}
@@ -169,7 +175,7 @@ func peerBotRoute(method, rest string) bool {
 		return false
 	}
 	switch rest {
-	case "messages", "stop", "regenerate", "uploads", "settings", "settings/connections", "settings/models", "settings/test":
+	case "messages", "stop", "regenerate", "uploads", "settings", "settings/routes", "settings/connections", "settings/models", "settings/test":
 		return true
 	}
 	parts := strings.Split(rest, "/")

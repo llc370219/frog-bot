@@ -33,7 +33,9 @@ type APISettings struct {
 	ProviderID        string       `json:"provider_id,omitempty"`
 	// EnvOverride 表示模型连接由环境变量（BASE_URL / API_KEY / CHAT_MODEL / AGENT_MODEL）提供，
 	// 优先于网页里保存的渠道；网页上的修改要等去掉环境变量后才生效。
-	EnvOverride bool `json:"env_override,omitempty"`
+	EnvOverride   bool   `json:"env_override,omitempty"`
+	EnvModel      string `json:"env_model,omitempty"`
+	EnvAgentModel string `json:"env_agent_model,omitempty"`
 }
 
 type modelConnection struct {
@@ -41,8 +43,8 @@ type modelConnection struct {
 	provider            onefrog.Provider
 }
 
-// 模型配置只有一个来源：data/channels.json（API Key 用主密钥加密）。环境变量可以临时覆盖，但不写盘。
-// 旧版本的配置在第一次启动时迁移进 channels.json，原文件改名为 *.migrated：
+// API 渠道存在设备共用的 data/api-channels.json（API Key 用默认 Bot 的主密钥加密），每个 Bot 的选择存在
+// 自己的 channels.json。环境变量可以临时覆盖，但不写盘。旧版本的配置在第一次启动时迁移，原文件改名为 *.migrated：
 //   - v0.1.1-beta：data/config/model.json + data/config/secrets.json（MODEL_API_KEY）
 //   - 开发分支上短暂存在过的 data/settings.json（base_url / model / sealed_api_key）
 func (b *Bot) loadSettings() error {
@@ -52,13 +54,21 @@ func (b *Bot) loadSettings() error {
 			model = b.cfg.AgentModel
 		}
 		if model != "" {
+			agent := b.cfg.AgentModel
+			if agent == "" {
+				agent = model
+			}
 			b.envModel = newConnection(b.cfg.InitialBaseURL, model, b.cfg.InitialKey)
+			b.envAgent = newConnection(b.cfg.InitialBaseURL, agent, b.cfg.InitialKey)
 		}
 	}
 	if _, err := os.Stat(b.channelPath()); err == nil {
 		return b.loadChannels()
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if b.modelOwner != nil {
+		return nil // 只有默认 Bot 需要迁移 v0.1.1 之前的单一配置
 	}
 	return b.migrateSettings()
 }
@@ -133,7 +143,7 @@ func (b *Bot) migrateSettings() error {
 	if len(models) > 1 {
 		agentModel = models[1]
 	}
-	if _, err := b.saveChannelsLocked(APISettings{DefaultProviderID: "primary", Model: chatModel, AgentProviderID: "primary", AgentModel: agentModel, Providers: []APIChannel{{
+	if _, err := b.saveChannels(APISettings{DefaultProviderID: "primary", Model: chatModel, AgentProviderID: "primary", AgentModel: agentModel, Providers: []APIChannel{{
 		ID: "primary", Name: "主力 API", BaseURL: baseURL, Enabled: true, AuthRequired: key != "", APIKey: &key, Models: models,
 	}}}); err != nil {
 		return fmt.Errorf("迁移旧的模型设置失败: %w", err)
@@ -151,9 +161,13 @@ func newConnection(baseURL, model, key string) modelConnection {
 	if normalized, err := normalizeBaseURL(baseURL); err == nil {
 		baseURL = normalized
 	}
+	return modelConnection{baseURL: baseURL, model: model, key: key, provider: newProvider(baseURL, key)}
+}
+
+func newProvider(baseURL, key string) onefrog.Provider {
 	p := onefrog.NewOpenAI(baseURL, key)
 	p.Client.CheckRedirect = noRedirect
-	return modelConnection{baseURL: baseURL, model: model, key: key, provider: p}
+	return p
 }
 
 func noRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
@@ -175,26 +189,33 @@ func normalizeBaseURL(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
+// resolveModel 返回聊天层（chat=true）或后台 Agent 当前要用的模型：环境变量 > 本 Bot 在共用渠道里的选择 >
+// 启动配置。选择的渠道被停用或删除时返回 nil（界面上会提示重新选择）。
 func (b *Bot) resolveModel(chat bool) (onefrog.Provider, string) {
 	b.modelMu.RLock()
-	defer b.modelMu.RUnlock()
 	if b.envModel.provider != nil {
-		return b.envModel.provider, b.envModel.model
-	}
-	connection := b.agentModel
-	if chat {
-		connection = b.model
-	}
-	if connection.provider != nil {
-		if connection.model == "" {
-			return nil, ""
+		defer b.modelMu.RUnlock()
+		if chat {
+			return b.envModel.provider, b.envModel.model
 		}
-		return connection.provider, connection.model
+		return b.envAgent.provider, b.envAgent.model
 	}
+	has, id, model := b.hasRoutes, b.agentChannel, b.agentModelName
 	if chat {
-		return b.cfg.ChatProvider, b.cfg.ChatModel
+		id, model = b.defaultChannel, b.chatModel
 	}
-	return b.cfg.AgentProvider, b.cfg.AgentModel
+	b.modelMu.RUnlock()
+	if !has {
+		if chat {
+			return b.cfg.ChatProvider, b.cfg.ChatModel
+		}
+		return b.cfg.AgentProvider, b.cfg.AgentModel
+	}
+	c, ok := b.pool.find(id)
+	if !ok || !c.Enabled || model == "" {
+		return nil, ""
+	}
+	return c.provider, model
 }
 
 type settingsReviewer struct {
@@ -211,27 +232,24 @@ func (r settingsReviewer) Review(ctx context.Context, req onefrog.ReviewRequest)
 	return reviewer.Review(ctx, req)
 }
 
+// GetSettings 返回本 Bot 的模型选择，以及设备上全部 API 渠道（供选择，密钥不回显）。
 func (b *Bot) GetSettings() APISettings {
 	b.modelMu.RLock()
-	defer b.modelMu.RUnlock()
-	s := b.model.public()
-	s.Providers = b.publicChannels()
-	s.DefaultProviderID = b.defaultChannel
-	s.AgentProviderID = b.agentChannel
-	s.AgentModel = b.agentModel.model
-	if s.DefaultProviderID == "" && len(s.Providers) > 0 {
-		s.DefaultProviderID = s.Providers[0].ID
+	s := APISettings{DefaultProviderID: b.defaultChannel, Model: b.chatModel, AgentProviderID: b.agentChannel, AgentModel: b.agentModelName}
+	if s.EnvOverride = b.envModel.provider != nil; s.EnvOverride {
+		s.EnvModel, s.EnvAgentModel = b.envModel.model, b.envAgent.model
 	}
-	s.EnvOverride = b.envModel.provider != nil
+	b.modelMu.RUnlock()
+	s.Providers = b.pool.public()
+	if c, ok := b.pool.find(s.DefaultProviderID); ok {
+		s.BaseURL, s.HasAPIKey = c.BaseURL, c.key != ""
+	}
 	return s
 }
 
-func (m modelConnection) public() APISettings {
-	return APISettings{BaseURL: m.baseURL, Model: m.model, HasAPIKey: m.key != ""}
-}
-
-// SaveSettings 保存模型设置。网页总是提交完整的渠道列表；只带 base_url / model / api_key 的旧式请求
-// 会更新默认渠道（没有渠道时新建一个「主力 API」）。两种请求最后都写进 channels.json。
+// SaveSettings 是旧的一体化接口：带 providers 时同时保存设备的渠道池和本 Bot 的选择；只带
+// base_url / model / api_key 时更新本 Bot 正在用的渠道（没有时新建「主力 API」）。新网页分开调用
+// /api/channels（渠道）和 /api/settings/routes（本 Bot 的选择）。
 func (b *Bot) SaveSettings(draft APISettings) (APISettings, error) {
 	if draft.Providers != nil {
 		return b.saveChannels(draft)
@@ -244,11 +262,11 @@ func (b *Bot) SaveSettings(draft APISettings) (APISettings, error) {
 	if model == "" {
 		return APISettings{}, errors.New("请输入模型 ID")
 	}
-	b.modelMu.Lock()
-	defer b.modelMu.Unlock()
 	key := b.catalogKey(draft, baseURL)
-	providers := b.publicChannels()
-	id := b.defaultChannel
+	providers := b.pool.public()
+	b.modelMu.RLock()
+	id, agentID, agentModel := b.defaultChannel, b.agentChannel, b.agentModelName
+	b.modelMu.RUnlock()
 	idx := slices.IndexFunc(providers, func(p APIChannel) bool { return p.ID == id })
 	if idx < 0 {
 		id = "primary"
@@ -263,7 +281,10 @@ func (b *Bot) SaveSettings(draft APISettings) (APISettings, error) {
 		p.Models = append(slices.Clone(p.Models), model)
 	}
 	p.HiddenModels = slices.DeleteFunc(slices.Clone(p.HiddenModels), func(m string) bool { return m == model })
-	return b.saveChannelsLocked(APISettings{Providers: providers, DefaultProviderID: id, Model: model, AgentProviderID: b.agentChannel, AgentModel: b.agentModel.model})
+	if !validRoute(providers, agentID, agentModel) {
+		agentID, agentModel = id, model
+	}
+	return b.saveChannels(APISettings{Providers: providers, DefaultProviderID: id, Model: model, AgentProviderID: agentID, AgentModel: agentModel})
 }
 
 var modelCatalogClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: noRedirect}
@@ -273,9 +294,7 @@ func (b *Bot) FetchRemoteModels(ctx context.Context, draft APISettings) ([]strin
 	if err != nil {
 		return nil, err
 	}
-	b.modelMu.RLock()
 	key := b.catalogKey(draft, baseURL)
-	b.modelMu.RUnlock()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
 		return nil, errors.New("无法创建模型列表请求")

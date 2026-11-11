@@ -22,6 +22,8 @@ export type APISettings = {
   default_provider_id?: string;
   provider_id?: string;
   env_override?: boolean;
+  env_model?: string;
+  env_agent_model?: string;
 };
 
 // enabled = 服务器模式（需要登录）；本机模式没有登录。
@@ -59,8 +61,19 @@ export type Approval = {
   status: 'pending' | 'allow' | 'deny' | 'expired'; scope?: string; created: number;
 };
 export type Item = { type: 'msg' | 'task' | 'approval'; id: string };
-export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string; version?: string };
-export type AgentConnections = { cli: string; clis: { id: string; name: string; installed: boolean }[] };
+export type Info = { name: string; chat_model: string; agent_model: string; agent_cli?: string; agent_cli_model?: string; agent_cli_auth?: CLIAuth; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string; version?: string };
+// 每个 Bot 的聊天 / Agent 各用哪个渠道（API 渠道页标注用途）。
+export type ChannelUse = { bot_id: string; name: string; chat_provider_id?: string; agent_provider_id?: string; agent_cli?: string };
+export type ChannelsView = { providers: APIChannel[]; usage: ChannelUse[] };
+export type BotRoutes = Pick<APISettings, 'default_provider_id' | 'model' | 'agent_provider_id' | 'agent_model'>;
+export type CLIAuth = 'subscription' | 'env';
+export type AgentCLI = {
+  id: string; name: string; installed: boolean;
+  subscription?: string; login?: string; model_option?: boolean; models?: string[];
+};
+// cli 为空 = 内置 Agent（用 Agent API 模型）；否则用该 CLI 在设备上登录的账户（官方订阅）。
+export type AgentConnection = { cli: string; cli_model?: string; cli_auth?: CLIAuth };
+export type AgentConnections = AgentConnection & { clis: AgentCLI[] };
 export type Schedule = {
   id: string; title: string; prompt: string; enabled: boolean; kind: string; timezone: string;
   hour?: number; minute?: number; weekdays?: number[]; overlap?: string;
@@ -333,7 +346,10 @@ export function createDeviceSettingsAPI(device: string, bot = 'main') {
   const settingsBase = device === 'local' ? '/api' : `/api/devices/${encodeURIComponent(device)}`;
   return {
     connections: (signal?: AbortSignal): Promise<AgentConnections> => get(`${base}/settings/connections`, signal),
-    saveConnection: (cli: string): Promise<AgentConnections> => post(`${base}/settings/connections`, { cli }),
+    saveConnection: (c: AgentConnection): Promise<AgentConnections> => post(`${base}/settings/connections`, c),
+    // 只支持同一台设备上的 Bot：复制来源 Bot 的聊天模型、Agent 模型和执行方式。
+    copySettings: (from: string): Promise<APISettings> => post(`${base}/settings/copy`, { from }),
+    local: device === 'local',
     settings: async (signal?: AbortSignal): Promise<APISettings> => {
       const settings = await get<APISettings>(`${base}/settings`, signal);
       if (typeof settings.base_url !== 'string' || typeof settings.model !== 'string') {
@@ -342,8 +358,17 @@ export function createDeviceSettingsAPI(device: string, bot = 'main') {
       return settings;
     },
     saveSettings: (s: APISettings): Promise<APISettings> => post(`${base}/settings`, s),
-    providerModels: (s: APISettings): Promise<{ models: string[] }> => post(`${base}/settings/models`, s),
-    testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post(`${base}/settings/test`, s),
+    // 本 Bot 用哪个渠道的哪个模型（不改渠道）
+    saveRoutes: (r: BotRoutes): Promise<APISettings> => post(`${base}/settings/routes`, r),
+    // 设备上所有 Bot 共用的 API 渠道
+    channels: async (signal?: AbortSignal): Promise<ChannelsView> => {
+      const v = await get<ChannelsView>(`${settingsBase}/channels`, signal);
+      if (!Array.isArray(v.providers)) throw new Error('目标设备的后端版本与网页不匹配，请升级后重试');
+      return v;
+    },
+    saveChannels: (providers: APIChannel[]): Promise<ChannelsView> => post(`${settingsBase}/channels`, { providers }),
+    providerModels: (s: APISettings): Promise<{ models: string[] }> => post(`${settingsBase}/channels/models`, s),
+    testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post(`${settingsBase}/channels/test`, s),
     checkUpdate: (signal?: AbortSignal): Promise<UpdateStatus> => get(`${settingsBase}/update`, signal),
     version: async (signal?: AbortSignal) => (await get<Info>(`${botPath('main', device)}/info`, signal)).version,
   };
@@ -358,6 +383,7 @@ export const api = {
     post(device === 'local' ? '/api/bots' : `/api/devices/${encodeURIComponent(device)}/bots`, draft),
   editBot: (id: string, draft: BotDraft): Promise<BotProfile> => post(botPath(id), draft, 'PATCH'),
   deleteBot: (id: string, purge = false): Promise<{ ok: boolean }> => post(`${botPath(id)}${purge ? '?purge=1' : ''}`, {}, 'DELETE'),
+  copyBotSettings: (to: string, from: string): Promise<APISettings> => post(`${botPath(to)}/settings/copy`, { from }),
   botPaths: (id: string): Promise<{ data_dir: string; workspace: string }> => get(`${botPath(id)}/paths`),
   me: (): Promise<AuthInfo> => get('/api/auth/me'),
   logout: () => post('/api/auth/logout'),

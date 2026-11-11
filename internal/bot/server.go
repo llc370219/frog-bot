@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"frogbot/internal/onefrog"
 )
 
 // Handler 返回 HTTP 接口（以及可选的前端静态文件）。
@@ -51,29 +53,60 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		saved, err := b.SaveSettings(payload)
 		writeJSON(w, saved, err)
 	})
-	mux.HandleFunc("POST /api/settings/models", func(w http.ResponseWriter, r *http.Request) {
-		var p APISettings
-		if !decodeJSON(w, r, &p, maxJSONBody) {
+	// 只保存本 Bot 用哪个渠道的哪个模型（渠道本身在 /api/channels 管理，整台设备共用）。
+	mux.HandleFunc("POST /api/settings/routes", func(w http.ResponseWriter, r *http.Request) {
+		var payload APISettings
+		if !decodeJSON(w, r, &payload, maxJSONBody) {
 			return
 		}
-		models, err := b.FetchRemoteModels(r.Context(), p)
-		writeJSON(w, map[string]any{"models": models}, err)
+		saved, err := b.saveRoutes(payload)
+		writeJSON(w, saved, err)
 	})
-	mux.HandleFunc("POST /api/settings/test", func(w http.ResponseWriter, r *http.Request) {
-		var p APISettings
-		if !decodeJSON(w, r, &p, maxJSONBody) {
+	mux.HandleFunc("GET /api/channels", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, channelsView{Providers: b.pool.public(), Usage: []channelUse{}}, nil)
+	})
+	mux.HandleFunc("POST /api/channels", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Providers []APIChannel `json:"providers"`
+		}
+		if !decodeJSON(w, r, &payload, maxJSONBody) {
 			return
 		}
-		latency, err := b.TestConnection(r.Context(), p)
-		writeJSON(w, map[string]any{"latency_ms": latency}, err)
+		if payload.Providers == nil {
+			writeJSON(w, nil, errors.New("缺少渠道列表"))
+			return
+		}
+		saved, err := b.pool.save(payload.Providers)
+		writeJSON(w, channelsView{Providers: saved, Usage: []channelUse{}}, err)
 	})
+	for _, prefix := range []string{"/api/settings", "/api/channels"} {
+		mux.HandleFunc("POST "+prefix+"/models", func(w http.ResponseWriter, r *http.Request) {
+			var p APISettings
+			if !decodeJSON(w, r, &p, maxJSONBody) {
+				return
+			}
+			models, err := b.FetchRemoteModels(r.Context(), p)
+			writeJSON(w, map[string]any{"models": models}, err)
+		})
+		mux.HandleFunc("POST "+prefix+"/test", func(w http.ResponseWriter, r *http.Request) {
+			var p APISettings
+			if !decodeJSON(w, r, &p, maxJSONBody) {
+				return
+			}
+			latency, err := b.TestConnection(r.Context(), p)
+			writeJSON(w, map[string]any{"latency_ms": latency}, err)
+		})
+	}
 	mux.HandleFunc("GET /api/settings/connections", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, b.connections(), nil)
 	})
 	mux.HandleFunc("POST /api/settings/connections", func(w http.ResponseWriter, r *http.Request) {
 		var draft struct {
-			CLI *string `json:"cli"`
+			CLI      *string `json:"cli"`
+			CLIModel string  `json:"cli_model"`
+			CLIAuth  string  `json:"cli_auth"`
 		}
 		if !decodeJSON(w, r, &draft, 1024) {
 			return
@@ -82,7 +115,8 @@ func (b *Bot) Handler(webDir string) http.Handler {
 			writeJSON(w, nil, errors.New("请选择一个 Agent"))
 			return
 		}
-		if err := b.saveAgentConnection(*draft.CLI); err != nil {
+		conn := agentConnection{CLI: *draft.CLI, CLIOptions: onefrog.CLIOptions{Model: draft.CLIModel, Auth: draft.CLIAuth}}
+		if err := b.saveAgentConnection(conn); err != nil {
 			writeJSON(w, nil, err)
 			return
 		}
@@ -96,7 +130,9 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
 		_, chatModel := b.resolveModel(true)
 		_, agentModel := b.resolveModel(false)
+		conn := b.connections().agentConnection
 		writeJSON(w, map[string]any{"name": b.botProfile().Name, "chat_model": chatModel, "agent_model": agentModel,
+			"agent_cli": conn.CLI, "agent_cli_model": conn.Model, "agent_cli_auth": conn.Auth,
 			"policy": b.cfg.Policy, "demo": b.cfg.Demo, "max_concurrent": b.cfg.MaxConcurrent,
 			"stall_sec": int(b.cfg.StallTimeout.Seconds()), "timezone": "Asia/Shanghai", "version": currentVersion()}, nil)
 	})

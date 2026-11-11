@@ -411,9 +411,13 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 		mux.Handle("/", spa(ui))
 	}
 	// 全局接口（设置、更新检查）挂在默认 Bot 上；其他 /api/… 只能通过 /api/bots/{id}/… 访问。
-	for _, p := range []string{"/api/settings", "/api/settings/", "GET /api/update"} {
+	for _, p := range []string{"/api/settings", "/api/settings/", "/api/channels/", "POST /api/channels", "GET /api/update"} {
 		mux.Handle(p, mainAPI)
 	}
+	mux.HandleFunc("GET /api/channels", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, bs.channelsView(), nil)
+	})
 	mux.HandleFunc("/api/", http.NotFound)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "version": currentVersion(), "api_version": 1}, nil)
@@ -479,9 +483,23 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 		}
 		writeJSON(w, map[string]bool{"ok": true}, err)
 	})
+	mux.HandleFunc("POST /api/bots/{id}/settings/copy", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			From string `json:"from"`
+		}
+		if !decodeJSON(w, r, &body, 1024) {
+			return
+		}
+		saved, err := bs.copySettings(body.From, r.PathValue("id"))
+		if errors.Is(err, fs.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, saved, err)
+	})
 	mux.HandleFunc("/api/bots/{id}/{rest...}", func(w http.ResponseWriter, r *http.Request) {
 		rest := r.PathValue("rest")
-		if rest == "settings" || strings.HasPrefix(rest, "settings/") || rest == "update" {
+		if rest == "update" {
 			http.NotFound(w, r)
 			return
 		}
@@ -504,4 +522,62 @@ func (bs *Bots) serveBotRoute(w http.ResponseWriter, r *http.Request, id, rest s
 	scoped := r.Clone(r.Context())
 	scoped.URL.Path, scoped.URL.RawPath = "/api/"+rest, ""
 	endpoint.ServeHTTP(w, scoped)
+}
+
+// copySettings 把一个 Bot 的模型选择（聊天模型、Agent 模型与执行方式）复制给另一个 Bot。
+// API 渠道是整台设备共用的，不需要复制。复制之后两边各自独立。
+func (bs *Bots) copySettings(fromID, toID string) (APISettings, error) {
+	if fromID == toID {
+		return APISettings{}, errors.New("请选择另一个 Bot 作为来源")
+	}
+	src, releaseSrc := bs.acquireBot(fromID)
+	defer releaseSrc()
+	dst, releaseDst := bs.acquireBot(toID)
+	defer releaseDst()
+	if src == nil || dst == nil {
+		return APISettings{}, fs.ErrNotExist
+	}
+	src.modelMu.RLock()
+	draft := APISettings{DefaultProviderID: src.defaultChannel, Model: src.chatModel,
+		AgentProviderID: src.agentChannel, AgentModel: src.agentModelName}
+	conn := src.connection
+	src.modelMu.RUnlock()
+	if !validRoute(dst.pool.public(), draft.DefaultProviderID, draft.Model) {
+		draft.DefaultProviderID, draft.Model = "", ""
+	}
+	if !validRoute(dst.pool.public(), draft.AgentProviderID, draft.AgentModel) {
+		draft.AgentProviderID, draft.AgentModel = draft.DefaultProviderID, draft.Model
+	}
+	if _, err := dst.saveRoutes(draft); err != nil {
+		return APISettings{}, fmt.Errorf("复制模型选择失败: %w", err)
+	}
+	if err := dst.saveAgentConnection(conn); err != nil {
+		return APISettings{}, fmt.Errorf("模型已复制，但 Agent 执行方式没有复制成功: %w", err)
+	}
+	return dst.GetSettings(), nil
+}
+
+// channelsView 列出设备上的 API 渠道，并附上每个 Bot 的聊天 / Agent 各用了哪个渠道。
+func (bs *Bots) channelsView() channelsView {
+	bs.mu.RLock()
+	profiles := slices.Clone(bs.profiles)
+	bots := make([]*Bot, len(profiles))
+	for i, p := range profiles {
+		bots[i] = bs.runtimes[p.ID]
+	}
+	bs.mu.RUnlock()
+	view := channelsView{Providers: bs.main.pool.public(), Usage: []channelUse{}}
+	for i, b := range bots {
+		if b == nil {
+			continue
+		}
+		b.modelMu.RLock()
+		use := channelUse{BotID: profiles[i].ID, Name: profiles[i].Name, ChatProviderID: b.defaultChannel, AgentCLI: b.connection.CLI}
+		if b.connection.CLI == "" {
+			use.AgentProviderID = b.agentChannel
+		}
+		b.modelMu.RUnlock()
+		view.Usage = append(view.Usage, use)
+	}
+	return view
 }

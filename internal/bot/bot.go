@@ -59,13 +59,15 @@ type Bot struct {
 
 	modelMu        sync.RWMutex
 	memoryMu       sync.Mutex
-	model          modelConnection
-	agentModel     modelConnection // 后台 Agent 连接，可与聊天层分开
-	envModel       modelConnection // 环境变量提供的模型连接，非空时优先
-	channels       []storedChannel
-	defaultChannel string
-	agentChannel   string
-	connection     agentConnection // 全局设置，由 modelMu 保护
+	pool           *channelPool // 设备上所有 Bot 共用的 API 渠道
+	hasRoutes      bool         // 本 Bot 保存过模型选择（否则退回启动配置里的模型）
+	chatModel      string
+	agentModelName string // 后台 Agent 的模型，可与聊天层分开
+	envModel       modelConnection // 环境变量提供的模型连接，非空时优先（聊天）
+	envAgent       modelConnection // 环境变量提供的 Agent 连接（AGENT_MODEL，未设时同聊天模型）
+	defaultChannel string // 聊天用的渠道 ID
+	agentChannel   string // Agent 用的渠道 ID
+	connection     agentConnection // 本 Bot 的 Agent 执行方式，由 modelMu 保护
 	modelOwner     *Bot
 	slots          *taskSlots // 所有 Bot 共用的后台任务并发上限
 	coordinator    *Bots
@@ -148,6 +150,11 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 		b.slots = modelOwner.slots
 	} else {
 		b.slots = newTaskSlots(cfg.MaxConcurrent)
+	}
+	if modelOwner != nil {
+		b.pool = modelOwner.pool
+	} else if b.pool, err = openPool(cfg.DataDir, vlt); err != nil {
+		return nil, fmt.Errorf("读取 API 渠道失败: %w", err)
 	}
 	if err := b.loadSettings(); err != nil {
 		return nil, fmt.Errorf("读取模型设置失败: %w", err)

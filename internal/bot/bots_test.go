@@ -76,6 +76,19 @@ func TestBotsKeepSeparateConversationsAndTasksAcrossRestart(t *testing.T) {
 	if !instructionsUsed {
 		t.Fatal("Bot instructions were not applied to chat and worker")
 	}
+	childSettings, _ := json.Marshal(APISettings{
+		Providers:         []APIChannel{{ID: "child-api", Name: "Child API", BaseURL: "https://child.example/v1", Enabled: true, Models: []string{"child-chat", "child-agent"}}},
+		DefaultProviderID: "child-api", Model: "child-chat", AgentProviderID: "child-api", AgentModel: "child-agent",
+	})
+	request("GET", base+"/settings", "", http.StatusOK)
+	request("POST", base+"/settings", string(childSettings), http.StatusOK)
+	if got := request("GET", base+"/settings", "", http.StatusOK); !strings.Contains(got, "child-chat") || !strings.Contains(got, "child-agent") {
+		t.Fatalf("Bot-scoped settings not saved: %s", got)
+	}
+	// API channels are shared by the device; the model choice stays with the child.
+	if got := request("GET", "/api/settings", "", http.StatusOK); strings.Contains(got, `"model":"child-chat"`) || !strings.Contains(got, "child-api") {
+		t.Fatalf("default Bot should share the channel but keep its own model choice: %s", got)
+	}
 	att, err := child.Upload("child.txt", strings.NewReader("child file content"))
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +123,7 @@ func TestBotsKeepSeparateConversationsAndTasksAcrossRestart(t *testing.T) {
 		t.Fatalf("unexpected SSE history: default=%q, created=%q", legacy, created)
 	}
 	request("POST", "/api/settings", `{"base_url":"http://127.0.0.1:1/v1","model":"updated-model"}`, http.StatusOK)
-	if got := request("GET", base+"/info", "", http.StatusOK); !strings.Contains(got, `"chat_model":"chat"`) {
+	if got := request("GET", base+"/info", "", http.StatusOK); !strings.Contains(got, `"chat_model":"child-chat"`) {
 		t.Fatalf("child should retain its independent default model: %s", got)
 	}
 }

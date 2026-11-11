@@ -160,7 +160,7 @@ func (b *Bot) schedule() {
 			return // 全局空位满了；有任务结束时会再叫我
 		}
 		profile := b.botProfile()
-		task := onefrog.Task{ID: t.ID, BotID: profile.ID, CLI: t.CLI, Input: t.Input, History: t.History,
+		task := onefrog.Task{ID: t.ID, BotID: profile.ID, CLI: t.CLI, CLIOptions: b.cliOptions(t.CLI), Input: t.Input, History: t.History,
 			Workspace: b.cfg.Workspace, Policy: b.cfg.Policy, MaxDuration: b.cfg.TaskMaxTime}
 		if t.CLI == "" {
 			task.Instructions = b.secretsBrief()

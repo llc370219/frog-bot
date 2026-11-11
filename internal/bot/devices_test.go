@@ -336,7 +336,7 @@ func TestDevicePairChatStreamAndCollaboration(t *testing.T) {
 	loaded := request("GET", settings, "", false, 200)
 	loadedData, _ := io.ReadAll(loaded.Body)
 	loaded.Body.Close()
-	stored, err := os.ReadFile(b.main.channelPath())
+	stored, err := os.ReadFile(b.main.pool.path)
 	if err != nil || b.main.GetSettings().Model != "beta-model" || !b.main.GetSettings().HasAPIKey || a.main.GetSettings().Model != "" ||
 		bytes.Contains(stored, []byte(key)) || bytes.Contains(savedData, []byte(key)) || bytes.Contains(loadedData, []byte(key)) {
 		t.Fatal("remote API configuration was misrouted or exposed the key")

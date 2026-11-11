@@ -26,7 +26,7 @@ func TestChannelPersistenceAndKeyIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(saved)
-	persisted, err := os.ReadFile(b.channelPath())
+	persisted, err := os.ReadFile(b.pool.path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -175,7 +175,7 @@ func (a *Agent) Run(ctx context.Context, t Task) (Result, error) {
 			provider, model = a.ResolveModel()
 		}
 		if provider == nil {
-			return fail(errors.New("请先在「设置 → API 渠道」配置模型，或在「设置 → 连接」选择 Agent CLI"))
+			return fail(errors.New("请先在「设置 → 模型」为 Agent 选择 API 模型，或改用官方订阅 CLI"))
 		}
 	}
 	msgs, err := a.initialMessages(ctx, t)

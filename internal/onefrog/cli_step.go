@@ -32,7 +32,7 @@ func (a *Agent) runCLIStep(ctx context.Context, t Task, msgs []Message, em *emit
 	fmt.Fprintf(&p, "当前任务：\n%s", msgs[len(msgs)-1].Content)
 	prompt := RedactString(g.Secrets, p.String())
 	args, _ := json.Marshal(map[string]string{
-		"cli": name, "task": Truncate(RedactString(g.Secrets, msgs[len(msgs)-1].Content), 3500),
+		"cli": name, "model": t.CLIOptions.Model, "task": Truncate(RedactString(g.Secrets, msgs[len(msgs)-1].Content), 3500),
 		"prompt_hash": fmt.Sprintf("%x", sha256.Sum256([]byte(prompt))),
 	})
 	id := NewID("cli")
@@ -51,7 +51,7 @@ func (a *Agent) runCLIStep(ctx context.Context, t Task, msgs []Message, em *emit
 		result("启动前已暂停", false, false)
 		return "", errCLIPaused
 	}
-	out, err := runCLI(ctx, t.CLI, t.Workspace, prompt)
+	out, err := runCLI(ctx, t.CLI, t.Workspace, prompt, t.CLIOptions)
 	if err != nil {
 		msg := RedactString(g.Secrets, err.Error())
 		result(msg, false, true)

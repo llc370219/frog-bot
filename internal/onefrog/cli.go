@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -20,24 +21,79 @@ type CLIStatus struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Installed bool   `json:"installed"`
+	// Subscription 是这个 CLI 登录后可用的官方订阅；Login 是在设备终端完成登录的命令。
+	Subscription string `json:"subscription"`
+	Login        string `json:"login"`
+	// ModelOption 表示 Frog Bot 可以给这个 CLI 指定模型（否则用 CLI 自己的默认模型）。
+	ModelOption bool     `json:"model_option"`
+	Models      []string `json:"models,omitempty"` // 常用模型（仅作建议，也可手填）
 }
 
 var cliNames = []CLIStatus{
-	{ID: "codex", Name: "Codex CLI"},
-	{ID: "claude", Name: "Claude Code"},
-	{ID: "pi", Name: "Pi"},
-	{ID: "grok", Name: "Grok CLI"},
-	{ID: "agy", Name: "Antigravity CLI"},
+	{ID: "codex", Name: "Codex CLI", Subscription: "ChatGPT Plus / Pro / Business", Login: "codex login", ModelOption: true},
+	{ID: "claude", Name: "Claude Code", Subscription: "Claude Pro / Max", Login: "claude（首次运行后输入 /login）", ModelOption: true, Models: []string{"sonnet", "opus", "haiku"}},
+	{ID: "pi", Name: "Pi", Subscription: "Claude Pro / Max、ChatGPT 等", Login: "pi（运行后输入 /login）", ModelOption: true},
+	{ID: "grok", Name: "Grok CLI", Subscription: "SuperGrok / X Premium", Login: "grok login"},
+	{ID: "agy", Name: "Antigravity CLI", Subscription: "Google 账户", Login: "agy login"},
 }
 
-func CLIName(id string) string {
+// CLI 认证方式：subscription（默认）只用 CLI 自己登录的官方账户，启动时去掉会让 CLI 改走按量计费的
+// API Key 环境变量；env 原样保留 Frog Bot 进程的环境变量（例如你在服务器上配置了 ANTHROPIC_API_KEY）。
+const (
+	CLIAuthSubscription = "subscription"
+	CLIAuthEnv          = "env"
+)
+
+// CLIOptions 是某个 Bot 给 CLI 的额外设置。
+type CLIOptions struct {
+	Model string `json:"cli_model,omitempty"`
+	Auth  string `json:"cli_auth,omitempty"`
+}
+
+var cliModelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,99}$`)
+
+// ValidateCLIOptions 检查并规整 CLI 设置；不支持指定模型的 CLI 会忽略模型。
+func ValidateCLIOptions(id string, o CLIOptions) (CLIOptions, error) {
+	o.Model = strings.TrimSpace(o.Model)
+	switch o.Auth {
+	case "":
+		o.Auth = CLIAuthSubscription
+	case CLIAuthSubscription, CLIAuthEnv:
+	default:
+		return CLIOptions{}, errors.New("CLI 认证方式只能是官方订阅或环境变量")
+	}
+	if id == "" {
+		return CLIOptions{}, nil
+	}
+	if !cliStatus(id).ModelOption {
+		o.Model = ""
+	}
+	if o.Model != "" && !cliModelPattern.MatchString(o.Model) {
+		return CLIOptions{}, errors.New("模型名只能包含字母、数字和 . _ - : / @ [ ]，且不能以符号开头")
+	}
+	return o, nil
+}
+
+func cliStatus(id string) CLIStatus {
 	for _, cli := range cliNames {
 		if cli.ID == id {
-			return cli.Name
+			return cli
 		}
 	}
-	return ""
+	return CLIStatus{}
 }
+
+// subscriptionEnv 是选择「官方订阅」时不传给 CLI 的环境变量：有这些变量时 CLI 会改用 API Key
+// （按量计费）或第三方地址，而不是你登录的订阅账户。
+var subscriptionEnv = map[string][]string{
+	"codex":  {"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"},
+	"claude": {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"},
+	"pi":     {"ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY"},
+	"grok":   {"XAI_API_KEY", "GROK_API_KEY", "GROK_BASE_URL"},
+	"agy":    {"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+}
+
+func CLIName(id string) string { return cliStatus(id).Name }
 
 func DetectCLIs() []CLIStatus {
 	status := append([]CLIStatus(nil), cliNames...)
@@ -101,14 +157,26 @@ func isFile(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-func cliArgs(id, prompt string) (args []string, stdin string) {
+func cliArgs(id, prompt, model string) (args []string, stdin string) {
 	switch id {
 	case "codex":
-		return []string{"exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--json", "-"}, prompt
+		args = []string{"exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--json"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		return append(args, "-"), prompt
 	case "claude":
-		return []string{"-p", "--output-format", "text", "请根据标准输入中的任务说明执行并回复。"}, prompt
+		args = []string{"-p", "--output-format", "text"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		return append(args, "请根据标准输入中的任务说明执行并回复。"), prompt
 	case "pi":
-		return []string{"--print", "--no-session"}, prompt
+		args = []string{"--print", "--no-session"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		return args, prompt
 	case "grok":
 		return []string{"--no-auto-update", "--output-format", "plain", "-p", prompt}, ""
 	case "agy":
@@ -118,13 +186,16 @@ func cliArgs(id, prompt string) (args []string, stdin string) {
 	}
 }
 
-func runCLI(ctx context.Context, id, workspace, prompt string) (string, error) {
+func runCLI(ctx context.Context, id, workspace, prompt string, opts CLIOptions) (string, error) {
 	name := CLIName(id)
 	exe, prefix, err := resolveCLI(id)
 	if err != nil {
 		return "", fmt.Errorf("找不到 %s。请在 Frog Bot 所在机器安装 CLI 并加入 PATH", name)
 	}
-	args, stdin := cliArgs(id, prompt)
+	if opts, err = ValidateCLIOptions(id, opts); err != nil {
+		return "", err
+	}
+	args, stdin := cliArgs(id, prompt, opts.Model)
 	if stdin == "" && len(prompt) > 24_000 {
 		return "", fmt.Errorf("%s 的任务说明过长，请缩短后重试", name)
 	}
@@ -133,15 +204,7 @@ func runCLI(ctx context.Context, id, workspace, prompt string) (string, error) {
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	// Keep the CLI's own authentication, but don't pass Frog Bot's credentials.
-	for _, kv := range cmd.Environ() {
-		key, _, _ := strings.Cut(kv, "=")
-		switch strings.ToUpper(key) {
-		case "FROGBOT_MASTER_KEY", "FROGBOT_API_KEY", "FROGBOT_PASSWORD", "API_KEY":
-		default:
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
+	cmd.Env = cliEnv(cmd.Environ(), id, opts.Auth)
 	var stderr, stdout cliBuffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	var codex codexOutput
@@ -192,6 +255,26 @@ func runCLI(ctx context.Context, id, workspace, prompt string) (string, error) {
 		return "", fmt.Errorf("%s 没有返回回复，请检查它的登录和模型配置", name)
 	}
 	return Truncate(out, 16000), nil
+}
+
+// cliEnv keeps the CLI's own authentication but never passes Frog Bot's
+// credentials. In subscription mode it also drops the vendor API-key variables,
+// so the CLI uses the account logged in on this device.
+func cliEnv(environ []string, id, auth string) []string {
+	drop := map[string]bool{"FROGBOT_MASTER_KEY": true, "FROGBOT_API_KEY": true, "FROGBOT_PASSWORD": true, "API_KEY": true}
+	if auth != CLIAuthEnv {
+		for _, k := range subscriptionEnv[id] {
+			drop[k] = true
+		}
+	}
+	env := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		key, _, _ := strings.Cut(kv, "=")
+		if !drop[strings.ToUpper(key)] {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 const cliOutputLimit = 1 << 20

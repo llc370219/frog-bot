@@ -6,13 +6,13 @@ frog bot 是一个能聊天、也能在后台干活的 AI 助理。它就是我�
 
 点左侧 Bots 旁的「＋」创建助理，填写名称和可选职责，例如代码审查或资料整理。点头像所在的行切换助理，点行内的铅笔编辑或删除。默认 Bot 可以编辑，不能删除。删除其他 Bot 会停止它的任务和定时计划；默认只从列表里移除，聊天记录、记忆、密钥和工作区文件仍保留在磁盘上（确认框里会显示具体目录），勾选「彻底删除」才会连这些数据一起删掉。最多 32 个 Bot。每个 Bot 有独立的对话、任务队列、审批、记忆、密钥和定时计划；切换时，原 Bot 的后台任务继续运行。
 
-每个 Bot 都有独立的「设置 → API 渠道」与 Agent 选择；API 密钥加密保存在该 Bot 对应的数据目录中。聊天模型与后台 Agent API 模型可分别选择渠道和模型；也可以为 Agent 选择 Codex CLI 或 Claude Code，并使用该设备上 CLI 自身已登录的官方订阅。原有单 Bot 数据继续由默认 Bot 使用。新 Bot 的记录保存在 `DATA_DIR/bots/<id>/`，独立工作区在 `WORKSPACE-bots/<id>/`（默认 `./workspace-bots/<id>/`）。备份时请保留数据目录和两个工作区目录。
+「设置 → API 渠道」是整台设备共用的：在这里接入一次服务商或本地模型（API 密钥加密保存在 `DATA_DIR/api-channels.json`），所有 Bot 都能用。「设置 → 模型与 Agent」为每个 Bot 单独选择聊天模型和后台 Agent：Agent 可以用某个渠道的 API 模型，也可以改用「官方订阅」，即 Codex CLI、Claude Code 等 CLI 在该设备上登录的账户，并可单独指定 CLI 的模型。新建 Bot 时可以沿用另一个 Bot 的选择，之后各自独立。旧版本里跟着各个 Bot 保存的渠道会在第一次启动时自动并入共用渠道。原有单 Bot 数据继续由默认 Bot 使用。新 Bot 的记录保存在 `DATA_DIR/bots/<id>/`，独立工作区在 `WORKSPACE-bots/<id>/`（默认 `./workspace-bots/<id>/`）。备份时请保留数据目录和两个工作区目录。
 
 ## 下载和使用
 
 到 [Releases](https://github.com/llc370219/frog-bot/releases) 下载对应系统的包。有两种用法：
 
-**本机版**（自己电脑上用）：解压后运行 `frogbot`（Windows 双击 `frogbot.exe`），浏览器会自动打开管理页面 `http://127.0.0.1:8080`，在「设置 → API 渠道」填好模型的接口地址、API Key 和模型名就能聊天。本机版只接受来自这台电脑的访问，没有登录。
+**本机版**（自己电脑上用）：解压后运行 `frogbot`（Windows 双击 `frogbot.exe`），浏览器会自动打开管理页面 `http://127.0.0.1:8080`，在「设置 → API 渠道」接入接口地址和 API Key、拉取模型，再到「设置 → 模型与 Agent」为 Bot 选择聊天和 Agent 用的模型就能聊天。本机版只接受来自这台电脑的访问，没有登录。
 
 **服务器版**（放在 Linux 服务器上，从任何地方用浏览器登录）：在服务器上执行一行命令：
 
@@ -52,9 +52,9 @@ curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/ins
 
 ### 连接 Agent CLI
 
-在「设置 → 连接」点「重新检测」，然后选择 **Codex CLI**（`codex`）、**Claude Code**（`claude`）、**Pi**（`pi`）、**Grok CLI**（`grok`）或 **Antigravity CLI**（`agy`）。CLI 要装在运行 Frog Bot 后端的机器上，并能被后端账户从 `PATH` 找到。服务器版需要用服务账户完成登录或配置模型。安装检测不检查登录；如果刚改过 `PATH`，先重启后端。
+在「设置 → 模型与 Agent」的 Agent 卡片里选「官方订阅」，点「重新检测」，然后选择 **Codex CLI**（`codex`）、**Claude Code**（`claude`）、**Pi**（`pi`）、**Grok CLI**（`grok`）或 **Antigravity CLI**（`agy`）。CLI 要装在运行 Frog Bot 后端的机器上，并能被后端账户从 `PATH` 找到。服务器版需要用服务账户完成登录或配置模型。安装检测不检查登录；如果刚改过 `PATH`，先重启后端。
 
-选择会保存并用于所有 Bot 的新任务，可随时切回内置 Agent。配置了 API 渠道时，聊天层继续负责对话和派活；未配置时，你的聊天消息直接排队交给所选 CLI。每次启动外部 CLI 前需要在任务卡片中批准，启动后按 CLI 自身的权限运行。Frog Bot 显示运行状态和最终回复；CLI 内部步骤不会逐条显示，暂停只能在 CLI 调用之间生效。
+选择只对当前 Bot 生效，可随时切回「API 模型」。Codex CLI、Claude Code 和 Pi 可以填写模型（如 Claude Code 的 `sonnet` / `opus`），留空用 CLI 自己的默认模型。认证默认是「官方订阅」：启动 CLI 时去掉 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等环境变量，保证用的是登录的订阅账户而不是按量计费；需要沿用这些环境变量时选「沿用设备环境变量」。配置了 API 渠道时，聊天层继续负责对话和派活；未配置时，你的聊天消息直接排队交给所选 CLI。每次启动外部 CLI 前需要在任务卡片中批准，启动后按 CLI 自身的权限运行。Frog Bot 显示运行状态和最终回复；CLI 内部步骤不会逐条显示，暂停只能在 CLI 调用之间生效。
 
 ### 设备互联
 
@@ -302,7 +302,7 @@ go run ./cmd/frogbot
 go run ./cmd/frogbot -server -port 8080
 ```
 
-模型配置只保存在 `数据目录/channels.json`（API Key 加密）。从 v0.1.1-beta 升级时，旧的 `data/config/model.json` 会在第一次启动时自动迁移进来。「设置 → 版本更新」可以检查 GitHub 上的正式发布。打发布包用 `scripts/release.sh v0.1.2`（构建前端、交叉编译 5 个平台、生成 SHA256SUMS）。
+API 渠道保存在 `数据目录/api-channels.json`（API Key 加密），每个 Bot 的模型选择保存在各自数据目录的 `channels.json`。从 v0.1.1-beta 升级时，旧的 `data/config/model.json` 会在第一次启动时自动迁移进来。「设置 → 版本与互联」可以检查 GitHub 上的正式发布。打发布包用 `scripts/release.sh v0.1.2`（构建前端、交叉编译 5 个平台、生成 SHA256SUMS）。
 
 数据目录默认：当前目录下已有 `./data` 就用它；否则 Windows `%AppData%\frogbot`、macOS `~/Library/Application Support/frogbot`、Linux `~/.config/frogbot`；服务器版安装脚本用 `/var/lib/frogbot`。
 
@@ -331,8 +331,8 @@ cd web && npm run dev         # 打开 http://localhost:5173，/api 会自动转
 |---|---|---|
 | `BASE_URL` | — | 初始 API 地址；只提供环境变量中的模型或密钥时，默认 `https://api.x.ai/v1` |
 | `API_KEY` | — | 也认 `FROGBOT_API_KEY` / `XAI_API_KEY` / `OPENAI_API_KEY` |
-| `CHAT_MODEL` | 同 `AGENT_MODEL` | 聊天和后台任务共用的模型。设置了 `BASE_URL`/`CHAT_MODEL` 时**优先于网页设置**（不写盘，网页上会提示） |
-| `AGENT_MODEL` | 空 | 未提供 `CHAT_MODEL` 时的初始模型 |
+| `CHAT_MODEL` | 同 `AGENT_MODEL` | 聊天模型。设置了 `BASE_URL`/`CHAT_MODEL` 时**所有 Bot 的 API 模型都优先用环境变量**（不写盘，网页上会提示；官方订阅 CLI 不受影响） |
+| `AGENT_MODEL` | 同 `CHAT_MODEL` | 后台 Agent 的模型；只设它时聊天也用它 |
 | `REVIEWER_MODEL` | 空 | 审核模型，只在 `POLICY=auto` 时用 |
 | `POLICY` | `on-request` | 后台任务的审批模式：`untrusted` / `on-request` / `auto` / `never` |
 | `CHAT_POLICY` | `untrusted` | 聊天层直接写文件的审批模式（默认每次都要你确认） |

@@ -1,6 +1,6 @@
 # 后端与网页 / Android / Mac 三端
 
-保留现有 React 前端，以 Go 服务作为唯一数据源。网页直接访问服务；Android 首版是原生连接页 + WebView，复用同一前端；Mac 为已有的 SwiftUI 原生客户端。三端连接同一服务器时，共享 Bot、聊天、任务、审批和文件，不需要分别部署三个后端。
+保留现有 React 前端，以 Go 服务作为唯一数据源。网页直接访问服务；Android（`android-claude/`，Kotlin + Jetpack Compose）和 Mac（`mac-claude/`，SwiftUI）都是原生客户端，目前是 beta。三端连接同一服务器时，共享 Bot、聊天、任务、审批和文件，不需要分别部署三个后端。
 
 当前产品边界：单管理员，不是多租户 SaaS。还没有用户注册、多人权限隔离、离线模式、Android 系统推送或商店发布。模型和 CLI 在后端机器运行，手机和 Mac 不需要保存模型密钥。
 
@@ -19,17 +19,17 @@ go build -o bin/frogbot ./cmd/frogbot
 
 首次启动在终端打印管理员名和随机初始密码。网页访问电脑的 8080 端口；Android 和 Mac 填同一台电脑的局域网地址。不要把 127.0.0.1 填进手机，它指向手机自己。Android 模拟器用 `http://10.0.2.2:8080`，明文只限可信网络的 Debug 调试。正式连接用 HTTPS。
 
-在网页「设置 → API 渠道」配置接口、API Key 和模型，或在「连接」中选已安装且登录的 Agent CLI，之后才能正常调用模型。仅验证登录、消息持久化和接口无需模型。无登录本机模式不是三端共享部署方案。
+在网页「设置 → API 渠道」接入接口和 API Key（整台设备共用，`GET/POST /api/channels`），并在「设置 → 模型与 Agent」为每个 Bot 选择模型（`POST /api/bots/{id}/settings/routes`），或为 Agent 选择已安装且登录的官方订阅 CLI，之后才能正常调用模型。仅验证登录、消息持久化和接口无需模型。无登录本机模式不是三端共享部署方案。
 
 开发网页热更新时可使用现有 `web/vite.config.ts` 的 /api 代理，但不要禁用服务端的同源写校验；服务器模式的登录联调应直接访问后端提供的网页。生产环境先构建网页，再编译 Go，网页资源将嵌入二进制。前端设计和现有路由不变。
 
 ## 客户端构建
 
-- Android：见 [android/README.md](../android/README.md)。Java 17、Gradle 8.9、SDK 35，执行 `gradle :app:assembleDebug`。Release 禁止 HTTP，Debug 可显式选择 HTTP 并确认风险。支持系统文件上传和另存为下载；不申请全盘存储权限。
-- Mac：见 [mac/README.md](../mac/README.md)。macOS 14+，在 `mac/` 运行 `bash scripts/build-app.sh`，输出 `mac/build/Frog Bot.app`。本机临时签名不等于 Apple 公证；对外分发另配 Developer ID。设置和自动调度器仍从浏览器管理。
+- Android：见 [android-claude/README.md](../android-claude/README.md)。JDK 17、Android SDK 35，在 `android-claude/` 执行 `./gradlew :app:assembleRelease`，输出 `app/build/outputs/apk/release/app-release.apk`（debug 密钥签名，自己安装用）。允许 HTTP 连接，界面会标出「未加密」。
+- Mac：见 [mac-claude/README.md](../mac-claude/README.md)。macOS 14+，在 `mac-claude/` 运行 `bash scripts/build-app.sh`，输出 `mac-claude/build/Frog Bot Claude.app`。本机临时签名不等于 Apple 公证；对外分发另配 Developer ID。设置（API 渠道、模型、Agent、账号）和自动调度器都在 App 内管理。
 - 网页：构建产物由后端统一提供，不需要另起静态文件服务器。
 
-新增 GitHub Actions 配置 [.github/workflows/clients.yml](../.github/workflows/clients.yml)：Go 测试与竞态检查、网页构建、Mac 打包、Android 编译与 lint。需提交并推送到 GitHub 才会运行；配置存在不代表云端构建已通过，也不会自动发布商店。
+GitHub Actions：[clients.yml](../.github/workflows/clients.yml) 在每次推送时跑 Go 测试与竞态检查、网页构建、Mac 打包、Android 编译；[release.yml](../.github/workflows/release.yml) 在打标签时自动发布——`v*` 发布服务端安装包（带 `-` 的是预发布版），`clients-v*` 发布 Mac 和安卓客户端的 beta 预发布版（不会成为「最新版」，安装脚本也会跳过）。不会自动发布到应用商店。
 
 ## Docker + HTTPS 部署
 
@@ -76,9 +76,9 @@ go test ./...
 go test -race ./...
 go vet ./...
 cd web && npm run build
-cd ../mac && swift build
+cd ../mac-claude && swift build
 ```
 
 新增 HTTP 集成测试覆盖 Cookie jar 与原生 Cookie 登录、三端协议共享消息、SSE 两种游标续传、改密码后旧会话失效；输入测试覆盖损坏 JSON、截断上传回滚。这是服务端协议测试，不是三台设备的 UI 自动化测试。
 
-本次机器没有 JDK、Android SDK 和 Docker：Android APK / 真机交互及 Docker 镜像仍需在相应环境验证；未部署到公网、未执行云端 CI、未配置商店签名。不要把这些未验证项视为已上线。
+Mac 和安卓客户端还是 beta：APK 和 Mac App 由 GitHub Actions 编译，但还没有在多种真机上做过交互测试；Docker 镜像同样需要在实际环境验证；没有配置商店签名和 Apple 公证。

@@ -79,7 +79,7 @@ func TestSettingsFlow(t *testing.T) {
 		if w.Code != 200 || strings.Contains(w.Body.String(), key) || !b.GetSettings().HasAPIKey {
 			t.Fatalf("save failed or exposed key: HTTP %d", w.Code)
 		}
-		file, err := os.ReadFile(b.channelPath())
+		file, err := os.ReadFile(b.pool.path)
 		if err != nil || bytes.Contains(file, []byte(key)) {
 			t.Fatal("settings should be persisted without the plaintext key")
 		}
@@ -189,9 +189,8 @@ func TestBetaConfigMigratesToChannels(t *testing.T) {
 	if _, model := b.resolveModel(false); model != "smart" {
 		t.Fatalf("beta Agent model not migrated: %q", model)
 	}
-	b.modelMu.RLock()
-	got := b.model.key
-	b.modelMu.RUnlock()
+	ch, _ := b.pool.find(s.DefaultProviderID)
+	got := ch.key
 	if got != "beta-key" {
 		t.Fatal("beta API key was not carried over")
 	}
@@ -225,7 +224,7 @@ func TestEnvOverridesSavedChannel(t *testing.T) {
 	if !s.EnvOverride || s.Model != "saved" {
 		t.Fatalf("settings view: %+v", s)
 	}
-	if file, _ := os.ReadFile(b.channelPath()); bytes.Contains(file, []byte("env")) {
+	if file, _ := os.ReadFile(b.pool.path); bytes.Contains(file, []byte("env")) {
 		t.Fatal("env connection was persisted")
 	}
 }

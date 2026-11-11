@@ -3,8 +3,11 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, type BotProfile } from '../api';
 
 export default function BotEditor({ profile, device, onClose, onSaved, onDeleted }: {
-  profile?: BotProfile; device: { id: string; name: string }; onClose: () => void; onSaved: (profile: BotProfile) => void; onDeleted: (id: string) => void;
+  profile?: BotProfile; device: { id: string; name: string; bots?: BotProfile[] }; onClose: () => void; onSaved: (profile: BotProfile) => void; onDeleted: (id: string) => void;
 }) {
+  // 新建本机 Bot 时可以直接复制另一个 Bot 的模型设置（渠道、密钥、聊天模型、Agent）；之后各自独立。
+  const copySources = !profile && device.id === 'local' ? device.bots ?? [] : [];
+  const [copyFrom, setCopyFrom] = useState(copySources[0]?.id ?? '');
   const ref = useRef<HTMLDialogElement>(null);
   const [name, setName] = useState(profile?.name ?? '');
   const [instructions, setInstructions] = useState(profile?.instructions ?? '');
@@ -36,7 +39,15 @@ export default function BotEditor({ profile, device, onClose, onSaved, onDeleted
     setError('');
     const draft = { name: name.trim(), instructions: instructions.trim() };
     try {
-      onSaved(await (profile ? api.editBot(profile.id, draft) : api.createBot(draft, device.id)));
+      const saved = await (profile ? api.editBot(profile.id, draft) : api.createBot(draft, device.id));
+      if (!profile && copyFrom) {
+        try {
+          await api.copyBotSettings(saved.id, copyFrom);
+        } catch (err) {
+          window.alert(`Bot 已创建，但模型设置没有复制成功：${(err as Error).message}。可以稍后在「设置 → 模型与 Agent」里复制。`);
+        }
+      }
+      onSaved(saved);
     } catch (err) {
       setError((err as Error).message);
       setSaving(false);
@@ -92,6 +103,13 @@ export default function BotEditor({ profile, device, onClose, onSaved, onDeleted
           <textarea className={input} rows={4} maxLength={4000} value={instructions} onChange={(e) => setInstructions(e.target.value)}
             placeholder="例如：负责代码审查，优先指出会影响用户的问题。" />
         </label>
+        {copySources.length > 0 && <label className="text-sm">模型设置
+          <select className={input} value={copyFrom} onChange={(e) => setCopyFrom(e.target.value)}>
+            {copySources.map((b) => <option key={b.id} value={b.id}>沿用「{b.name}」的聊天模型和 Agent</option>)}
+            <option value="">稍后在设置里选择</option>
+          </select>
+          <span className="mt-1 block text-xs text-fg3">API 渠道所有 Bot 共用；每个 Bot 用哪个模型相互独立，可以随时在「设置 → 模型与 Agent」修改。</span>
+        </label>}
         {error && <p className="text-sm text-danger" role="alert">{error}</p>}
         <div className="flex justify-end gap-2">
           {canDelete && <button type="button" disabled={saving} onClick={() => { setError(''); setConfirmDelete(true); }}

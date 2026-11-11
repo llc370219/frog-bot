@@ -10,8 +10,11 @@ import (
 	"frogbot/internal/onefrog"
 )
 
+// agentConnection 是每个 Bot 自己的 Agent 执行方式（data/…/agent-connection.json）。
+// CLI 为空时用内置 Agent（走「Agent API 模型」）；否则用该 CLI 以及它在这台设备上登录的账户。
 type agentConnection struct {
 	CLI string `json:"cli"` // Empty selects the built-in agent.
+	onefrog.CLIOptions
 }
 
 type connectionsView struct {
@@ -29,12 +32,17 @@ func (b *Bot) loadAgentConnection() error {
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(raw, &b.connection); err != nil {
+	var c agentConnection
+	if err := json.Unmarshal(raw, &c); err != nil {
 		return err
 	}
-	if id := b.connection.CLI; id != "" && onefrog.CLIName(id) == "" {
+	if id := c.CLI; id != "" && onefrog.CLIName(id) == "" {
 		return fmt.Errorf("未知的 Agent CLI：%s", id)
 	}
+	if c.CLIOptions, err = onefrog.ValidateCLIOptions(c.CLI, c.CLIOptions); err != nil {
+		return err
+	}
+	b.connection = c
 	return nil
 }
 
@@ -44,11 +52,28 @@ func (b *Bot) selectedCLI() string {
 	return b.connection.CLI
 }
 
-func (b *Bot) connections() connectionsView {
-	return connectionsView{agentConnection{CLI: b.selectedCLI()}, onefrog.DetectCLIs()}
+// cliOptions 返回指定 CLI 当前的模型与认证设置；不是当前所选 CLI 时用默认（官方订阅、CLI 默认模型）。
+func (b *Bot) cliOptions(id string) onefrog.CLIOptions {
+	b.modelMu.RLock()
+	defer b.modelMu.RUnlock()
+	if id != "" && id == b.connection.CLI {
+		return b.connection.CLIOptions
+	}
+	return onefrog.CLIOptions{Auth: onefrog.CLIAuthSubscription}
 }
 
-func (b *Bot) saveAgentConnection(id string) error {
+func (b *Bot) connections() connectionsView {
+	b.modelMu.RLock()
+	c := b.connection
+	b.modelMu.RUnlock()
+	if c.CLI != "" && c.Auth == "" {
+		c.Auth = onefrog.CLIAuthSubscription
+	}
+	return connectionsView{c, onefrog.DetectCLIs()}
+}
+
+func (b *Bot) saveAgentConnection(draft agentConnection) error {
+	id := draft.CLI
 	if id != "" {
 		if onefrog.CLIName(id) == "" {
 			return errors.New("请选择支持的 Agent CLI")
@@ -59,12 +84,16 @@ func (b *Bot) saveAgentConnection(id string) error {
 			}
 		}
 	}
+	opts, err := onefrog.ValidateCLIOptions(id, draft.CLIOptions)
+	if err != nil {
+		return err
+	}
+	draft.CLIOptions = opts
 	b.modelMu.Lock()
 	defer b.modelMu.Unlock()
-	if b.connection.CLI == id {
+	if b.connection == draft {
 		return nil
 	}
-	draft := agentConnection{CLI: id}
 	tmp, err := os.CreateTemp(b.cfg.DataDir, ".agent-connection-*")
 	if err != nil {
 		return err

@@ -55,6 +55,7 @@ type Task struct {
 	ID           string        `json:"id"`
 	BotID        string        `json:"bot_id,omitempty"`
 	CLI          string        `json:"cli,omitempty"`          // 空值使用内置 Agent
+	CLIOptions   CLIOptions    `json:"cli_options,omitempty"`  // CLI 的模型与认证方式（启动时取所属 Bot 的当前设置）
 	Instructions string        `json:"instructions,omitempty"` // 追加到系统提示词（人设、要求）
 	Input        string        `json:"input"`
 	History      []Message     `json:"history,omitempty"` // 可选：之前的上下文

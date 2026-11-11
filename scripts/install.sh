@@ -63,10 +63,11 @@ detect_arch() {
 
 latest_version() {
   local tmp; tmp="$(mktemp)"
-  # /releases 列表包含测试版（/releases/latest 只返回正式版）；第一个就是最新的
-  fetch "https://api.github.com/repos/$REPO/releases?per_page=5" "$tmp" || die "无法从 GitHub 读取发布列表"
+  # /releases 列表包含测试版（/releases/latest 只返回正式版）；第一个就是最新的。
+  # 只认服务端的 v* 标签，跳过 Mac / 安卓客户端的 clients-v* 预发布版。
+  fetch "https://api.github.com/repos/$REPO/releases?per_page=20" "$tmp" || die "无法从 GitHub 读取发布列表"
   local v
-  v="$(grep -o '"tag_name": *"[^"]*"' "$tmp" | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')"
+  v="$(grep -o '"tag_name": *"[^"]*"' "$tmp" | sed 's/.*"\([^"]*\)"$/\1/' | grep '^v[0-9]' | head -n1)"
   rm -f "$tmp"
   [ -n "$v" ] || die "GitHub 上还没有可用的发布"
   echo "$v"
