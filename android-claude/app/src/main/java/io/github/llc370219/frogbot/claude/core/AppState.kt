@@ -271,8 +271,8 @@ class AppState(private val context: Context) {
         refresh(s)
     }
 
-    fun setAppearance(v: String) { prefs.appearance = v; appearance = v }
-    fun setKeepAlive(v: Boolean) { prefs.keepAlive = v; keepAlive = v }
+    fun changeAppearance(v: String) { prefs.appearance = v; appearance = v }
+    fun changeKeepAlive(v: Boolean) { prefs.keepAlive = v; keepAlive = v }
 
     fun markRead(ref: BotRef) { unread.remove(ref.key) }
 

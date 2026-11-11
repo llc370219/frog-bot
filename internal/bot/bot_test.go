@@ -222,10 +222,15 @@ func TestStopCancelsAll(t *testing.T) {
 	defer b.Close()
 	id1, _ := b.StartTask("任务一", "")
 	id2, _ := b.StartTask("任务二", "")
+	// 两个任务都已经调用过模型（正卡在 blockingAgent 里），再记下调用次数；
+	// 只看状态是 running 不够：-race 下任务可能刚标成 running、还没走到模型调用。
 	waitFor(t, "running", func() bool {
 		a, _ := b.store.Task(id1)
 		c, _ := b.store.Task(id2)
-		return a.Status == "running" && c.Status == "running"
+		ai.mu.Lock()
+		calls := ai.calls
+		ai.mu.Unlock()
+		return a.Status == "running" && c.Status == "running" && calls >= 2
 	})
 	ai.mu.Lock()
 	before := ai.calls

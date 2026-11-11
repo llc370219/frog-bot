@@ -101,7 +101,7 @@ fun SettingsScreen(state: AppState, nav: Nav) {
             SwitchRow(
                 "后台保持连接", "用一条常驻通知保持连接，审批和任务结束能马上提醒你", Icons.Outlined.NotificationsActive, state.keepAlive,
             ) { on ->
-                state.setKeepAlive(on)
+                state.changeKeepAlive(on)
                 if (on) runCatching { KeepAliveService.start(context) } else KeepAliveService.stop(context)
             }
             ListRow("通知", "等你确认、任务结束、新回复", Icons.Outlined.Notifications, chevron = true, onClick = { nav.push(Screen.Notifications) })
@@ -116,7 +116,7 @@ fun SettingsScreen(state: AppState, nav: Nav) {
 fun AppearanceScreen(state: AppState, nav: Nav) {
     SubPage("外观", nav) {
         listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (k, v) ->
-            ListRow(v, onClick = { state.setAppearance(k) }, leading = { RadioButton(selected = state.appearance == k, onClick = null) })
+            ListRow(v, onClick = { state.changeAppearance(k) }, leading = { RadioButton(selected = state.appearance == k, onClick = null) })
         }
     }
 }
