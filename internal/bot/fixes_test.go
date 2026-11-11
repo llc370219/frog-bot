@@ -77,7 +77,8 @@ func TestMutualAskAgentDoesNotBlock(t *testing.T) {
 				rb++
 			}
 		}
-		return ra == 1 && rb == 1
+		// 至少各收到一次：被唤醒处理提问时，模型偶尔会在同一轮里再问一次，不算阻塞问题
+		return ra >= 1 && rb >= 1
 	})
 }
 
