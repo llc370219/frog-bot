@@ -2,7 +2,8 @@ name: Release
 
 # 打标签自动发布：
 #   v*          服务端 + 网页（5 个平台的 frogbot 安装包）。带 - 的（如 v0.2.0-beta）发成预发布版，否则是正式版
-#   clients-v*  Mac 和安卓客户端，一律发成预发布版（beta），不会变成「最新版」，安装脚本也会跳过
+#   clients-v*  Mac 和安卓客户端。带 - 的（如 clients-v0.2.0-beta.1）发成预发布版，否则是正式版；
+#               都不会占用「最新版」（Latest 留给服务端），安装脚本也会跳过
 on:
   push:
     tags:
@@ -82,11 +83,13 @@ jobs:
         with:
           path: out
           merge-multiple: true
-      - name: 发布客户端 beta
+      - name: 发布客户端
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           (cd out && sha256sum * > SHA256SUMS)
-          gh release create "$TAG" out/* --prerelease --latest=false --title "客户端 ${TAG#clients-}（Mac + 安卓，beta）" \
+          flags="" title="客户端 ${TAG#clients-}（Mac + 安卓）"
+          case "$TAG" in *-*) flags="--prerelease" title="客户端 ${TAG#clients-}（Mac + 安卓，beta）" ;; esac
+          gh release create "$TAG" out/* $flags --latest=false --title "$title" \
             --notes-file ".github/release-notes/$TAG.md"
