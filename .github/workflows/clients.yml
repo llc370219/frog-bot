@@ -1,0 +1,62 @@
+name: Backend and clients
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build -trimpath -o bin/frogbot ./cmd/frogbot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frogbot-linux-amd64
+          path: bin/frogbot
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/build-app.sh
+        working-directory: mac-claude
+      - run: ditto -c -k --sequesterRsrc --keepParent "mac-claude/build/Frog Bot Claude.app" "mac-claude/build/FrogBotClaude-macOS.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrogBotClaude-macOS
+          path: mac-claude/build/FrogBotClaude-macOS.zip
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --no-daemon :app:assembleRelease
+        working-directory: android-claude
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrogBotClaude-Android
+          path: android-claude/app/build/outputs/apk/release/app-release.apk

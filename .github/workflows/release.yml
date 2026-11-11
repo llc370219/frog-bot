@@ -1,0 +1,92 @@
+name: Release
+
+# 打标签自动发布：
+#   v*          服务端 + 网页（5 个平台的 frogbot 安装包）。带 - 的（如 v0.2.0-beta）发成预发布版，否则是正式版
+#   clients-v*  Mac 和安卓客户端，一律发成预发布版（beta），不会变成「最新版」，安装脚本也会跳过
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'clients-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  server:
+    if: startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - run: go test ./...
+      - run: bash scripts/release.sh "${{ github.ref_name }}"
+      - name: 发布到 GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags="--latest"
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          gh release create "$TAG" dist/* $flags --title "$TAG" --notes-file .github/release-notes/$TAG.md 2>/dev/null \
+            || gh release create "$TAG" dist/* $flags --title "$TAG" --generate-notes
+
+  mac:
+    if: startsWith(github.ref_name, 'clients-v')
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/build-app.sh
+        working-directory: mac-claude
+      - run: |
+          ver="${GITHUB_REF_NAME#clients-v}"
+          ditto -c -k --sequesterRsrc --keepParent "mac-claude/build/Frog Bot Claude.app" "FrogBotClaude-macOS-$ver.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: FrogBotClaude-macOS-*.zip
+
+  android:
+    if: startsWith(github.ref_name, 'clients-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --no-daemon :app:assembleRelease
+        working-directory: android-claude
+      - run: |
+          ver="${GITHUB_REF_NAME#clients-v}"
+          cp android-claude/app/build/outputs/apk/release/app-release.apk "FrogBotClaude-Android-$ver.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: FrogBotClaude-Android-*.apk
+
+  clients:
+    needs: [mac, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: 发布客户端 beta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          (cd out && sha256sum * > SHA256SUMS)
+          gh release create "$TAG" out/* --prerelease --latest=false --title "客户端 ${TAG#clients-}（Mac + 安卓，beta）" \
+            --notes-file ".github/release-notes/$TAG.md"
