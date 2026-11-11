@@ -1,21 +1,19 @@
 name: Release
 
-# 打标签自动发布：
-#   v*          服务端 + 网页（5 个平台的 frogbot 安装包）。带 - 的（如 v0.2.0-beta）发成预发布版，否则是正式版
-#   clients-v*  Mac 和安卓客户端。带 - 的（如 clients-v0.2.0-beta.1）发成预发布版，否则是正式版；
-#               都不会占用「最新版」（Latest 留给服务端），安装脚本也会跳过
+# 正式版同时发布服务端、网页和原生客户端。服务端测试版继续使用带后缀的 v* 标签。
 on:
   push:
     tags:
       - 'v*'
-      - 'clients-v*'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
 
 jobs:
   server:
-    if: startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,34 +26,44 @@ jobs:
         with:
           go-version: '1.26.x'
       - run: go test ./...
-      - run: bash scripts/release.sh "${{ github.ref_name }}"
-      - name: 发布到 GitHub Releases
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          flags="--latest"
-          case "$TAG" in *-*) flags="--prerelease" ;; esac
-          gh release create "$TAG" dist/* $flags --title "$TAG" --notes-file .github/release-notes/$TAG.md 2>/dev/null \
-            || gh release create "$TAG" dist/* $flags --title "$TAG" --generate-notes
+      - run: bash scripts/release.sh "$GITHUB_REF_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server
+          path: dist/
+          if-no-files-found: error
 
   mac:
-    if: startsWith(github.ref_name, 'clients-v')
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - run: bash scripts/build-app.sh
-        working-directory: mac-claude
-      - run: |
-          ver="${GITHUB_REF_NAME#clients-v}"
-          ditto -c -k --sequesterRsrc --keepParent "mac-claude/build/Frog Bot Claude.app" "FrogBotClaude-macOS-$ver.zip"
+      - name: 构建客户端
+        env:
+          FROG_MAC_UNIVERSAL: '1'
+          FROG_SPARKLE_PUBLIC_KEY: ${{ vars.FROG_SPARKLE_PUBLIC_KEY }}
+        run: |
+          : "${FROG_SPARKLE_PUBLIC_KEY:?Missing repository variable FROG_SPARKLE_PUBLIC_KEY}"
+          FROG_VERSION="${GITHUB_REF_NAME#v}" bash mac-claude/scripts/build-app.sh
+      - name: 签名更新包和生成更新源
+        env:
+          SPARKLE_SEED: ${{ secrets.FROG_SPARKLE_PRIVATE_KEY }}
+        run: |
+          : "${SPARKLE_SEED:?Missing repository secret FROG_SPARKLE_PRIVATE_KEY}"
+          umask 077
+          key="$(mktemp "$RUNNER_TEMP/frog-sparkle.XXXXXXXX")"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SPARKLE_SEED" > "$key"
+          unset SPARKLE_SEED
+          FROG_SPARKLE_PRIVATE_KEY="$key" bash mac-claude/scripts/package-update.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/frog-macos"
       - uses: actions/upload-artifact@v4
         with:
           name: mac
-          path: FrogBotClaude-macOS-*.zip
+          path: ${{ runner.temp }}/frog-macos/
+          if-no-files-found: error
 
   android:
-    if: startsWith(github.ref_name, 'clients-v')
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,32 +72,76 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew --no-daemon :app:assembleRelease
+      - name: 构建并验证签名 APK
         working-directory: android-claude
-      - run: |
-          ver="${GITHUB_REF_NAME#clients-v}"
-          cp android-claude/app/build/outputs/apk/release/app-release.apk "FrogBotClaude-Android-$ver.apk"
+        env:
+          FROG_ANDROID_KEYSTORE_B64: ${{ secrets.FROG_ANDROID_KEYSTORE_B64 }}
+          FROG_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.FROG_ANDROID_KEYSTORE_PASSWORD }}
+          FROG_ANDROID_KEY_ALIAS: frog
+        run: |
+          : "${FROG_ANDROID_KEYSTORE_B64:?Missing repository secret FROG_ANDROID_KEYSTORE_B64}"
+          : "${FROG_ANDROID_KEYSTORE_PASSWORD:?Missing repository secret FROG_ANDROID_KEYSTORE_PASSWORD}"
+          umask 077
+          export FROG_ANDROID_KEYSTORE="$(mktemp "$RUNNER_TEMP/frog-android.XXXXXXXX")"
+          trap 'rm -f "$FROG_ANDROID_KEYSTORE"' EXIT
+          printf '%s' "$FROG_ANDROID_KEYSTORE_B64" | base64 --decode > "$FROG_ANDROID_KEYSTORE"
+          unset FROG_ANDROID_KEYSTORE_B64
+          export FROG_ANDROID_KEY_PASSWORD="$FROG_ANDROID_KEYSTORE_PASSWORD"
+          ./gradlew --no-daemon ":app:assembleRelease" "-PfrogVersion=${GITHUB_REF_NAME#v}"
+          cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/frog-android.apk"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          "$apksigner" verify --print-certs "$RUNNER_TEMP/frog-android.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: android
-          path: FrogBotClaude-Android-*.apk
+          path: ${{ runner.temp }}/frog-android.apk
+          if-no-files-found: error
 
-  clients:
-    needs: [mac, android]
+  publish:
+    needs: [server, mac, android]
+    if: >-
+      ${{ !cancelled() && needs.server.result == 'success' &&
+          ((needs.mac.result == 'success' && needs.android.result == 'success') ||
+           (contains(github.ref_name, '-') && needs.mac.result == 'skipped' && needs.android.result == 'skipped')) }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: out
           merge-multiple: true
-      - name: 发布客户端
+      - name: 发布到 GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
-          (cd out && sha256sum * > SHA256SUMS)
-          flags="" title="客户端 ${TAG#clients-}（Mac + 安卓）"
-          case "$TAG" in *-*) flags="--prerelease" title="客户端 ${TAG#clients-}（Mac + 安卓，beta）" ;; esac
-          gh release create "$TAG" out/* $flags --latest=false --title "$title" \
-            --notes-file ".github/release-notes/$TAG.md"
+          tag="$GITHUB_REF_NAME"
+          channel=(--latest)
+          case "$tag" in
+            *-*) channel=(--prerelease --latest=false) ;;
+            *)
+              for file in frog-macos.zip frog-macos-appcast.xml frog-android.apk; do
+                test -s "out/$file"
+              done
+              ;;
+          esac
+          (
+            cd out
+            rm SHA256SUMS
+            sha256sum -- * > SHA256SUMS
+          )
+          if state="$(gh release view "$tag" --json isDraft --jq .isDraft)"; then
+            if [[ "$state" != true ]]; then
+              echo "Release $tag is already published."
+              exit 0
+            fi
+          else
+            notes=(--generate-notes)
+            if [[ -f ".github/release-notes/$tag.md" ]]; then
+              notes=(--notes-file ".github/release-notes/$tag.md")
+            fi
+            gh release create "$tag" --verify-tag --draft --title "frog $tag" "${notes[@]}"
+          fi
+          gh release upload "$tag" out/* --clobber
+          gh release edit "$tag" --draft=false "${channel[@]}"

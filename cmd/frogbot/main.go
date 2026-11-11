@@ -194,7 +194,7 @@ func main() {
 	}
 
 	page := "http://" + browserHost(addr)
-	fmt.Printf("\n  🐸 frog bot %s 已启动（%s）\n\n", version, map[bool]string{true: "服务器模式", false: "本机模式"}[server])
+	fmt.Printf("\n  🐸 frog %s 已启动（%s）\n\n", version, map[bool]string{true: "服务器模式", false: "本机模式"}[server])
 	fmt.Printf("  管理页面： %s\n  数据目录： %s\n  工作区：   %s\n", page, absPath(dataDir), absPath(workspace))
 	if server {
 		fmt.Printf("  用户名：   %s\n", gate.Username())
@@ -299,7 +299,7 @@ func resetPassword(args []string) {
 	if !*fromStdin {
 		fmt.Printf("  新密码：  %s\n", pw)
 	}
-	fmt.Println("正在运行的 frog bot 会自动用新密码，不需要重启。")
+	fmt.Println("正在运行的 frog 会自动用新密码，不需要重启。")
 }
 
 // dirs 决定数据目录和工作区：

@@ -8,7 +8,7 @@
 <marker id="a-red-s" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10 0 L0 5 L10 10 z" fill="#b4433a"/></marker>
 </defs>
 <rect width="1600" height="1140" fill="#faf9f5"/>
-<text x="800.0" y="52" font-size="28" font-weight="700" fill="#1a1915" text-anchor="middle" font-family="'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','Hiragino Sans GB',sans-serif">frog bot 系统架构</text>
+<text x="800.0" y="52" font-size="28" font-weight="700" fill="#1a1915" text-anchor="middle" font-family="'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','Hiragino Sans GB',sans-serif">frog 系统架构</text>
 <text x="800.0" y="80" font-size="14" font-weight="400" fill="#69675f" text-anchor="middle" font-family="'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','Hiragino Sans GB',sans-serif">一个 Go 二进制 = 网页 + API + 后台 Agent · 聊天层与执行层分离 · 全部状态来自事件日志</text>
 <text x="40" y="150" font-size="14" font-weight="600" fill="#3d3c37" text-anchor="start" font-family="'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','Hiragino Sans GB',sans-serif">客户端</text>
 <text x="40" y="169" font-size="11.5" font-weight="400" fill="#8c8a81" text-anchor="start" font-family="'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','Hiragino Sans GB',sans-serif">三端共用一个后端</text>

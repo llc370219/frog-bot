@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# frog bot 服务器版一键安装 / 升级（Linux x86_64 / arm64，systemd）。
+# frog 服务器版一键安装 / 升级（Linux x86_64 / arm64，systemd）。
 #
 #   curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo bash
 #
@@ -8,7 +8,7 @@
 #   FROGBOT_USER=admin     登录用户名（只在第一次安装时使用）
 #   FROGBOT_PASSWORD=…     登录密码（只在第一次安装时使用；不设就随机生成）
 #   VERSION=v0.1.2         安装指定版本（默认装最新发布的那个，正式版和测试版都算）
-#   DOMAIN=bot.example.com 用 Caddy 自动申请 HTTPS 证书，frog bot 只监听本机
+#   DOMAIN=bot.example.com 用 Caddy 自动申请 HTTPS 证书，frog 只监听本机
 #
 # 再次运行 = 升级：保留数据、账号和密码，只替换程序。
 # 卸载：sudo bash install.sh uninstall    （保留数据；加 --purge 连数据一起删）
@@ -132,7 +132,7 @@ write_env() {
     return 0
   fi
   cat > "$ENV_FILE" <<ENV
-# frog bot 服务器版配置（改完执行 sudo systemctl restart frogbot）
+# frog 服务器版配置（改完执行 sudo systemctl restart frogbot）
 FROGBOT_MODE=server
 ADDR=$listen
 DATA_DIR=$DATA_ROOT/data
@@ -154,7 +154,7 @@ write_unit() {
   mkdir -p "$(dirname "$UNIT_FILE")"
   cat > "$UNIT_FILE" <<UNIT
 [Unit]
-Description=frog bot (server mode)
+Description=frog (server mode)
 Documentation=https://github.com/$REPO
 After=network-online.target
 Wants=network-online.target
@@ -186,7 +186,7 @@ write_wrapper() {
   mkdir -p "$(dirname "$WRAPPER")"
   cat > "$WRAPPER" <<'WRAP'
 #!/bin/sh
-# 由 frog bot 安装脚本生成：管理命令（服务本身由 systemd 运行）。
+# 由 frog 安装脚本生成：管理命令（服务本身由 systemd 运行）。
 ENV_FILE="__ENV_FILE__"
 APP="__APP_DIR__/frogbot"
 case "${1:-}" in
@@ -199,7 +199,7 @@ case "${1:-}" in
     exec "$APP" reset-password -data "$DATA_DIR" "$@" ;;
   version|-version|--version) exec "$APP" -version ;;
   *)
-    echo "frog bot 由 systemd 运行：sudo systemctl status|restart|stop frogbot"
+    echo "frog 由 systemd 运行：sudo systemctl status|restart|stop frogbot"
     echo "查看日志：sudo journalctl -u frogbot -f"
     echo "重置密码：sudo frogbot reset-password"
     echo "版本：    frogbot version" ;;
@@ -257,7 +257,7 @@ wait_health() {
 uninstall() {
   need_root
   local purge="${1:-}"
-  say "停止并移除 frog bot 服务"
+  say "停止并移除 frog 服务"
   if ! sandbox && have systemctl; then
     systemctl disable --now frogbot 2>/dev/null || true
     rm -f "$UNIT_FILE"; systemctl daemon-reload || true
@@ -286,7 +286,7 @@ main() {
   arch="$(detect_arch)"
   ver="${VERSION:-$(latest_version)}"
   [ -x "$APP_DIR/frogbot" ] && upgrade=1
-  say "$( [ -n "$upgrade" ] && echo 升级 || echo 安装 ) frog bot $ver（linux/$arch）"
+  say "$( [ -n "$upgrade" ] && echo 升级 || echo 安装 ) frog $ver（linux/$arch）"
 
   WORK_DIR="$(mktemp -d)"; trap 'rm -rf "${WORK_DIR:-}"' EXIT
   src="$(download "$ver" "$arch" "$WORK_DIR" | tail -n1)"
@@ -334,7 +334,7 @@ main() {
   shown_user="$(sed -n 's/.*"username": *"\([^"]*\)".*/\1/p' "$DATA_ROOT/data/auth.json" 2>/dev/null | head -n1)"
   cat <<DONE
 
-  🐸 frog bot $ver 已$( [ -n "$upgrade" ] && echo 升级 || echo 安装 )，服务名 frogbot（开机自启，出错自动重启）
+  🐸 frog $ver 已$( [ -n "$upgrade" ] && echo 升级 || echo 安装 )，服务名 frogbot（开机自启，出错自动重启）
 
   访问地址：$url
   用户名：  ${shown_user:-$ADMIN_USER}

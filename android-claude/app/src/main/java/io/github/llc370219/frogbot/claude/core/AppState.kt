@@ -206,8 +206,8 @@ class AppState(private val context: Context) {
             if (password.isEmpty()) throw ApiException("请输入密码")
             client.login(user, password)
         }
-        val groups = loadDevices(client, config.baseUrl?.host ?: "Frog Bot")
-        if (config.name.isEmpty()) config = config.copy(name = groups.firstOrNull()?.name ?: config.baseUrl?.host ?: "Frog Bot")
+        val groups = loadDevices(client, config.baseUrl?.host ?: "frog")
+        if (config.name.isEmpty()) config = config.copy(name = groups.firstOrNull()?.name ?: config.baseUrl?.host ?: "frog")
         client.config = config
 
         val s = existing ?: ServerEntry(config, client.cookie).also { servers.add(it) }

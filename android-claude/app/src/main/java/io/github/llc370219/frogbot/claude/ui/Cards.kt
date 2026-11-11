@@ -407,7 +407,7 @@ fun ApprovalCard(session: BotSession, a: Approval, onDetails: () -> Unit) {
                 }, enabled = !busy) { Text("允许一次") }
             }
         } else {
-            Text("这个操作在「${session.deviceName}」上，请在那台设备的 Frog Bot 界面审批。", fontSize = 13.sp, color = ex.onAttContainer)
+            Text("这个操作在「${session.deviceName}」上，请在那台设备的 frog 界面审批。", fontSize = 13.sp, color = ex.onAttContainer)
         }
     }
 }
@@ -457,7 +457,7 @@ fun SecretCard(session: BotSession, req: SecretRequest) {
             }
             if (!req.description.isNullOrEmpty()) Text(req.description, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (!session.isLocalDevice) {
-                Text("请在「${session.deviceName}」的 Frog Bot 界面填写。", fontSize = 13.sp)
+                Text("请在「${session.deviceName}」的 frog 界面填写。", fontSize = 13.sp)
             } else {
                 OutlinedTextField(
                     value, { value = it }, label = { Text("粘贴密钥") }, singleLine = true,

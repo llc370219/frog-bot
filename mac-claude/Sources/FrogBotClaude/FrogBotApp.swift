@@ -1,15 +1,24 @@
 import AppKit
 import SwiftUI
 import UserNotifications
+#if canImport(Sparkle)
+import Sparkle
+#endif
 
 @main
 @MainActor
-struct FrogBotClaudeApp: App {
+struct FrogApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel.shared
+#if canImport(Sparkle)
+    private let updaterController: SPUStandardUpdaterController? =
+        Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") is String
+        ? SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        : nil
+#endif
 
     var body: some Scene {
-        WindowGroup("Frog Bot Claude", id: "main") {
+        WindowGroup("frog", id: "main") {
             RootView()
                 .environment(model)
                 .frame(minWidth: 860, minHeight: 560)
@@ -17,6 +26,13 @@ struct FrogBotClaudeApp: App {
         .defaultSize(width: 1180, height: 780)
         .windowToolbarStyle(.unified)
         .commands {
+#if canImport(Sparkle)
+            if let updater = updaterController?.updater {
+                CommandGroup(after: .appInfo) {
+                    ClientUpdateMenuItem(updater: updater)
+                }
+            }
+#endif
             CommandGroup(replacing: .newItem) {
                 Button("新建 Bot…") {
                     if let s = model.servers.first(where: \.isOnline) { model.sheet = .newBot(server: s.id, device: "local") }
@@ -45,6 +61,9 @@ struct FrogBotClaudeApp: App {
         Settings {
             SettingsView()
                 .environment(model)
+#if canImport(Sparkle)
+                .environment(\.clientUpdater, updaterController?.updater)
+#endif
         }
     }
 }
@@ -172,11 +191,11 @@ struct FirstRunView: View {
     var body: some View {
         VStack(spacing: 0) {
             FrogMark(size: 72)
-            Text("连接你的第一台 Frog Bot")
+            Text("连接你的第一台 frog 服务器")
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(Theme.fg)
                 .padding(.top, 20)
-            Text("在服务器上装好 Frog Bot 后，把安装时打印的访问地址、用户名和密码填进来。\n可以连接任意多台，在这里统一聊天、派任务、批准操作。")
+            Text("在服务器上装好 frog 后，把安装时打印的访问地址、用户名和密码填进来。\n可以连接任意多台，在这里统一聊天、派任务、批准操作。")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.fg3)
                 .multilineTextAlignment(.center)
@@ -217,7 +236,7 @@ struct FirstRunView: View {
     private let installCommand = "curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo bash"
 }
 
-/// App 里的青蛙标志：打包后用 App 图标，开发时退回网页版的青蛙图
+/// 使用打包时嵌入的客户端图标。
 @MainActor
 struct FrogMark: View {
     var size: CGFloat

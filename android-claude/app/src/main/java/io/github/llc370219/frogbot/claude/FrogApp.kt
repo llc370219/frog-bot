@@ -13,11 +13,13 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import io.github.llc370219.frogbot.claude.core.AppState
 import io.github.llc370219.frogbot.claude.core.BotSession
+import io.github.llc370219.frogbot.claude.core.ClientUpdater
 import io.github.llc370219.frogbot.claude.core.NewsKind
 
 class FrogApp : Application() {
     lateinit var state: AppState
         private set
+    val updater by lazy { ClientUpdater(this) }
 
     override fun onCreate() {
         super.onCreate()

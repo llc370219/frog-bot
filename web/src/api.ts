@@ -296,7 +296,7 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const r = await fetch(path, { signal });
   checkAuth(r);
   const data = await r.json().catch(() => null);
-  if (!r.ok || data === null) throw new Error(data?.error || '无法读取数据，请确认 Frog Bot 后端已启动');
+  if (!r.ok || data === null) throw new Error(data?.error || '无法读取数据，请确认 frog 后端已启动');
   return data as T;
 }
 

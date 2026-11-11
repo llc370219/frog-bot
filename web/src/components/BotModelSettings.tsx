@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import type { AgentCLI, AgentConnection, AgentConnections, APIChannel, APISettings, BotProfile, CLIAuth, DeviceSettingsAPI } from '../api';
 import { BotAvatar } from './BotAvatar';
 
-const message = (e: unknown) => e instanceof TypeError ? '无法连接 Frog Bot 后端，请确认服务已启动'
+const message = (e: unknown) => e instanceof TypeError ? '无法连接 frog 后端，请确认服务已启动'
   : e instanceof Error ? e.message : '请求失败，请重试';
 const visible = (p: APIChannel) => p.models.filter(m => !p.hidden_models.includes(m));
 const agentIcons: Record<string, string> = { codex: 'codex.png', claude: 'claude.png', pi: 'pi.svg', grok: 'grok.svg', agy: 'agy.svg' };
@@ -64,7 +64,7 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
     const { signal } = controller;
     Promise.all([target.settings(signal), target.connections(signal)]).then(([s, c]) => {
       if (signal.aborted) return;
-      if (!Array.isArray(c.clis)) throw new Error('请更新并重启 Frog Bot 后端后重试');
+      if (!Array.isArray(c.clis)) throw new Error('请更新并重启 frog 后端后重试');
       applySettings(s); applyConnection(c);
     }).catch(e => { if (!signal.aborted) setNotice({ error: true, text: message(e) }); });
     return () => controller.abort();
@@ -208,7 +208,7 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
       </header>
       <div className="agent-mode" role="radiogroup" aria-label="Agent 执行方式">
         <button type="button" role="radio" aria-checked={mode === 'api'} disabled={busy} onClick={() => setMode('api')}>
-          <Bot size={16} /><span><b>API 模型</b><small>Frog 内置 Agent，按 API 用量计费</small></span>
+          <Bot size={16} /><span><b>API 模型</b><small>frog 内置 Agent，按 API 用量计费</small></span>
         </button>
         <button type="button" role="radio" aria-checked={mode === 'cli'} disabled={busy} onClick={() => setMode('cli')}>
           <BadgeCheck size={16} /><span><b>官方订阅</b><small>Claude Code、Codex 等 CLI，用登录的订阅账户</small></span>
@@ -258,7 +258,7 @@ function CLIDetails({ c, model, setModel, auth, setAuth, busy, deviceName }: {
       <label className={auth === 'subscription' ? 'is-on' : ''}><input type="radio" name="cli-auth" checked={auth === 'subscription'} onChange={() => setAuth('subscription')} />
         <span><b>官方订阅（推荐）</b><small>只用 CLI 登录的 {c.subscription ?? '官方'} 账户；即使设备上设置了 API Key 环境变量也不会改走按量计费。</small></span></label>
       <label className={auth === 'env' ? 'is-on' : ''}><input type="radio" name="cli-auth" checked={auth === 'env'} onChange={() => setAuth('env')} />
-        <span><b>沿用设备环境变量</b><small>保留 Frog Bot 进程里的 API Key / Base URL 环境变量，由 CLI 自行决定用哪种认证。</small></span></label>
+        <span><b>沿用设备环境变量</b><small>保留 frog 进程里的 API Key / Base URL 环境变量，由 CLI 自行决定用哪种认证。</small></span></label>
     </fieldset>
     {c.login && <p className="agent-login"><Terminal size={13} />还没登录？在「{deviceName}」的终端运行 <code>{c.login}</code> 完成登录。</p>}
   </div>;

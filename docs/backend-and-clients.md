@@ -1,6 +1,6 @@
 # 后端与网页 / Android / Mac 三端
 
-保留现有 React 前端，以 Go 服务作为唯一数据源。网页直接访问服务；Android（`android-claude/`，Kotlin + Jetpack Compose）和 Mac（`mac-claude/`，SwiftUI）都是原生客户端，目前是 beta。三端连接同一服务器时，共享 Bot、聊天、任务、审批和文件，不需要分别部署三个后端。
+frog 的网页、Android（Kotlin + Jetpack Compose）和 Mac（SwiftUI）客户端共用 Go 后端。三端连接同一服务器时，共享 Bot、聊天、任务、审批和文件。
 
 当前产品边界：单管理员，不是多租户 SaaS。还没有用户注册、多人权限隔离、离线模式、Android 系统推送或商店发布。模型和 CLI 在后端机器运行，手机和 Mac 不需要保存模型密钥。
 
@@ -25,11 +25,24 @@ go build -o bin/frogbot ./cmd/frogbot
 
 ## 客户端构建
 
-- Android：见 [android-claude/README.md](../android-claude/README.md)。JDK 17、Android SDK 35，在 `android-claude/` 执行 `./gradlew :app:assembleRelease`，输出 `app/build/outputs/apk/release/app-release.apk`（debug 密钥签名，自己安装用）。允许 HTTP 连接，界面会标出「未加密」。
-- Mac：见 [mac-claude/README.md](../mac-claude/README.md)。macOS 14+，在 `mac-claude/` 运行 `bash scripts/build-app.sh`，输出 `mac-claude/build/Frog Bot Claude.app`。本机临时签名不等于 Apple 公证；对外分发另配 Developer ID。设置（API 渠道、模型、Agent、账号）和自动调度器都在 App 内管理。
+- Android 使用 JDK 17 和 Android SDK 35。在 `android-claude/` 执行 `./gradlew :app:assembleRelease`，输出 `app/build/outputs/apk/release/app-release.apk`。正式版 APK 使用固定的发布密钥签名。参见 [Android 构建说明](../android-claude/README.md)。
+- Mac 支持 macOS 14 及更新版本。在 `mac-claude/` 运行 `bash scripts/build-app.sh`，输出 `mac-claude/build/frog.app`。设置（API 渠道、模型、Agent、账号）和自动调度器都在 App 内管理。参见 [macOS 构建说明](../mac-claude/README.md)。
 - 网页：构建产物由后端统一提供，不需要另起静态文件服务器。
 
-GitHub Actions：[clients.yml](../.github/workflows/clients.yml) 在每次推送时跑 Go 测试与竞态检查、网页构建、Mac 打包、Android 编译；[release.yml](../.github/workflows/release.yml) 在打标签时自动发布——`v*` 发布服务端安装包（带 `-` 的是预发布版），`clients-v*` 发布 Mac 和安卓客户端的 beta 预发布版（不会成为「最新版」，安装脚本也会跳过）。不会自动发布到应用商店。
+每次推送会运行 Go 测试和竞态检查，并构建网页、Mac 和 Android 客户端。参见 [构建工作流](../.github/workflows/clients.yml)。
+
+从 `v0.1.6` 起，推送正式版标签 `vX.Y.Z` 后，GitHub Actions 会等服务端和两个原生客户端构建通过，再将安装包一并发布。原生客户端自动检查 GitHub 正式版，Android 安装由系统界面确认。参见 [发布工作流](../.github/workflows/release.yml)。
+
+发布前在 GitHub 仓库的「Settings → Secrets and variables → Actions」配置签名材料。
+
+| 类型 | 名称 | 内容 |
+| --- | --- | --- |
+| Variable | `FROG_SPARKLE_PUBLIC_KEY` | Ed25519 公钥的 Base64 |
+| Secret | `FROG_SPARKLE_PRIVATE_KEY` | 对应的 32 字节私钥种子的 Base64 |
+| Secret | `FROG_ANDROID_KEYSTORE_B64` | Android 发布用 PKCS#12 密钥库的 Base64。密钥别名为 `frog`，密钥库与密钥使用相同密码 |
+| Secret | `FROG_ANDROID_KEYSTORE_PASSWORD` | Android 密钥库密码 |
+
+安全备份签名密钥，后续发布沿用同一套密钥，已安装的客户端才能验证并接受更新。
 
 ## Docker + HTTPS 部署
 
@@ -91,4 +104,4 @@ cd ../mac-claude && swift build
 
 新增 HTTP 集成测试覆盖 Cookie jar 与原生 Cookie 登录、三端协议共享消息、SSE 两种游标续传、改密码后旧会话失效；输入测试覆盖损坏 JSON、截断上传回滚。这是服务端协议测试，不是三台设备的 UI 自动化测试。
 
-Mac 和安卓客户端还是 beta：APK 和 Mac App 由 GitHub Actions 编译，但还没有在多种真机上做过交互测试；Docker 镜像同样需要在实际环境验证；没有配置商店签名和 Apple 公证。
+GitHub Actions 构建 APK 和 Mac App。真机安装和交互验证由设备端完成。

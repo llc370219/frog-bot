@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
@@ -25,14 +26,21 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import io.github.llc370219.frogbot.claude.core.AppState
 import io.github.llc370219.frogbot.claude.core.BotRef
+import io.github.llc370219.frogbot.claude.core.ClientUpdateStatus
+import io.github.llc370219.frogbot.claude.core.ClientUpdater
 
 /** 页面：底部三个标签（聊天 / 调度器 / 设置），其余页面压栈打开 */
 sealed interface Screen {
@@ -61,9 +69,10 @@ class Nav {
 }
 
 @Composable
-fun FrogRoot(state: AppState, openRef: MutableState<BotRef?>) {
+fun FrogRoot(state: AppState, openRef: MutableState<BotRef?>, updater: ClientUpdater, onInstall: () -> Unit) {
     val nav = remember { Nav() }
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
+    ClientUpdatePrompt(updater.status as? ClientUpdateStatus.Ready, onInstall)
 
     LaunchedEffect(openRef.value) {
         openRef.value?.let { nav.tab(Screen.Home); nav.push(Screen.Chat(it)); openRef.value = null }
@@ -75,7 +84,7 @@ fun FrogRoot(state: AppState, openRef: MutableState<BotRef?>) {
     }
 
     if (state.servers.isEmpty() && top == Screen.Home) {
-        FirstRunScreen(onAdd = { nav.push(Screen.AddServer()) })
+        FirstRunScreen(onAdd = { nav.push(Screen.AddServer()) }, onSettings = { nav.tab(Screen.Settings) })
         return
     }
 
@@ -86,18 +95,18 @@ fun FrogRoot(state: AppState, openRef: MutableState<BotRef?>) {
     ) { pad ->
         Box(Modifier.fillMaxSize().padding(if (tabbed) pad else PaddingValues(0.dp))) {
             AnimatedContent(top, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "screen") { s ->
-                ScreenContent(s, state, nav)
+                ScreenContent(s, state, nav, updater, onInstall)
             }
         }
     }
 }
 
 @Composable
-private fun ScreenContent(s: Screen, state: AppState, nav: Nav) {
+private fun ScreenContent(s: Screen, state: AppState, nav: Nav, updater: ClientUpdater, onInstall: () -> Unit) {
     when (s) {
         Screen.Home -> HomeScreen(state, nav)
         Screen.Scheduler -> SchedulerScreen(state, nav)
-        Screen.Settings -> SettingsScreen(state, nav)
+        Screen.Settings -> SettingsScreen(state, nav, updater, onInstall)
         is Screen.Chat -> {
             val session = state.session(s.ref)
             if (session != null) ChatScreen(state, session, nav) else MissingScreen("这个 Bot 现在连不上", nav)
@@ -112,6 +121,25 @@ private fun ScreenContent(s: Screen, state: AppState, nav: Nav) {
         Screen.Notifications -> NotificationsScreen(state, nav)
         Screen.Relay -> RelayScreen(state, nav)
     }
+}
+
+@Composable
+private fun ClientUpdatePrompt(update: ClientUpdateStatus.Ready?, onInstall: () -> Unit) {
+    var dismissedVersion by rememberSaveable { mutableStateOf<String?>(null) }
+    if (update == null || update.version == dismissedVersion) return
+
+    AlertDialog(
+        onDismissRequest = { dismissedVersion = update.version },
+        title = { Text("frog ${update.version} 已下载") },
+        text = { Text("请在 Android 安装界面确认更新。") },
+        confirmButton = {
+            TextButton(onClick = {
+                dismissedVersion = update.version
+                onInstall()
+            }) { Text("安装更新") }
+        },
+        dismissButton = { TextButton(onClick = { dismissedVersion = update.version }) { Text("稍后") } },
+    )
 }
 
 @Composable

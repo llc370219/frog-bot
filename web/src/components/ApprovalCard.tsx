@@ -76,7 +76,7 @@ export default function ApprovalCard({ a, taskTitle, fromChat }: { a: Approval; 
       </div>
       {err && <p className="mt-2 text-xs text-danger">{err}</p>}
       <p className="mt-2.5 text-[11.5px] text-fg4">只批准上面这一条具体操作；参数变了需要重新确认。不处理会在 10 分钟后自动拒绝。</p>
-      </> : <p className="mt-3 text-[13px] text-fg3">请在「{device.name}」的 Frog Bot 界面查看详情并审批。</p>}
+      </> : <p className="mt-3 text-[13px] text-fg3">请在「{device.name}」的 frog 界面查看详情并审批。</p>}
     </div>
   );
 }

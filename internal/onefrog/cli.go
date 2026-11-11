@@ -190,7 +190,7 @@ func runCLI(ctx context.Context, id, workspace, prompt string, opts CLIOptions) 
 	name := CLIName(id)
 	exe, prefix, err := resolveCLI(id)
 	if err != nil {
-		return "", fmt.Errorf("找不到 %s。请在 Frog Bot 所在机器安装 CLI 并加入 PATH", name)
+		return "", fmt.Errorf("找不到 %s。请在 frog 所在机器安装 CLI 并加入 PATH", name)
 	}
 	if opts, err = ValidateCLIOptions(id, opts); err != nil {
 		return "", err

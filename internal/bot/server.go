@@ -424,7 +424,7 @@ func hostname(hostport string) string {
 func LocalOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isLoopbackHost(hostname(r.Host)) {
-			http.Error(w, "frog bot 本机模式只允许从本机访问（http://127.0.0.1 或 http://localhost）。要远程使用请用服务器模式：frogbot -server", http.StatusForbidden)
+			http.Error(w, "frog 本机模式只允许从本机访问（http://127.0.0.1 或 http://localhost）。要远程使用请用服务器模式：frogbot -server", http.StatusForbidden)
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

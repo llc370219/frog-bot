@@ -1,10 +1,10 @@
 #!/bin/bash
 # 构建助手：只认三个固定指令（build / open / quit），不执行任意命令。
-# Claude 往 .dev/request 写指令，这里在你的 Mac 上执行，结果写到 .dev/log.txt 和 .dev/status。
+# 将 .dev/request 中的指令执行结果写到 .dev/log.txt 和 .dev/status。
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p .dev
-APP="build/Frog Bot Claude.app"
-echo "Frog Bot（Claude 版）构建助手已启动，保持这个窗口开着即可；按 Ctrl+C 退出。"
+APP="build/frog.app"
+echo "frog 构建助手已启动，保持这个窗口开着即可；按 Ctrl+C 退出。"
 echo "工具链：$(swift --version 2>&1 | head -1)"
 swift --version > .dev/toolchain.txt 2>&1
 [ -f .dev/request ] || echo ready > .dev/status
@@ -16,9 +16,9 @@ while true; do
     case "$cmd" in
       build) bash scripts/build-app.sh > .dev/log.txt 2>&1; code=$?; echo "exit $code" > .dev/status
              tail -5 .dev/log.txt
-             if [ $code -eq 0 ]; then pkill -x "FrogBotClaude" 2>/dev/null; sleep 0.5; open "$APP"; fi ;;
-      open)  pkill -x "FrogBotClaude" 2>/dev/null; sleep 0.5; open "$APP" > .dev/log.txt 2>&1; echo "exit $?" > .dev/status ;;
-      quit)  pkill -x "FrogBotClaude" > .dev/log.txt 2>&1; echo "exit 0" > .dev/status ;;
+             if [ $code -eq 0 ]; then pkill -x "frog" 2>/dev/null; sleep 0.5; open "$APP"; fi ;;
+      open)  pkill -x "frog" 2>/dev/null; sleep 0.5; open "$APP" > .dev/log.txt 2>&1; echo "exit $?" > .dev/status ;;
+      quit)  pkill -x "frog" > .dev/log.txt 2>&1; echo "exit 0" > .dev/status ;;
       *)     echo "unknown" > .dev/status ;;
     esac
     echo "[$(date +%H:%M:%S)] $(cat .dev/status)"

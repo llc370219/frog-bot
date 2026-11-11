@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 很多 Frog Bot 服务器用 http://IP:端口 访问，所以允许明文 HTTP；App 会在界面上标出这种连接不加密。 -->
+<!-- 很多 frog 服务器用 http://IP:端口 访问，所以允许明文 HTTP；App 会在界面上标出这种连接不加密。 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>

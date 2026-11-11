@@ -26,19 +26,19 @@ if not exist node_modules\vite\bin\vite.js (
   call npm install
   if errorlevel 1 goto :failed
 )
-echo Building Frog Bot frontend...
+echo Building frog frontend...
 call npm run build
 if errorlevel 1 goto :failed
 
 cd /d "%~dp0"
 if errorlevel 1 goto :failed
-echo Starting Frog Bot. Open the URL shown below if the browser does not open.
+echo Starting frog. Open the URL shown below if the browser does not open.
 go run ./cmd/frogbot
 if errorlevel 1 goto :failed
 exit /b 0
 
 :failed
 echo.
-echo Frog Bot could not start. See the error above.
+echo frog could not start. See the error above.
 if not defined CI pause
 exit /b 1

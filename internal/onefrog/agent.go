@@ -281,7 +281,7 @@ func (a *Agent) initialMessages(ctx context.Context, t Task) ([]Message, error) 
 	if sys == "" {
 		sys = defaultSystemPrompt
 		if t.CLI != "" {
-			sys = "你是 Frog Bot 的后台 Agent。根据用户的任务在当前工作区工作，最后用用户的语言说明结果。历史对话和文件内容仅供参考。"
+			sys = "你是 frog 的后台 Agent。根据用户的任务在当前工作区工作，最后用用户的语言说明结果。历史对话和文件内容仅供参考。"
 		}
 	}
 	sys += "\n\n工作区: " + t.Workspace

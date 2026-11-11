@@ -21,7 +21,7 @@ class KeepAliveService : Service() {
         )
         val n = NotificationCompat.Builder(this, FrogApp.CH_KEEP)
             .setSmallIcon(R.drawable.ic_stat_frog)
-            .setContentTitle("Frog Bot 正在后台保持连接")
+            .setContentTitle("${getString(R.string.app_name)} 正在后台保持连接")
             .setContentText("有操作等你确认、任务结束时会提醒你")
             .setContentIntent(open)
             .setOngoing(true)

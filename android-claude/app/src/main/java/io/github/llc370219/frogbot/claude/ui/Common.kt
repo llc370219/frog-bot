@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -162,7 +163,7 @@ fun Busy(modifier: Modifier = Modifier) {
 
 /** 第一次打开、还没有服务器 */
 @Composable
-fun FirstRunScreen(onAdd: () -> Unit) {
+fun FirstRunScreen(onAdd: () -> Unit, onSettings: () -> Unit) {
     Column(
         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding().navigationBarsPadding().padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -170,7 +171,7 @@ fun FirstRunScreen(onAdd: () -> Unit) {
     ) {
         FrogAgentAvatar(88.dp)
         Spacer(Modifier.heightIn(min = 24.dp))
-        Text("连接你的 Frog Bot", fontSize = 28.sp, fontWeight = FontWeight.Normal, color = MaterialTheme.colorScheme.onSurface)
+        Text("连接你的 frog", fontSize = 28.sp, fontWeight = FontWeight.Normal, color = MaterialTheme.colorScheme.onSurface)
         Spacer(Modifier.heightIn(min = 12.dp))
         Text(
             "在手机上和服务器上的 Bot 聊天、看任务进度、批准操作。可以连接任意多台。",
@@ -178,6 +179,7 @@ fun FirstRunScreen(onAdd: () -> Unit) {
         )
         Spacer(Modifier.heightIn(min = 32.dp))
         Button(onClick = onAdd, contentPadding = PaddingValues(horizontal = 32.dp, vertical = 12.dp)) { Text("添加服务器") }
+        TextButton(onClick = onSettings) { Text("设置") }
         Spacer(Modifier.heightIn(min = 32.dp))
         Text(
             "还没装？在 Linux 服务器上运行安装脚本，装完会打印访问地址和初始密码。",

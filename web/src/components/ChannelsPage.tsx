@@ -2,7 +2,7 @@ import { ArrowLeft, Check, CircleAlert, Download, Eye, EyeOff, FlaskConical, Key
 import { useEffect, useState } from 'react';
 import type { APIChannel, APISettings, ChannelUse, DeviceSettingsAPI } from '../api';
 
-const message = (e: unknown) => e instanceof TypeError ? '无法连接 Frog Bot 后端，请确认服务已启动'
+const message = (e: unknown) => e instanceof TypeError ? '无法连接 frog 后端，请确认服务已启动'
   : e instanceof Error ? e.message : '请求失败，请重试';
 const visible = (p: APIChannel) => p.models.filter(m => !p.hidden_models.includes(m));
 const addressKey = (url: string) => url.trim().replace(/\/+$/, '').replace(/\/(chat\/completions|models)$/, '');

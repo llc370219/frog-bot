@@ -27,7 +27,7 @@ export default function SecretCard({ req }: { req: SecretReq }) {
   if (device.id !== 'local') return (
     <div className="rise flex items-center gap-2 rounded-xl border border-line bg-s1 px-3.5 py-3 text-[13px] text-fg3">
       <KeyRound size={15} className="shrink-0 text-accent" />
-      <span>请在「{device.name}」的 Frog Bot 界面填写 <code className="font-mono text-fg">{req.name}</code>。</span>
+      <span>请在「{device.name}」的 frog 界面填写 <code className="font-mono text-fg">{req.name}</code>。</span>
     </div>
   );
 

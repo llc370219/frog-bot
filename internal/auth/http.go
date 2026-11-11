@@ -149,7 +149,7 @@ func (a *Auth) loginPage(w http.ResponseWriter, r *http.Request) {
 // 登录页：暖象牙白、极简、无渐变，和管理页面的风格一致。
 var loginTmpl = template.Must(template.New("login").Parse(`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>登录 · frog bot</title><link rel="icon" href="/favicon.ico">
+<title>登录 · frog</title><link rel="icon" href="/favicon.ico">
 <style>
 :root{--bg:#faf9f5;--card:#ffffff;--ink:#1a1915;--muted:#69675f;--line:#e6e4dd;--accent:#2f7d52;--warn:#9a6410;--err:#b4433a}
 @media (prefers-color-scheme:dark){:root{--bg:#262624;--card:#2b2a27;--ink:#f5f4ef;--muted:#9e9c94;--line:#3d3c38;--accent:#62b486;--warn:#deb36d;--err:#e9918a}}
@@ -165,7 +165,7 @@ button:disabled{opacity:.6;cursor:default}
 .warn{color:var(--warn);font-size:12px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:18px}
 .foot{color:var(--muted);font-size:12px;margin-top:14px}
 </style></head><body><main>
-<div class="brand"><img src="/frog.png" alt=""><b>frog bot</b></div>
+<div class="brand"><img src="/frog.png" alt=""><b>frog</b></div>
 <form id="f" autocomplete="on">
 <label for="u">用户名</label><input id="u" name="username" autocomplete="username" required autofocus>
 <label for="p">密码</label><input id="p" name="password" type="password" autocomplete="current-password" required>

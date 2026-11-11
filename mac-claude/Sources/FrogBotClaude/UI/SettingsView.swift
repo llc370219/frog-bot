@@ -236,6 +236,9 @@ struct PaneTitle: View {
 
 @MainActor
 private struct GeneralPane: View {
+#if canImport(Sparkle)
+    @Environment(\.clientUpdater) private var updater
+#endif
     @AppStorage(Prefs.keepRunning) private var keepRunning = true
     @AppStorage(Prefs.appearance) private var appearance = "system"
     @State private var loginItem = SMAppService.mainApp.status == .enabled
@@ -248,7 +251,7 @@ private struct GeneralPane: View {
                     Toggle("", isOn: $keepRunning).toggleStyle(.switch).controlSize(.small).labelsHidden()
                 }
                 RowDivider()
-                FormRow(title: "登录 Mac 时打开 Frog Bot Claude") {
+                FormRow(title: "登录 Mac 时打开 frog") {
                     Toggle("", isOn: Binding(get: { loginItem }, set: setLoginItem)).toggleStyle(.switch).controlSize(.small).labelsHidden()
                 }
                 RowDivider()
@@ -261,6 +264,12 @@ private struct GeneralPane: View {
                     .labelsHidden()
                     .fixedSize()
                 }
+#if canImport(Sparkle)
+                if let updater {
+                    RowDivider()
+                    ClientUpdatePreference(updater: updater)
+                }
+#endif
             }
             .padding(.top, 16)
             Caption(text: "关掉窗口后，后台任务完成或需要你确认时仍会通知你。")
@@ -302,7 +311,7 @@ private struct NotifyPane: View {
                 RowDivider()
                 row("在 Dock 图标上显示未读数", $badge)
             }
-            Caption(text: "正在看的那个 Bot 不会弹通知。通知样式在「系统设置 › 通知 › Frog Bot Claude」里调整。")
+            Caption(text: "正在看的那个 Bot 不会弹通知。通知样式在「系统设置 › 通知 › frog」里调整。")
         }
         .onChange(of: badge) {
             NSApp.dockTile.badgeLabel = badge && model.totalUnread > 0 ? "\(model.totalUnread)" : nil
@@ -548,7 +557,7 @@ private struct ServerPane: View {
     private var versionText: String {
         if let updateError { return updateError }
         let current = update?.current ?? model.sessions(of: server).first?.info?.version
-        var t = "Frog Bot " + (current.map { $0.hasPrefix("v") ? $0 : "v" + $0 } ?? "版本未知")
+        var t = "frog " + (current.map { $0.hasPrefix("v") ? $0 : "v" + $0 } ?? "版本未知")
         switch update?.state {
         case "available": t += " · 有新版本 \(update?.latest ?? "")"
         case "current": t += " · 已是最新"

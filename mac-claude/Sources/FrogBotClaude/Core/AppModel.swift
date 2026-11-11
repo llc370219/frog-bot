@@ -266,7 +266,7 @@ final class AppModel {
             groups = [DeviceGroup(id: "local", name: url.host ?? "本机", online: true, bots: bots)]
         }
         if config.name.isEmpty {
-            config.name = groups.first?.name ?? url.host ?? "Frog Bot"
+            config.name = groups.first?.name ?? url.host ?? "frog"
         }
         client.update(config: config)
 

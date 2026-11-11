@@ -24,10 +24,10 @@ for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; d
   cp LICENSE ATTRIBUTION.md "$stage/"
   mkdir -p "$stage/licenses" && cp licenses/* "$stage/licenses/"
   cat > "$stage/使用说明.txt" <<TXT
-frog bot $VERSION（$CHANNEL，MIT 许可证）
+frog ${VERSION}（${CHANNEL}，MIT 许可证）
 
 【本机版】自己电脑上用
-1. 运行 $bin（Windows 双击；macOS / Linux 在终端里执行 ./$bin）。命令行窗口别关，关掉就退出了。
+1. 运行 ${bin}（Windows 双击；macOS / Linux 在终端里执行 ./${bin}）。命令行窗口别关，关掉就退出了。
 2. 浏览器会自动打开管理页面（默认 http://127.0.0.1:8080）。
 3. 在「设置 → API 渠道」填模型的接口地址、API Key、模型名，保存后就能聊天。
 本机版只允许从这台电脑访问，没有登录功能。

@@ -39,11 +39,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash scripts/build-app.sh
         working-directory: mac-claude
-      - run: ditto -c -k --sequesterRsrc --keepParent "mac-claude/build/Frog Bot Claude.app" "mac-claude/build/FrogBotClaude-macOS.zip"
+      - run: ditto -c -k --sequesterRsrc --keepParent mac-claude/build/frog.app mac-claude/build/frog-macos.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: FrogBotClaude-macOS
-          path: mac-claude/build/FrogBotClaude-macOS.zip
+          name: frog-macos
+          path: mac-claude/build/frog-macos.zip
 
   android:
     runs-on: ubuntu-latest
@@ -58,5 +58,5 @@ jobs:
         working-directory: android-claude
       - uses: actions/upload-artifact@v4
         with:
-          name: FrogBotClaude-Android
+          name: frog-android
           path: android-claude/app/build/outputs/apk/release/app-release.apk

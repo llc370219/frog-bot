@@ -1,17 +1,17 @@
-<p align="center"><img src="web/public/frog.png" alt="frog bot" width="88"></p>
+<p align="center"><img src="web/public/frog.png" alt="" width="88"></p>
 
-<h1 align="center">frog bot</h1>
+<h1 align="center">frog</h1>
 
 <p align="center">自托管的多 Bot AI 助理：能聊天，也能在后台替你干活 —— 危险操作要你批准，密钥不进模型</p>
 
 <p align="center">
-  <a href="https://github.com/llc370219/frog-bot/releases">下载</a> ·
+  <a href="https://github.com/llc370219/frog-bot/releases/latest">下载</a> ·
   <a href="docs/backend-and-clients.md">三端接入</a> ·
   <a href="docs/advanced.md">进阶配置</a> ·
   <a href="https://t.me/+pKQYEaxzidU4ZjZh">Telegram 群</a>
 </p>
 
-**frog bot 是一个装在你自己服务器上的 AI 助理平台。** 你可以通过网页、Mac 或 Android 同时使用多个 AI 助理。它们平时陪你对话，需要动手时就在后台读写文件、执行命令、按计划定时干活。模型方面，既能接任意 OpenAI 兼容模型，也能直接用你已有的 ChatGPT、Claude 等订阅。所有危险操作都要你亲手批准，密钥加密保存，模型永远看不到明文，数据全部留在你自己的机器上。
+**frog 是一个装在你自己服务器上的 AI 助理平台。** 你可以通过网页、Mac 或 Android 同时使用多个 AI 助理。它们平时陪你对话，需要动手时就在后台读写文件、执行命令、按计划定时干活。模型方面，既能接任意 OpenAI 兼容模型，也能直接用你已有的 ChatGPT、Claude 等订阅。所有危险操作都要你亲手批准，密钥加密保存，模型永远看不到明文，数据全部留在你自己的机器上。
 
 ## 项目介绍
 
@@ -21,7 +21,7 @@
 
 ## 架构逻辑
 
-<p align="center"><img src="docs/images/architecture.png" alt="frog bot 系统架构" width="900"></p>
+<p align="center"><img src="docs/images/architecture.png" alt="frog 系统架构" width="900"></p>
 
 服务端是**一个 Go 二进制**，内嵌 React 网页，不依赖数据库。三端共用这一个后端：写操作走 REST，实时更新走 SSE（断线按 `Last-Event-ID` 续传）。
 
@@ -61,7 +61,12 @@ curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/ins
 
 **2. 配置模型**：登录网页后，在「设置 → API 渠道」填写接口地址和 Key（整台设备只配一次），再到「设置 → 模型与 Agent」为每个 Bot 选择模型或官方订阅 CLI。
 
-**3. 连接客户端**：网页直接打开服务端地址即可。Mac / Android 从 Releases 下载 `clients-v*` 版本，在「设置 → 添加服务器」里填写地址和账号。
+**3. 连接客户端**。网页直接打开服务端地址。原生客户端在「设置 → 添加服务器」里填写地址和账号。
+
+- **macOS** 解压后将 `frog.app` 拖到「应用程序」。从早期客户端升级时手动安装一次。[下载 frog-macos.zip](https://github.com/llc370219/frog-bot/releases/latest/download/frog-macos.zip)
+- **Android** 在手机上打开 APK，按系统提示允许来源应用安装。如果旧客户端用调试密钥签名，请记下服务器地址，卸载旧版后再安装并登录。聊天、Bot 和任务保存在服务器。[下载 frog-android.apk](https://github.com/llc370219/frog-bot/releases/latest/download/frog-android.apk)
+
+两个原生客户端都会自动检查 GitHub 正式版更新。Android 由系统安装界面确认安装。
 
 ## 许可证
 

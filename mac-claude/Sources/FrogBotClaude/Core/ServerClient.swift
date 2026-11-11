@@ -1,7 +1,7 @@
 import Foundation
 import UniformTypeIdentifiers
 
-/// 一台 Frog Bot 服务器的连接设置（保存在本机）。不保存密码。
+/// 一台 frog 服务器的连接设置（保存在本机）。不保存密码。
 struct ServerConfig: Codable, Hashable, Identifiable {
     var id: UUID
     var name: String
@@ -58,7 +58,7 @@ enum APIError: LocalizedError, Equatable {
 }
 
 /// 会话 Cookie 按服务器分别保存在「应用程序支持/FrogBotClaude/sessions.json」（仅本人可读，权限 0600），
-/// 这样同一台机器不同端口的两个 Frog Bot 也不会互相覆盖登录。
+/// 这样同一台机器不同端口的两个 frog 也不会互相覆盖登录。
 enum SessionVault {
     private static var dir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -159,7 +159,7 @@ final class ServerClient {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw APIError.invalid("服务器返回的数据看不懂，可能版本太旧或地址不是 Frog Bot")
+            throw APIError.invalid("服务器返回的数据看不懂，可能版本太旧或地址不是 frog")
         }
     }
 
@@ -223,7 +223,7 @@ final class ServerClient {
             throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
         }
         guard let value = Self.sessionCookie(from: http, url: r.url!) else {
-            throw APIError.invalid("登录成功了，但服务器没有给出会话，请确认地址指向 Frog Bot")
+            throw APIError.invalid("登录成功了，但服务器没有给出会话，请确认地址指向 frog")
         }
         cookie = value
         SessionVault.set(value, for: config.id)
@@ -283,7 +283,7 @@ final class ServerClient {
         }
         switch status {
         case 403: return "服务器拒绝了请求（403）"
-        case 404: return "找不到这个接口（404），请确认地址指向 Frog Bot 并且版本够新"
+        case 404: return "找不到这个接口（404），请确认地址指向 frog 并且版本够新"
         case 429: return "尝试太频繁，请稍后再试"
         case 502, 503, 504: return "服务器暂时不可用（\(status)）"
         default: return "请求失败（\(status)）"

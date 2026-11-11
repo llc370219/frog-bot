@@ -94,7 +94,7 @@ struct ApprovalCardView: View {
                 .disabled(busy)
                 if let error { Text(error).font(.system(size: 12)).foregroundStyle(Theme.danger) }
             } else {
-                Text("这个操作发生在「\(session.deviceName)」上，请在那台设备的 Frog Bot 界面查看详情并审批。")
+                Text("这个操作发生在「\(session.deviceName)」上，请在那台设备的 frog 界面查看详情并审批。")
                     .font(.system(size: 12.5))
                     .foregroundStyle(Theme.fg2)
             }
@@ -279,7 +279,7 @@ struct SecretCardView: View {
             .card(fill: Theme.s2, radius: 10)
         default:
             if session.isLocalDevice { form } else {
-                Label("请在「\(session.deviceName)」的 Frog Bot 界面填写 \(request.name)。", systemImage: "key.fill")
+                Label("请在「\(session.deviceName)」的 frog 界面填写 \(request.name)。", systemImage: "key.fill")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.fg3)
                     .padding(12)

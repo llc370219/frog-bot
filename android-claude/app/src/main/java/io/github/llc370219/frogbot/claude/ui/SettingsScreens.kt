@@ -62,13 +62,17 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.llc370219.frogbot.claude.BuildConfig
 import io.github.llc370219.frogbot.claude.KeepAliveService
+import io.github.llc370219.frogbot.claude.R
 import io.github.llc370219.frogbot.claude.core.AgentConnections
 import io.github.llc370219.frogbot.claude.core.ApiChannel
 import io.github.llc370219.frogbot.claude.core.ApiSettings
 import io.github.llc370219.frogbot.claude.core.AppState
 import io.github.llc370219.frogbot.claude.core.BotRef
 import io.github.llc370219.frogbot.claude.core.BotSession
+import io.github.llc370219.frogbot.claude.core.ClientUpdateStatus
+import io.github.llc370219.frogbot.claude.core.ClientUpdater
 import io.github.llc370219.frogbot.claude.core.RelayState
 import io.github.llc370219.frogbot.claude.core.ServerClient
 import io.github.llc370219.frogbot.claude.core.ServerEntry
@@ -90,7 +94,7 @@ private fun statusText(s: ServerEntry): String = when (val st = s.status) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(state: AppState, nav: Nav) {
+fun SettingsScreen(state: AppState, nav: Nav, updater: ClientUpdater, onInstall: () -> Unit) {
     val context = LocalContext.current
     Scaffold(topBar = { TopAppBar(title = { Text("设置") }) }, containerColor = MaterialTheme.colorScheme.surface) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -110,9 +114,32 @@ fun SettingsScreen(state: AppState, nav: Nav) {
             ListRow("Bot 互联", if (state.relay.enabled) "已打开" else "已关闭", Icons.Outlined.Hub, chevron = true, onClick = { nav.push(Screen.Relay) })
             ListRow("外观", when (state.appearance) { "light" -> "浅色"; "dark" -> "深色"; else -> "跟随系统" }, Icons.Outlined.Palette, chevron = true,
                 onClick = { nav.push(Screen.Appearance) })
-            Note("Frog Bot Claude 0.1.0")
+            if (updater.enabled) ClientUpdateRow(updater, onInstall)
+            Note("${context.getString(R.string.app_name)} ${BuildConfig.VERSION_NAME}")
         }
     }
+}
+
+@Composable
+private fun ClientUpdateRow(updater: ClientUpdater, onInstall: () -> Unit) {
+    val status = updater.status
+    val supporting = when (status) {
+        ClientUpdateStatus.Idle -> null
+        ClientUpdateStatus.Checking -> "正在检查…"
+        is ClientUpdateStatus.Downloading -> "正在下载 ${status.version}…"
+        is ClientUpdateStatus.Ready -> "${status.version} 已下载"
+        ClientUpdateStatus.Current -> "已是最新版本"
+        is ClientUpdateStatus.Failed -> status.message
+    }
+    val action: (() -> Unit)? = when (status) {
+        ClientUpdateStatus.Checking, is ClientUpdateStatus.Downloading -> null
+        is ClientUpdateStatus.Ready -> onInstall
+        else -> ({ updater.check(manual = true) })
+    }
+    ListRow(
+        if (status is ClientUpdateStatus.Ready) "安装客户端更新" else "检查客户端更新",
+        supporting, Icons.Outlined.SystemUpdate, onClick = action,
+    )
 }
 
 @Composable
@@ -192,7 +219,7 @@ fun AddServerScreen(state: AppState, existing: ServerEntry?, nav: Nav) {
     SubPage(if (existing == null) "添加服务器" else "重新登录", nav) {
         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(
-                if (existing == null) "填写安装 Frog Bot 时打印的访问地址、用户名和密码。" else "会话过期或密码在别处改过了，输入密码重新连接。",
+                if (existing == null) "填写安装 frog 时打印的访问地址、用户名和密码。" else "会话过期或密码在别处改过了，输入密码重新连接。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (existing == null) {
@@ -276,7 +303,7 @@ fun ServerScreen(state: AppState, s: ServerEntry, nav: Nav) {
     }) {
         SectionLabel("连接")
         ListRow("地址", s.config.url)
-        ListRow("状态", statusText(s) + (session?.info?.version?.let { " · Frog Bot $it" } ?: ""))
+        ListRow("状态", statusText(s) + (session?.info?.version?.let { " · frog $it" } ?: ""))
         if (s.config.insecure) Note("明文 HTTP：密码和聊天内容在网络上不加密，建议给服务器配域名开启 HTTPS。", Frog.extra.warn)
         if (s.status == ServerStatus.NeedsLogin) {
             ListRow("重新登录", "登录已过期", Icons.Outlined.AccountCircle, chevron = true, onClick = { nav.push(Screen.AddServer(s.id)) })
@@ -624,6 +651,6 @@ fun AgentsScreen(session: BotSession, nav: Nav) {
             }
         }
         msg?.let { Note(it.first, if (it.second) MaterialTheme.colorScheme.error else Frog.extra.ok) }
-        Note("检测的是「${session.deviceName}」上的安装情况。CLI 要用运行 Frog Bot 的账户在那台机器上登录好；每次启动外部 CLI 前都要在任务卡片里批准。")
+        Note("检测的是「${session.deviceName}」上的安装情况。CLI 要用运行 frog 的账户在那台机器上登录好；每次启动外部 CLI 前都要在任务卡片里批准。")
     }
 }

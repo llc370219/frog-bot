@@ -19,7 +19,7 @@ import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
 
-/** 一台 Frog Bot 服务器的连接设置（保存在手机上）。不保存密码。 */
+/** 一台 frog 服务器的连接设置（保存在手机上）。不保存密码。 */
 data class ServerConfig(val id: String, val name: String, val url: String, val username: String) {
     val baseUrl: HttpUrl? get() = url.toHttpUrlOrNull()
 
@@ -118,7 +118,7 @@ class ServerClient(config: ServerConfig, var cookie: String?) {
         if (t.isNotEmpty() && !t.startsWith("<")) return t.take(200)
         return when (status) {
             403 -> "服务器拒绝了请求（403）"
-            404 -> "找不到这个接口（404），请确认地址指向 Frog Bot 并且版本够新"
+            404 -> "找不到这个接口（404），请确认地址指向 frog 并且版本够新"
             429 -> "尝试太频繁，请稍后再试"
             502, 503, 504 -> "服务器暂时不可用（$status）"
             else -> "请求失败（$status）"
@@ -183,7 +183,7 @@ class ServerClient(config: ServerConfig, var cookie: String?) {
             if (it.code !in 200..299) throw ApiException(message(text, it.code), it.code)
             val value = it.headers("Set-Cookie").firstNotNullOfOrNull { h ->
                 h.split(';').first().trim().takeIf { c -> c.startsWith("$COOKIE=") }?.substringAfter('=')
-            } ?: throw ApiException("登录成功了，但服务器没有给出会话，请确认地址指向 Frog Bot")
+            } ?: throw ApiException("登录成功了，但服务器没有给出会话，请确认地址指向 frog")
             cookie = value
         }
     }

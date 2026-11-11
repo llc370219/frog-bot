@@ -23,7 +23,7 @@ struct ServerSheet: View {
 
     private var title: String {
         switch mode {
-        case .add: return "连接一台 Frog Bot"
+        case .add: return "连接一台 frog 服务器"
         case .login: return "重新登录「\(server?.name ?? "")」"
         case .edit: return "编辑连接"
         }

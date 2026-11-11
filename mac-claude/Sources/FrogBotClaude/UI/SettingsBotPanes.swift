@@ -497,7 +497,7 @@ struct AgentsPane: View {
                 ProgressView().controlSize(.small).padding(.top, 20)
             }
             if let message { Caption(text: message.0, tone: message.1 ? Theme.danger : Theme.ok) }
-            Caption(text: "检测的是「\(session.deviceName)」上的安装情况。CLI 要用运行 Frog Bot 的账户在那台机器上登录好；每次启动外部 CLI 前，都要在任务卡片里批准。")
+            Caption(text: "检测的是「\(session.deviceName)」上的安装情况。CLI 要用运行 frog 的账户在那台机器上登录好；每次启动外部 CLI 前，都要在任务卡片里批准。")
                 .padding(.top, 6)
         }
         .task { await load() }

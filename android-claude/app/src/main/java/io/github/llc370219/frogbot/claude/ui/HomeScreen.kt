@@ -40,9 +40,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.llc370219.frogbot.claude.R
 import io.github.llc370219.frogbot.claude.core.AppState
 import io.github.llc370219.frogbot.claude.core.BotProfile
 import io.github.llc370219.frogbot.claude.core.BotRef
@@ -72,7 +74,7 @@ fun HomeScreen(state: AppState, nav: Nav) {
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {
-                        Text("Frog Bot")
+                        Text(stringResource(R.string.app_name))
                     }
                 },
                 actions = {

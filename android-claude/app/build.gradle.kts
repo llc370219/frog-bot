@@ -4,6 +4,17 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val frogVersion = providers.gradleProperty("frogVersion").getOrElse("0.1.6")
+val versionComponent = "(0|[1-9][0-9]{0,2})"
+require(Regex("$versionComponent\\.$versionComponent\\.$versionComponent").matches(frogVersion)) {
+    "frogVersion must be a stable MAJOR.MINOR.PATCH version with components from 0 to 999"
+}
+val (major, minor, patch) = frogVersion.split('.').map(String::toInt)
+val frogVersionCode = major * 1_000_000 + minor * 1_000 + patch
+require(frogVersionCode > 0) { "frogVersion must be greater than 0.0.0" }
+
+val releaseKeystore = providers.environmentVariable("FROG_ANDROID_KEYSTORE").orNull
+
 android {
     namespace = "io.github.llc370219.frogbot.claude"
     compileSdk = 35
@@ -12,15 +23,28 @@ android {
         applicationId = "io.github.llc370219.frogbot.claude"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.0"
+        versionCode = frogVersionCode
+        versionName = frogVersion
+        buildConfigField("boolean", "OFFICIAL_UPDATES", "false")
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storeType = "PKCS12"
+                storePassword = providers.environmentVariable("FROG_ANDROID_KEYSTORE_PASSWORD").get()
+                keyAlias = providers.environmentVariable("FROG_ANDROID_KEY_ALIAS").get()
+                keyPassword = providers.environmentVariable("FROG_ANDROID_KEY_PASSWORD").get()
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // 自己装着用：release 也用 debug 密钥签名，方便直接安装
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")
+            buildConfigField("boolean", "OFFICIAL_UPDATES", (releaseKeystore != null).toString())
         }
     }
     compileOptions {
@@ -28,7 +52,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/frogAssets"))
     sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/frogRes"))

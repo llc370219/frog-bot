@@ -5,11 +5,11 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh-Hans</string>
 	<key>CFBundleDisplayName</key>
-	<string>Frog Bot Claude</string>
+	<string>frog</string>
 	<key>CFBundleName</key>
-	<string>Frog Bot Claude</string>
+	<string>frog</string>
 	<key>CFBundleExecutable</key>
-	<string>FrogBotClaude</string>
+	<string>frog</string>
 	<key>CFBundleIdentifier</key>
 	<string>io.github.llc370219.frogbot.claude</string>
 	<key>CFBundleIconFile</key>
@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.1.6</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>0.1.6</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSApplicationCategoryType</key>
@@ -28,7 +28,19 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<!-- 很多 Frog Bot 服务器用 http://IP:端口 访问，所以允许明文 HTTP；面板会在界面上标出这种连接不加密。 -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/llc370219/frog-bot/releases/latest/download/frog-macos-appcast.xml</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUSignedFeedFailureExpirationInterval</key>
+	<integer>0</integer>
+	<!-- 很多 frog 服务器用 http://IP:端口 访问，所以允许明文 HTTP；面板会在界面上标出这种连接不加密。 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

@@ -5,7 +5,7 @@ import BotModelSettings from './BotModelSettings';
 import ChannelsPage from './ChannelsPage';
 
 const releasesPage = 'https://github.com/llc370219/frog-bot/releases';
-const message = (err: unknown) => err instanceof TypeError ? '无法连接 Frog Bot 后端，请确认服务已启动'
+const message = (err: unknown) => err instanceof TypeError ? '无法连接 frog 后端，请确认服务已启动'
   : err instanceof Error ? err.message : '请求失败，请重试';
 
 type Tab = 'models' | 'api' | 'update' | 'account';
@@ -158,7 +158,7 @@ function UpdatePanel({ target, deviceName }: { target: DeviceSettingsAPI; device
       <p className="settings-update-note">这里可以检查版本。安装新版和重启仍在「{deviceName}」上完成。</p>
       <div className="settings-devices-note">
         <h4>设备互联</h4>
-        <p>在各台设备的数据目录配置 <code>devices.json</code> 并重启 Frog Bot。连通后，侧栏会按设备显示 Bot，也可以在这里切换设备，分别设置每台设备上每个 Bot 的模型。</p>
+        <p>在各台设备的数据目录配置 <code>devices.json</code> 并重启 frog。连通后，侧栏会按设备显示 Bot，也可以在这里切换设备，分别设置每台设备上每个 Bot 的模型。</p>
       </div>
     </>
   );
