@@ -60,3 +60,14 @@ jobs:
         with:
           name: frog-android
           path: android-claude/app/build/outputs/apk/release/app-release.apk
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 编译 iOS 客户端（模拟器，不签名）
+        run: |
+          xcodebuild -project ios-claude/frog.xcodeproj -scheme frog -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO build | tail -40
+          test "${PIPESTATUS[0]}" = 0
