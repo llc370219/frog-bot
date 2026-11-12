@@ -39,11 +39,13 @@ func (c *Client) Do(ctx context.Context, req Request) (Response, error) {
 	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
 	defer stop()
 	line, _ := json.Marshal(req)
-	if _, err := conn.Write(append(line, '\n')); err != nil {
-		return Response{}, fmt.Errorf("提权助手连接中断：%w", err)
-	}
+	// 写失败也要读一下：rootd 拒绝连接时会先回一行原因再断开，这时写请求可能已经 broken pipe。
+	_, werr := conn.Write(append(line, '\n'))
 	out, err := bufio.NewReader(conn).ReadBytes('\n')
-	if err != nil {
+	if err != nil && werr != nil && len(out) == 0 {
+		return Response{}, fmt.Errorf("提权助手连接中断：%w", werr)
+	}
+	if err != nil && len(out) == 0 {
 		if ctx.Err() != nil {
 			return Response{}, ctx.Err()
 		}
