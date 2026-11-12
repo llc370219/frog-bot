@@ -27,9 +27,15 @@ func TestMain(m *testing.M) {
 
 func requireLandlock(t *testing.T) {
 	t.Helper()
-	if st := Probe(); !st.Available {
+	st := Probe()
+	if !st.Available {
+		// CI 设了 FROG_REQUIRE_LANDLOCK=1：沙箱测试不能悄悄跳过
+		if os.Getenv("FROG_REQUIRE_LANDLOCK") == "1" {
+			t.Fatal("Landlock 不可用：" + st.Reason)
+		}
 		t.Skip("Landlock 不可用：" + st.Reason)
 	}
+	t.Logf("Landlock ABI %d", st.ABI)
 }
 
 func TestLandlockBlocksDataDirButNotWorkspace(t *testing.T) {

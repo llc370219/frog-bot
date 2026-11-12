@@ -244,14 +244,13 @@ func runAsRoot(ctx context.Context, req Request) (string, int, error) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", req.Command)
 	}
-	cmd.Dir = "/root"
-	if filepath.IsAbs(req.Dir) {
-		if st, err := os.Stat(req.Dir); err == nil && st.IsDir() {
-			cmd.Dir = req.Dir
+	// 工作目录：请求里给了能进入的绝对路径就用它，否则 /root，进不去（不是 root 运行时）再退回 /。
+	cmd.Dir = "/"
+	for _, d := range []string{req.Dir, "/root"} {
+		if filepath.IsAbs(d) && enterable(d) {
+			cmd.Dir = d
+			break
 		}
-	}
-	if _, err := os.Stat(cmd.Dir); err != nil {
-		cmd.Dir = "/"
 	}
 	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root",
 		"LANG=C.UTF-8", "DEBIAN_FRONTEND=noninteractive", "USER=root", "LOGNAME=root"}
@@ -273,6 +272,12 @@ func runAsRoot(ctx context.Context, req Request) (string, int, error) {
 		return out.String(), -1, err
 	}
 	return out.String(), 0, nil
+}
+
+// enterable 判断当前进程能不能 cd 进这个目录（存在、是目录、有执行权限）。
+func enterable(dir string) bool {
+	st, err := os.Stat(dir)
+	return err == nil && st.IsDir() && syscall.Access(dir, 1) == nil // 1 = X_OK
 }
 
 func (s *Server) audit(req Request, code int, err error) {
