@@ -309,6 +309,9 @@ struct CLIStatus: Codable, Hashable, Identifiable {
     var managed: Bool?
     var installable: Bool?
     var install: CLIInstall?
+    /// 现在能选的只有 Pi；其他 CLI 显示 note（「暂不支持」）
+    var supported: Bool?
+    var note: String?
 
     var installing: Bool { install?.state == "running" }
 }
@@ -350,6 +353,9 @@ struct CLIInstall: Codable, Hashable {
 
 struct AgentConnections: Codable, Hashable {
     var cli: String
+    var cli_model: String?
+    /// Pi 用 frog 的哪个 API 渠道（经本机网关转发，Pi 拿不到真实 Key）
+    var cli_channel: String?
     var clis: [CLIStatus]?
 }
 

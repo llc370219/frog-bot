@@ -34,12 +34,18 @@ type CLIStatus struct {
 	// Installable 表示这台机器可以在设置里一键安装/更新；Install 是最近一次安装的进度。
 	Installable bool          `json:"installable"`
 	Install     *InstallState `json:"install,omitempty"`
+	// Supported 表示 frog 现在支持把任务交给这个 CLI；不支持的在界面上显示 Note（「暂不支持」）。
+	Supported bool   `json:"supported"`
+	Note      string `json:"note,omitempty"`
 }
+
+// SupportedCLI 是现在能选的 CLI：只有 Pi（用 frog 的 API 渠道，经本机网关转发）。其他的先标「暂不支持」。
+func SupportedCLI(id string) bool { return id == "pi" }
 
 var cliNames = []CLIStatus{
 	{ID: "codex", Name: "Codex CLI", Subscription: "ChatGPT Plus / Pro / Business", Login: "codex login", ModelOption: true},
 	{ID: "claude", Name: "Claude Code", Subscription: "Claude Pro / Max", Login: "claude（首次运行后输入 /login）", ModelOption: true, Models: []string{"sonnet", "opus", "haiku"}},
-	{ID: "pi", Name: "Pi", Subscription: "Claude Pro / Max、ChatGPT 等", Login: "pi（运行后输入 /login）", ModelOption: true},
+	{ID: "pi", Name: "Pi", Subscription: "用 frog 的 API 渠道", ModelOption: true},
 	{ID: "grok", Name: "Grok CLI", Subscription: "SuperGrok / X Premium", Login: "grok login"},
 	{ID: "agy", Name: "Antigravity CLI", Subscription: "Google 账户", Login: "agy login"},
 }
@@ -49,28 +55,43 @@ var cliNames = []CLIStatus{
 const (
 	CLIAuthSubscription = "subscription"
 	CLIAuthEnv          = "env"
+	// CLIAuthChannel：用 frog 的 API 渠道（Channel + Model），经本机网关转发，CLI 拿不到真实 Key。Pi 固定用这个。
+	CLIAuthChannel = "channel"
 )
 
 // CLIOptions 是某个 Bot 给 CLI 的额外设置。
 type CLIOptions struct {
-	Model string `json:"cli_model,omitempty"`
-	Auth  string `json:"cli_auth,omitempty"`
+	Model   string `json:"cli_model,omitempty"`
+	Auth    string `json:"cli_auth,omitempty"`
+	Channel string `json:"cli_channel,omitempty"` // CLIAuthChannel 时用哪个 API 渠道
 }
+
+var channelIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 var cliModelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,99}$`)
 
 // ValidateCLIOptions 检查并规整 CLI 设置；不支持指定模型的 CLI 会忽略模型。
 func ValidateCLIOptions(id string, o CLIOptions) (CLIOptions, error) {
-	o.Model = strings.TrimSpace(o.Model)
+	o.Model, o.Channel = strings.TrimSpace(o.Model), strings.TrimSpace(o.Channel)
 	switch o.Auth {
 	case "":
 		o.Auth = CLIAuthSubscription
-	case CLIAuthSubscription, CLIAuthEnv:
+	case CLIAuthSubscription, CLIAuthEnv, CLIAuthChannel:
 	default:
-		return CLIOptions{}, errors.New("CLI 认证方式只能是官方订阅或环境变量")
+		return CLIOptions{}, errors.New("CLI 认证方式无效")
 	}
 	if id == "" {
 		return CLIOptions{}, nil
+	}
+	if id == "pi" {
+		o.Auth = CLIAuthChannel // Pi 只用 frog 的 API 渠道
+	}
+	if o.Auth == CLIAuthChannel {
+		if o.Channel != "" && !channelIDPattern.MatchString(o.Channel) {
+			return CLIOptions{}, errors.New("API 渠道 ID 无效")
+		}
+	} else {
+		o.Channel = ""
 	}
 	if !cliStatus(id).ModelOption {
 		o.Model = ""
@@ -115,6 +136,10 @@ func DetectCLIs() []CLIStatus {
 		}
 		c.Installable = installSupported(c.ID) == nil
 		c.Install = installSnapshot(c.ID)
+		c.Supported = SupportedCLI(c.ID)
+		if !c.Supported {
+			c.Note = "暂不支持"
+		}
 	}
 	return status
 }
@@ -317,7 +342,7 @@ func cliArgs(id, prompt, model string) (args []string, stdin string) {
 	case "pi":
 		args = []string{"--print", "--no-session"}
 		if model != "" {
-			args = append(args, "--model", model)
+			args = append(args, "--provider", piProvider, "--model", model)
 		}
 		return args, prompt
 	case "grok":
@@ -351,6 +376,14 @@ func runCLI(ctx context.Context, id, workspace, prompt string, opts CLIOptions) 
 		cmd.Stdin = strings.NewReader(stdin)
 	}
 	cmd.Env = cliEnv(cmd.Environ(), id, opts.Auth)
+	if id == "pi" {
+		env, cleanup, err := piChannelEnv(opts)
+		if err != nil {
+			return "", err
+		}
+		defer cleanup()
+		cmd.Env = append(withoutEnv(cmd.Env, "PI_CODING_AGENT_DIR", "FROG_GATEWAY_TOKEN"), env...)
+	}
 	if runtime.GOOS != "windows" {
 		// frog 一键安装的 CLI 用 frog 自己装的 Node 运行。
 		if m := managedCLIBin(); m != "" && filepath.Dir(exe) == m {

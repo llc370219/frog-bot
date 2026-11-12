@@ -66,16 +66,19 @@ export type Info = { name: string; chat_model: string; agent_model: string; agen
 export type ChannelUse = { bot_id: string; name: string; chat_provider_id?: string; agent_provider_id?: string; agent_cli?: string };
 export type ChannelsView = { providers: APIChannel[]; usage: ChannelUse[] };
 export type BotRoutes = Pick<APISettings, 'default_provider_id' | 'model' | 'agent_provider_id' | 'agent_model'>;
-export type CLIAuth = 'subscription' | 'env';
+export type CLIAuth = 'subscription' | 'env' | 'channel';
 export type CLIInstall = { state: 'running' | 'done' | 'failed'; step?: string; error?: string; log?: string; version?: string; started_at: string; finished_at?: string };
 export type AgentCLI = {
   id: string; name: string; installed: boolean;
   subscription?: string; login?: string; model_option?: boolean; models?: string[];
   // path：检测到的可执行文件；managed：由 frog 一键安装；installable：这台设备可以一键安装/更新
   path?: string; managed?: boolean; installable?: boolean; install?: CLIInstall;
+  // supported：现在能选（只有 Pi）；其他显示 note（「暂不支持」）
+  supported?: boolean; note?: string;
 };
 // cli 为空 = 内置 Agent（用 Agent API 模型）；否则用该 CLI 在设备上登录的账户（官方订阅）。
-export type AgentConnection = { cli: string; cli_model?: string; cli_auth?: CLIAuth };
+// Pi 用 frog 的 API 渠道：cli_channel + cli_model（经本机网关转发，Pi 拿不到真实 Key）。
+export type AgentConnection = { cli: string; cli_model?: string; cli_auth?: CLIAuth; cli_channel?: string };
 export type AgentConnections = AgentConnection & { clis: AgentCLI[] };
 export type Schedule = {
   id: string; title: string; prompt: string; enabled: boolean; kind: string; timezone: string;

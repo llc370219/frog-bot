@@ -474,8 +474,12 @@ final class BotSession {
         try await client.get(basePath + "/settings/connections")
     }
 
-    func saveConnection(_ cli: String) async throws -> AgentConnections {
-        try await client.send("POST", basePath + "/settings/connections", body: ["cli": cli])
+    /// 选择 Agent。Pi 要同时给出 API 渠道和模型。
+    func saveConnection(_ cli: String, channel: String? = nil, model: String? = nil) async throws -> AgentConnections {
+        var body = ["cli": cli]
+        if let channel { body["cli_channel"] = channel }
+        if let model { body["cli_model"] = model }
+        return try await client.send("POST", basePath + "/settings/connections", body: body)
     }
 
     /// 提权状态和开关（整台服务器共用；设备互联不转发，只能管这台服务器本机）。

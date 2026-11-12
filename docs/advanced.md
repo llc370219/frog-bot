@@ -69,7 +69,11 @@ go vet ./... && go test -race ./...
 
 ## 安装 Agent CLI
 
-「设置 → 模型与 Agent → 官方订阅」里，Codex CLI、Claude Code、Pi 可以一键安装或更新（Linux / macOS，x86_64 / arm64）。frog 下载 Node.js 22 官方压缩包、按 `SHASUMS256.txt` 校验后装到 `<数据目录>/tools/node`，再用它的 npm 把 CLI 装到 `<数据目录>/tools/clis`，不需要 root，也不改系统目录。frog 装的版本优先于 PATH 里的同名 CLI。
+「设置 → 模型与 Agent → 外部 Agent」里目前只支持 **Pi**（Codex CLI、Claude Code、Grok CLI、Antigravity CLI 暂不支持）。
+
+**Pi 用 frog 的 API 渠道**：在同一页为 Pi 选择 API 渠道和模型，网页、Mac、iOS、Android、Windows 客户端都可以直接改。frog 启动时在 127.0.0.1 上开一个本机模型网关（OpenAI Chat Completions 格式，思路参考 opencodex）；每次运行 Pi，frog 生成一份临时的 `PI_CODING_AGENT_DIR/models.json`，里面只有网关地址和 `$FROG_GATEWAY_TOKEN`。令牌只能用选定的那个渠道和模型，运行结束立即作废；网关转发时才换上渠道的真实 Key，Pi 和它执行的命令都拿不到。服务器上原有的 `~/.pi` 配置和官方登录不会被使用。
+
+Pi 可以一键安装或更新（Linux / macOS，x86_64 / arm64）。frog 下载 Node.js 22 官方压缩包、按 `SHASUMS256.txt` 校验后装到 `<数据目录>/tools/node`，再用它的 npm 把 CLI 装到 `<数据目录>/tools/clis`，不需要 root，也不改系统目录。frog 装的版本优先于 PATH 里的同名 CLI。
 
 检测 CLI 时除了 PATH，还会找服务用户家目录里的 `~/.local/bin`、`~/bin`、`~/.npm-global/bin`、`~/.npmrc` 的 `prefix`、nvm 的各个 Node 版本、Volta、Bun、pnpm。启动时会把 CLI 所在目录放到 PATH 最前面，所以 `#!/usr/bin/env node` 的 CLI 能找到同目录的 node。
 

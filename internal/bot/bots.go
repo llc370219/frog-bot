@@ -57,6 +57,7 @@ type Bots struct {
 	network    *peerNetwork
 	relay      relayHub
 	closed     bool
+	gateway    *cliGateway // 给 Pi 等外部 CLI 用的本机模型网关
 }
 
 type botEndpoint struct {
@@ -84,6 +85,11 @@ func OpenBots(cfg Config) (*Bots, error) {
 	bs := &Bots{main: main, workRoot: workspace + "-bots", profiles: []BotProfile{main.botProfile()}, network: network,
 		runtimes: map[string]*Bot{defaultBotID: main}, handlers: map[string]*botEndpoint{defaultBotID: {Handler: main.Handler("")}}}
 	main.coordinator = bs
+	if bs.gateway, err = startCLIGateway(main.pool); err != nil {
+		bs.Close()
+		return nil, err
+	}
+	onefrog.SetCLIGateway(bs.gateway)
 	raw, err := os.ReadFile(bs.path())
 	if err == nil {
 		err = json.Unmarshal(raw, &bs.profiles)
@@ -283,6 +289,9 @@ func (bs *Bots) Close() {
 	}
 	bs.closed = true
 	bs.mu.Unlock()
+	if bs.gateway != nil {
+		bs.gateway.Close()
+	}
 	if bs.network != nil {
 		bs.network.client.CloseIdleConnections()
 		bs.network.settingsClient.CloseIdleConnections()

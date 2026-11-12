@@ -278,16 +278,20 @@ data class CliInstall(val state: String, val step: String?, val error: String?, 
 data class CliStatus(
     val id: String, val name: String, val installed: Boolean,
     val managed: Boolean = false, val installable: Boolean = false, val install: CliInstall? = null,
+    /** 现在能选的只有 Pi；其他 CLI 显示 note（「暂不支持」） */
+    val supported: Boolean = true, val note: String? = null,
 ) {
     val installing: Boolean get() = install?.state == "running"
 }
 
-data class AgentConnections(val cli: String, val clis: List<CliStatus>) {
+/** cliChannel / cliModel：Pi 用 frog 的哪个 API 渠道和模型（经本机网关转发，Pi 拿不到真实 Key）。 */
+data class AgentConnections(val cli: String, val clis: List<CliStatus>, val cliChannel: String = "", val cliModel: String = "") {
     companion object {
         fun from(j: JSONObject) = AgentConnections(j.str("cli"), j.arr("clis").objects().map {
             val job = it.optJSONObject("install")?.let { i -> CliInstall(i.str("state"), i.strOrNull("step"), i.strOrNull("error"), i.strOrNull("version")) }
-            CliStatus(it.str("id"), it.str("name"), it.bool("installed"), it.bool("managed"), it.bool("installable"), job)
-        })
+            CliStatus(it.str("id"), it.str("name"), it.bool("installed"), it.bool("managed"), it.bool("installable"), job,
+                supported = !it.has("supported") || it.bool("supported"), note = it.strOrNull("note"))
+        }, j.str("cli_channel"), j.str("cli_model"))
     }
 }
 

@@ -11,7 +11,9 @@ type Notice = { error: boolean; text: string };
 type AgentMode = 'api' | 'cli';
 
 function sameConnection(a?: AgentConnection, b?: AgentConnection) {
-  return (a?.cli ?? '') === (b?.cli ?? '') && (a?.cli_model ?? '') === (b?.cli_model ?? '') && (a?.cli_auth ?? 'subscription') === (b?.cli_auth ?? 'subscription');
+  const auth = (c?: AgentConnection) => c?.cli === 'pi' ? 'channel' : c?.cli_auth ?? 'subscription';
+  return (a?.cli ?? '') === (b?.cli ?? '') && (a?.cli_model ?? '') === (b?.cli_model ?? '') && auth(a) === auth(b)
+    && (a?.cli_channel ?? '') === (b?.cli_channel ?? '');
 }
 
 /**
@@ -42,6 +44,7 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
   const [cli, setCli] = useState('');
   const [cliModel, setCliModel] = useState('');
   const [cliAuth, setCliAuth] = useState<CLIAuth>('subscription');
+  const [cliChannel, setCliChannel] = useState('');
   const [detecting, setDetecting] = useState(false);
   const [copyFrom, setCopyFrom] = useState('');
   const [work, setWork] = useState('');
@@ -56,8 +59,9 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
   }
   function applyConnection(c: AgentConnections) {
     setConn(c);
-    const first = c.clis.find(x => x.installed)?.id ?? c.clis[0]?.id ?? '';
+    const first = c.clis.find(x => x.installed && x.supported)?.id ?? c.clis.find(x => x.supported)?.id ?? '';
     setMode(c.cli ? 'cli' : 'api'); setCli(c.cli || first); setCliModel(c.cli_model ?? ''); setCliAuth(c.cli_auth ?? 'subscription');
+    setCliChannel(c.cli_channel ?? '');
   }
   useEffect(() => {
     const controller = new AbortController();
@@ -70,7 +74,9 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
     return () => controller.abort();
   }, [attempt, target]);
 
-  const draftConnection: AgentConnection = mode === 'cli' ? { cli, cli_model: cliModel.trim(), cli_auth: cliAuth } : { cli: '' };
+  const draftConnection: AgentConnection = mode !== 'cli' ? { cli: '' }
+    : cli === 'pi' ? { cli, cli_model: cliModel.trim(), cli_auth: 'channel', cli_channel: cliChannel }
+    : { cli, cli_model: cliModel.trim(), cli_auth: cliAuth };
   const connDirty = !!conn && !sameConnection(conn, draftConnection);
   const dirty = settingsDirty || connDirty;
   useEffect(() => { onDirty(dirty); }, [dirty]);
@@ -83,10 +89,13 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
   const chatValid = !chatSet || (!!route?.enabled && visible(route).includes(model));
   const agentSet = mode === 'api' && (!!agentProviderID || !!agentModel);
   const agentValid = !agentSet || (!!agentRoute?.enabled && visible(agentRoute).includes(agentModel));
-  const cliValid = mode === 'api' || (!!selectedCLI?.installed);
+  const piRoute = channels.find(p => p.id === cliChannel);
+  const piValid = cli !== 'pi' || (!!piRoute?.enabled && visible(piRoute).includes(cliModel));
+  const cliValid = mode === 'api' || (!!selectedCLI?.installed && !!selectedCLI.supported && piValid);
   const valid = chatValid && agentValid && cliValid;
   const invalidReason = !chatValid ? '聊天：请选择已启用渠道里的模型'
-    : !agentValid ? 'Agent：请选择已启用渠道里的模型' : !cliValid ? '所选 CLI 未安装' : '';
+    : !agentValid ? 'Agent：请选择已启用渠道里的模型'
+    : !cliValid ? (!selectedCLI?.installed ? '所选 CLI 未安装' : !selectedCLI.supported ? '所选 CLI 暂不支持' : 'Pi：请选择已启用渠道里的模型') : '';
   const others = bots.filter(b => b.id !== bot.id);
 
   function changed() { setSettingsDirty(true); setNotice(undefined); }
@@ -170,15 +179,15 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
     </div>
   </footer>;
 
-  const routePicker = (id: string, value: string, setID: (v: string) => void, m: string, setM: (v: string) => void, label: string) => (
+  const routePicker = (id: string, value: string, setID: (v: string) => void, m: string, setM: (v: string) => void, label: string, touch: () => void = changed) => (
     <div className="settings-channel-form-grid">
       <div className="settings-field"><label htmlFor={`${label}-channel`}>API 渠道</label>
-        <select id={`${label}-channel`} value={value} disabled={busy} onChange={e => { const p = channels.find(c => c.id === e.target.value); setID(e.target.value); setM(p ? visible(p)[0] ?? '' : ''); changed(); }}>
+        <select id={`${label}-channel`} value={value} disabled={busy} onChange={e => { const p = channels.find(c => c.id === e.target.value); setID(e.target.value); setM(p ? visible(p)[0] ?? '' : ''); touch(); }}>
           <option value="">{label === 'chat' ? '不设置' : '选择渠道'}</option>
           {channels.map(p => <option key={p.id} value={p.id} disabled={!p.enabled && p.id !== value}>{p.name}{p.enabled ? '' : '（已停用）'}</option>)}
         </select></div>
       <div className="settings-field"><label htmlFor={`${label}-model`}>模型</label>
-        <select id={`${label}-model`} value={m} disabled={busy} onChange={e => { setM(e.target.value); changed(); }}>
+        <select id={`${label}-model`} value={m} disabled={busy} onChange={e => { setM(e.target.value); touch(); }}>
           <option value="">选择模型</option>
           {channels.find(p => p.id === id) && visible(channels.find(p => p.id === id)!).map(x => <option key={x}>{x}</option>)}
         </select></div>
@@ -227,7 +236,7 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
           <Bot size={16} /><span><b>API 模型</b><small>frog 内置 Agent，按 API 用量计费</small></span>
         </button>
         <button type="button" role="radio" aria-checked={mode === 'cli'} disabled={busy} onClick={() => setMode('cli')}>
-          <BadgeCheck size={16} /><span><b>官方订阅</b><small>Claude Code、Codex 等 CLI，用登录的订阅账户</small></span>
+          <BadgeCheck size={16} /><span><b>外部 Agent</b><small>Pi，用这里的 API 渠道；Claude Code、Codex 等暂不支持</small></span>
         </button>
       </div>
       {mode === 'api' ? <div className="agent-mode-body">
@@ -240,15 +249,22 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
         <div className="settings-agents-heading"><h4>选择 CLI</h4>
           <button type="button" className="settings-button" disabled={busy || detecting} onClick={detect}><RefreshCw size={14} className={detecting ? 'animate-spin' : ''} />{detecting ? '正在检测…' : '重新检测'}</button></div>
         <ul className="agent-cli-grid" role="radiogroup" aria-label="CLI">
-          {conn.clis.map(c => <li key={c.id}><button type="button" role="radio" aria-checked={c.id === cli} className="agent-cli" disabled={busy || !c.installed}
+          {conn.clis.map(c => <li key={c.id}><button type="button" role="radio" aria-checked={c.id === cli} className="agent-cli" disabled={busy || !c.installed || !c.supported}
             onClick={() => { setCli(c.id); if (c.id !== cli) setCliModel(c.id === conn.cli ? conn.cli_model ?? '' : ''); }}>
             <span className="settings-agent-icon">{agentIcons[c.id] ? <img src={`/assets/agent-icons/${agentIcons[c.id]}`} alt="" width={22} height={22} /> : <Terminal size={18} />}</span>
-            <span className="agent-cli-text"><b>{c.name}</b><small>{c.installed ? c.subscription || '已安装' : '未检测到'}</small></span>
+            <span className="agent-cli-text"><b>{c.name}</b><small>{!c.supported ? c.note || '暂不支持' : c.installed ? c.subscription || '已安装' : '未安装'}</small></span>
             {c.id === cli && <Check size={14} className="agent-cli-check" />}
           </button></li>)}
         </ul>
         <CLIInstalls clis={conn.clis} local={target.local} deviceName={deviceName} busy={busy} installing={installing} onInstall={install} />
-        {selectedCLI && <CLIDetails c={selectedCLI} model={cliModel} setModel={setCliModel} auth={cliAuth} setAuth={setCliAuth} busy={busy} deviceName={deviceName} />}
+        {selectedCLI?.id === 'pi' && selectedCLI.supported ? <div className="agent-cli-pi">
+          <p className="settings-field-hint">Pi 通过 frog 的本机网关调用下面选的 API 渠道和模型；渠道的 Key 留在 frog 里，Pi 和它执行的命令都拿不到。</p>
+          {noChannels ? fallback : <>
+            {staleWarn(cliChannel)}
+            {routePicker(cliChannel, cliChannel, setCliChannel, cliModel, setCliModel, 'pi', () => setNotice(undefined))}
+            {manage}
+          </>}
+        </div> : selectedCLI && selectedCLI.supported && <CLIDetails c={selectedCLI} model={cliModel} setModel={setCliModel} auth={cliAuth} setAuth={setCliAuth} busy={busy} deviceName={deviceName} />}
         {!chatSet && <p className="settings-field-hint">这个 Bot 没有聊天模型时，你发的消息会直接交给所选 CLI 处理。</p>}
       </div>}
     </section>

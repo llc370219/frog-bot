@@ -69,6 +69,9 @@ func (b *Bot) connections() connectionsView {
 	if c.CLI != "" && c.Auth == "" {
 		c.Auth = onefrog.CLIAuthSubscription
 	}
+	if c.CLI == "pi" {
+		c.Auth = onefrog.CLIAuthChannel
+	}
 	return connectionsView{c, onefrog.DetectCLIs()}
 }
 
@@ -77,6 +80,9 @@ func (b *Bot) saveAgentConnection(draft agentConnection) error {
 	if id != "" {
 		if onefrog.CLIName(id) == "" {
 			return errors.New("请选择支持的 Agent CLI")
+		}
+		if !onefrog.SupportedCLI(id) {
+			return fmt.Errorf("%s 暂不支持，目前只支持 Pi", onefrog.CLIName(id))
 		}
 		for _, cli := range onefrog.DetectCLIs() {
 			if cli.ID == id && !cli.Installed {
@@ -87,6 +93,10 @@ func (b *Bot) saveAgentConnection(draft agentConnection) error {
 	opts, err := onefrog.ValidateCLIOptions(id, draft.CLIOptions)
 	if err != nil {
 		return err
+	}
+	// Pi 用 frog 的 API 渠道：必须选一个已启用渠道里可见的模型
+	if opts.Auth == onefrog.CLIAuthChannel && !validRoute(b.pool.public(), opts.Channel, opts.Model) {
+		return errors.New("请给 Pi 选择一个已启用 API 渠道里的模型")
 	}
 	draft.CLIOptions = opts
 	b.modelMu.Lock()

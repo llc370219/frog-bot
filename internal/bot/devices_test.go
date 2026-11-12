@@ -301,11 +301,8 @@ func TestDevicePairChatStreamAndCollaboration(t *testing.T) {
 	if err != nil || connections.CLI != "" || !piFound {
 		t.Fatalf("remote CLI detection failed: %+v (%v)", connections, err)
 	}
-	reqClose("POST", settings+"/connections", `{"cli":"pi"}`, false, 200)
-	if b.main.selectedCLI() != "pi" || a.main.selectedCLI() != "" {
-		t.Fatal("CLI change was applied to the wrong device")
-	}
-	reqClose("POST", settings+"/connections", `{"cli":""}`, false, 200)
+	// Pi 要先在目标设备上选 API 渠道和模型（渠道在下面才配置）
+	reqClose("POST", settings+"/connections", `{"cli":"pi"}`, false, 400)
 
 	const key = "test-key-only-for-beta"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -343,6 +340,11 @@ func TestDevicePairChatStreamAndCollaboration(t *testing.T) {
 		bytes.Contains(stored, []byte(key)) || bytes.Contains(savedData, []byte(key)) || bytes.Contains(loadedData, []byte(key)) {
 		t.Fatal("remote API configuration was misrouted or exposed the key")
 	}
+	reqClose("POST", settings+"/connections", `{"cli":"pi","cli_channel":"primary","cli_model":"beta-model"}`, false, 200)
+	if b.main.selectedCLI() != "pi" || a.main.selectedCLI() != "" || b.main.cliOptions("pi").Channel != "primary" {
+		t.Fatal("CLI change was applied to the wrong device")
+	}
+	reqClose("POST", settings+"/connections", `{"cli":""}`, false, 200)
 
 	previous := releaseClient
 	releaseClient = &http.Client{Transport: releaseTransport(func(r *http.Request) (*http.Response, error) {

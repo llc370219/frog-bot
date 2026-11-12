@@ -104,9 +104,10 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	})
 	mux.HandleFunc("POST /api/settings/connections", func(w http.ResponseWriter, r *http.Request) {
 		var draft struct {
-			CLI      *string `json:"cli"`
-			CLIModel string  `json:"cli_model"`
-			CLIAuth  string  `json:"cli_auth"`
+			CLI        *string `json:"cli"`
+			CLIModel   string  `json:"cli_model"`
+			CLIAuth    string  `json:"cli_auth"`
+			CLIChannel string  `json:"cli_channel"` // Pi：用哪个 API 渠道
 		}
 		if !decodeJSON(w, r, &draft, 1024) {
 			return
@@ -115,7 +116,7 @@ func (b *Bot) Handler(webDir string) http.Handler {
 			writeJSON(w, nil, errors.New("请选择一个 Agent"))
 			return
 		}
-		conn := agentConnection{CLI: *draft.CLI, CLIOptions: onefrog.CLIOptions{Model: draft.CLIModel, Auth: draft.CLIAuth}}
+		conn := agentConnection{CLI: *draft.CLI, CLIOptions: onefrog.CLIOptions{Model: draft.CLIModel, Auth: draft.CLIAuth, Channel: draft.CLIChannel}}
 		if err := b.saveAgentConnection(conn); err != nil {
 			writeJSON(w, nil, err)
 			return

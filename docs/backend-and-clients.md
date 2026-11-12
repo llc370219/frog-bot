@@ -19,7 +19,7 @@ go build -o bin/frogbot ./cmd/frogbot
 
 首次启动在终端打印管理员名和随机初始密码。网页访问电脑的 8080 端口；同一台电脑上的 Windows / Mac 客户端可以填 `http://127.0.0.1:8080`，其他设备填这台电脑的局域网地址。不要把 127.0.0.1 填进手机，它指向手机自己。Android 模拟器用 `http://10.0.2.2:8080`，明文只限可信网络的 Debug 调试。正式连接用 HTTPS。
 
-在网页「设置 → API 渠道」接入接口和 API Key（整台设备共用，`GET/POST /api/channels`），并在「设置 → 模型与 Agent」为每个 Bot 选择模型（`POST /api/bots/{id}/settings/routes`），或为 Agent 选择已安装且登录的官方订阅 CLI，之后才能正常调用模型。仅验证登录、消息持久化和接口无需模型。无登录本机模式只监听 127.0.0.1，不能给其他设备共享使用。
+在网页「设置 → API 渠道」接入接口和 API Key（整台设备共用，`GET/POST /api/channels`），并在「设置 → 模型与 Agent」为每个 Bot 选择模型（`POST /api/bots/{id}/settings/routes`），或让 Agent 使用 Pi 并为它选择 API 渠道和模型（`POST /api/bots/{id}/settings/connections`，`cli_channel` + `cli_model`），之后才能正常调用模型。仅验证登录、消息持久化和接口无需模型。无登录本机模式只监听 127.0.0.1，不能给其他设备共享使用。
 
 Windows 客户端的「本机使用」会自动下载正式版 `frogbot.exe`，按 `SHA256SUMS` 校验后以本机模式运行（`-addr 127.0.0.1:<端口> -no-browser`，端口在 8080–8099 中选空闲的），并添加为服务器。它装在 `%APPDATA%\frog\local-server\`，日志写到同目录的 `frogbot.log`，数据仍在默认的 `%APPDATA%\frogbot`。8080–8099 上已有免登录的 frog 时，客户端直接复用它；开了登录的服务器模式实例不会被当作本机。
 
