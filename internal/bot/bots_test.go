@@ -212,7 +212,8 @@ func TestBotInboxReplyCorrelationAndMemoryScopes(t *testing.T) {
 	if _, err := bs.Deliver(main.ID(), other.ID(), "question body", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	inbox := other.store.Inbox(false)
+	// 后台的 Bot 可能已经开始处理这条消息（状态不再是 pending），所以按「全部」查：这里检查的是已经可靠送达。
+	inbox := other.store.Inbox(true)
 	if len(inbox) != 1 || inbox[0].Text != "question body" || inbox[0].RequestID == "" {
 		t.Fatalf("request was not durably delivered: %+v", inbox)
 	}
@@ -223,7 +224,12 @@ func TestBotInboxReplyCorrelationAndMemoryScopes(t *testing.T) {
 	if _, err := bs.Deliver(other.ID(), main.ID(), "reply body", "", reqID); err != nil {
 		t.Fatal(err)
 	}
-	replies := main.store.Inbox(false)
+	var replies []Message // 发送方自己也存了一份提问（sent），只看回给这个请求的
+	for _, m := range main.store.Inbox(true) {
+		if m.ReplyTo == reqID {
+			replies = append(replies, m)
+		}
+	}
 	if len(replies) != 1 || replies[0].Text != "reply body" || replies[0].ReplyTo != reqID {
 		t.Fatalf("correlated reply missing: %+v", replies)
 	}

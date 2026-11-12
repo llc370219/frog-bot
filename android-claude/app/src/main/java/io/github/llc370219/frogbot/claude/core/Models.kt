@@ -249,10 +249,45 @@ data class ApiSettings(
     }
 }
 
-data class CliStatus(val id: String, val name: String, val installed: Boolean)
+/** 提权到 root 的状态（GET /api/settings/privilege）：只在服务器模式、Agent 沙箱可用并装了提权助手时 available。 */
+data class PrivilegeStatus(
+    val available: Boolean, val reason: String?, val error: String?, val sandboxOn: Boolean,
+    val configured: Boolean, val enabled: Boolean, val grantLeftSec: Int, val lockedLeftSec: Int,
+) {
+    val summary: String get() = when {
+        available && grantLeftSec > 0 -> "已开启 · 免密窗口还剩 ${(grantLeftSec + 59) / 60} 分钟"
+        available -> "已开启 · 每条 root 命令都要输入登录密码"
+        lockedLeftSec > 0 -> "密码输错太多次，${(lockedLeftSec + 59) / 60} 分钟后再试"
+        else -> reason ?: error ?: "不可用"
+    }
+
+    companion object {
+        fun from(j: JSONObject): PrivilegeStatus {
+            val st = j.obj("status")
+            return PrivilegeStatus(
+                j.bool("available"), j.strOrNull("reason"), j.strOrNull("error"), j.obj("sandbox").bool("available"),
+                st.bool("configured"), st.bool("enabled"), st.num("grant_left_sec")?.toInt() ?: 0, st.num("locked_left_sec")?.toInt() ?: 0,
+            )
+        }
+    }
+}
+
+/** 一键安装的进度：frog 把 Node.js 和 CLI 装到服务器的数据目录，不需要 root。state 是 running / done / failed。 */
+data class CliInstall(val state: String, val step: String?, val error: String?, val version: String?)
+
+data class CliStatus(
+    val id: String, val name: String, val installed: Boolean,
+    val managed: Boolean = false, val installable: Boolean = false, val install: CliInstall? = null,
+) {
+    val installing: Boolean get() = install?.state == "running"
+}
+
 data class AgentConnections(val cli: String, val clis: List<CliStatus>) {
     companion object {
-        fun from(j: JSONObject) = AgentConnections(j.str("cli"), j.arr("clis").objects().map { CliStatus(it.str("id"), it.str("name"), it.bool("installed")) })
+        fun from(j: JSONObject) = AgentConnections(j.str("cli"), j.arr("clis").objects().map {
+            val job = it.optJSONObject("install")?.let { i -> CliInstall(i.str("state"), i.strOrNull("step"), i.strOrNull("error"), i.strOrNull("version")) }
+            CliStatus(it.str("id"), it.str("name"), it.bool("installed"), it.bool("managed"), it.bool("installable"), job)
+        })
     }
 }
 

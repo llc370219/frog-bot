@@ -42,6 +42,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -379,11 +383,16 @@ fun ApprovalSheet(session: BotSession, a: Approval, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var password by remember { mutableStateOf("") }
+    var grant by remember { mutableStateOf(false) }
+    val root = a.toolName == "run_as_root"
     val ex = Frog.extra
     fun decide(d: String) {
         busy = true; error = null
         scope.launch {
-            runCatching { session.decide(a.id, d) }.onSuccess { onClose() }.onFailure { error = ServerClient.describe(it) }
+            val pw = if (root && d == "once") password else null
+            runCatching { session.decide(a.id, d, pw, if (pw != null && grant) 10 else 0) }
+                .onSuccess { password = ""; onClose() }.onFailure { error = ServerClient.describe(it) }
             busy = false
         }
     }
@@ -398,7 +407,19 @@ fun ApprovalSheet(session: BotSession, a: Approval, onClose: () -> Unit) {
             if (a.reason.isNotEmpty()) Text(a.reason)
             CodeBox(approvalDetailText(a))
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
-            if (a.status == "pending" && session.isLocalDevice) {
+            if (a.status == "pending" && session.isLocalDevice && root) {
+                // root 命令：输入登录密码才执行
+                OutlinedTextField(password, { password = it }, label = { Text("登录密码（免密窗口内可留空）") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(), enabled = !busy, modifier = Modifier.fillMaxWidth())
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(grant, { grant = it }, enabled = !busy)
+                    Text("之后 10 分钟内免输密码（每条仍要批准）", fontSize = 13.sp)
+                }
+                Button(onClick = { decide("once") }, enabled = !busy, modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("授权并执行") }
+                OutlinedButton(onClick = { decide("deny") }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("拒绝") }
+                Text("以 root 身份在服务器上运行，记入审计日志 · 10 分钟内不处理会自动拒绝", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else if (a.status == "pending" && session.isLocalDevice) {
                 Button(onClick = { decide("once") }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("允许一次") }
                 if (!a.fromChat) FilledTonalButton(onClick = { decide("session") }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("本任务内都允许") }
                 OutlinedButton(onClick = { decide("deny") }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("拒绝", color = MaterialTheme.colorScheme.error) }

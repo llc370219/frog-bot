@@ -46,6 +46,9 @@ type file struct {
 }
 
 type Auth struct {
+	// OnPasswordChange 在网页上改密码、保存之前调用（例如同步给提权助手）；返回错误则不改。
+	OnPasswordChange func(old, next string) error
+
 	path string
 	mu   sync.RWMutex
 	f    file
@@ -55,6 +58,22 @@ type Auth struct {
 	mtime   time.Time     // auth.json 的修改时间；命令行 reset-password 改了文件后，运行中的程序自动重新读取
 	revoked chan struct{} // closed whenever the authentication generation changes
 	active  map[context.Context]context.CancelFunc
+}
+
+// ReadHash 读出数据目录里登录密码的 bcrypt 哈希（root 同步给提权助手时用）。
+func ReadHash(dataDir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dataDir, fileName))
+	if err != nil {
+		return "", err
+	}
+	var f file
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return "", err
+	}
+	if f.Hash == "" {
+		return "", errors.New("auth.json 里没有密码哈希")
+	}
+	return f.Hash, nil
 }
 
 // Exists 表示数据目录里已经有管理员账号。
@@ -282,6 +301,11 @@ func (a *Auth) ChangePassword(old, next string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(next), bcryptCost)
 	if err != nil {
 		return "", err
+	}
+	if a.OnPasswordChange != nil {
+		if err := a.OnPasswordChange(old, next); err != nil {
+			return "", err
+		}
 	}
 	a.mu.Lock()
 	prev := a.f

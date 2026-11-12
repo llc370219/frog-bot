@@ -279,6 +279,8 @@ func TestDevicePairChatStreamAndCollaboration(t *testing.T) {
 	reqClose("POST", ui.URL+"/api/devices/beta/auth/password", `{}`, false, 404)
 	cliPath := t.TempDir()
 	t.Setenv("PATH", cliPath)
+	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
+	t.Setenv("NVM_DIR", "")
 	cliName := "pi"
 	if runtime.GOOS == "windows" {
 		cliName += ".exe"

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -27,6 +28,12 @@ type CLIStatus struct {
 	// ModelOption 表示 Frog Bot 可以给这个 CLI 指定模型（否则用 CLI 自己的默认模型）。
 	ModelOption bool     `json:"model_option"`
 	Models      []string `json:"models,omitempty"` // 常用模型（仅作建议，也可手填）
+	// Path 是检测到的可执行文件；Managed 表示是 frog 一键安装的（在 <data>/tools 里）。
+	Path    string `json:"path,omitempty"`
+	Managed bool   `json:"managed,omitempty"`
+	// Installable 表示这台机器可以在设置里一键安装/更新；Install 是最近一次安装的进度。
+	Installable bool          `json:"installable"`
+	Install     *InstallState `json:"install,omitempty"`
 }
 
 var cliNames = []CLIStatus{
@@ -97,9 +104,17 @@ func CLIName(id string) string { return cliStatus(id).Name }
 
 func DetectCLIs() []CLIStatus {
 	status := append([]CLIStatus(nil), cliNames...)
+	managed := managedCLIBin()
 	for i := range status {
-		_, _, err := resolveCLI(status[i].ID)
-		status[i].Installed = err == nil
+		c := &status[i]
+		path, _, err := resolveCLI(c.ID)
+		c.Installed = err == nil
+		if c.Installed {
+			c.Path = path
+			c.Managed = managed != "" && filepath.Dir(path) == managed
+		}
+		c.Installable = installSupported(c.ID) == nil
+		c.Install = installSnapshot(c.ID)
 	}
 	return status
 }
@@ -109,8 +124,23 @@ func resolveCLI(id string) (string, []string, error) {
 		return "", nil, fmt.Errorf("不支持的 Agent CLI：%s", id)
 	}
 	if runtime.GOOS != "windows" {
-		path, err := exec.LookPath(id)
-		return path, nil, err
+		// frog 一键安装的版本优先：在设置里点了「更新」，用的就应该是它。
+		if m := managedCLIBin(); m != "" {
+			if p := filepath.Join(m, id); isExecutable(p) {
+				return p, nil, nil
+			}
+		}
+		if path, err := exec.LookPath(id); err == nil {
+			return path, nil, nil
+		}
+		// 服务以 systemd 启动时 PATH 只有系统目录，不会加载 ~/.bashrc 或 nvm，
+		// 而服务用户没有 root，CLI 通常只能装在自己的家目录里，所以再找一遍这些位置。
+		for _, dir := range userBinDirs() {
+			if p := filepath.Join(dir, id); isExecutable(p) {
+				return p, nil, nil
+			}
+		}
+		return "", nil, exec.ErrNotFound
 	}
 	if path, err := exec.LookPath(id + ".exe"); err == nil {
 		return path, nil, nil
@@ -152,6 +182,119 @@ func resolveCLI(id string) (string, []string, error) {
 	return "", nil, errors.New("未找到 CLI 可执行文件")
 }
 
+// userBinDirs 是用户级安装常见的可执行文件目录（不需要 root）：~/.local/bin、npm 自定义前缀、
+// nvm 装的各个 Node 版本（新版本在前）、Volta、Bun 等。
+func userBinDirs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	dirs := []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, "bin"),
+		filepath.Join(home, ".npm-global", "bin"),
+	}
+	if prefix := npmrcPrefix(filepath.Join(home, ".npmrc"), home); prefix != "" {
+		dirs = append(dirs, filepath.Join(prefix, "bin"))
+	}
+	nvmDir := os.Getenv("NVM_DIR")
+	if nvmDir == "" {
+		nvmDir = filepath.Join(home, ".nvm")
+	}
+	dirs = append(dirs, nvmBinDirs(nvmDir)...)
+	return append(dirs,
+		filepath.Join(home, ".volta", "bin"),
+		filepath.Join(home, ".bun", "bin"),
+		filepath.Join(home, ".local", "share", "pnpm"),
+	)
+}
+
+// npmrcPrefix 读出 ~/.npmrc 里的 prefix=（npm config set prefix 写的），没有就返回空。
+func npmrcPrefix(path, home string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || strings.TrimSpace(k) != "prefix" {
+			continue
+		}
+		v = strings.Trim(strings.TrimSpace(v), `"'`)
+		if strings.HasPrefix(v, "~/") {
+			v = filepath.Join(home, v[2:])
+		}
+		if filepath.IsAbs(v) {
+			return v
+		}
+	}
+	return ""
+}
+
+// nvmBinDirs 列出 nvm 装的每个 Node 版本的 bin 目录，版本新的在前。
+func nvmBinDirs(nvmDir string) []string {
+	entries, err := os.ReadDir(filepath.Join(nvmDir, "versions", "node"))
+	if err != nil {
+		return nil
+	}
+	type ver struct {
+		dir string
+		n   [3]int
+	}
+	var vs []ver
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		var v ver
+		if _, err := fmt.Sscanf(e.Name(), "v%d.%d.%d", &v.n[0], &v.n[1], &v.n[2]); err != nil {
+			continue
+		}
+		v.dir = filepath.Join(nvmDir, "versions", "node", e.Name(), "bin")
+		vs = append(vs, v)
+	}
+	slices.SortFunc(vs, func(a, b ver) int {
+		for i := range a.n {
+			if a.n[i] != b.n[i] {
+				return b.n[i] - a.n[i]
+			}
+		}
+		return 0
+	})
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = v.dir
+	}
+	return out
+}
+
+func isExecutable(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0o111 != 0
+}
+
+// withPathDir 把 dir 放到 PATH 最前面（已经在 PATH 里就不动）。npm 装的 CLI 用
+// `#!/usr/bin/env node` 启动，node 和 CLI 在同一个 bin 目录，不在 PATH 里就跑不起来。
+func withPathDir(env []string, dir string) []string {
+	for i, kv := range env {
+		key, val, _ := strings.Cut(kv, "=")
+		if key != "PATH" {
+			continue
+		}
+		if slices.Contains(filepath.SplitList(val), dir) {
+			return env
+		}
+		out := slices.Clone(env)
+		if val == "" {
+			out[i] = "PATH=" + dir
+		} else {
+			out[i] = "PATH=" + dir + string(os.PathListSeparator) + val
+		}
+		return out
+	}
+	return append(slices.Clone(env), "PATH="+dir)
+}
+
 func isFile(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.Mode().IsRegular()
@@ -190,7 +333,7 @@ func runCLI(ctx context.Context, id, workspace, prompt string, opts CLIOptions) 
 	name := CLIName(id)
 	exe, prefix, err := resolveCLI(id)
 	if err != nil {
-		return "", fmt.Errorf("找不到 %s。请在 frog 所在机器安装 CLI 并加入 PATH", name)
+		return "", fmt.Errorf("找不到 %s。请在「设置 → 模型与 Agent」里一键安装，或在 frog 所在机器手动安装并放进 PATH", name)
 	}
 	if opts, err = ValidateCLIOptions(id, opts); err != nil {
 		return "", err
@@ -200,11 +343,21 @@ func runCLI(ctx context.Context, id, workspace, prompt string, opts CLIOptions) 
 		return "", fmt.Errorf("%s 的任务说明过长，请缩短后重试", name)
 	}
 	cmd := exec.CommandContext(ctx, exe, append(prefix, args...)...)
+	if err := sandboxed(cmd); err != nil {
+		return "", err
+	}
 	cmd.Dir = workspace
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
 	cmd.Env = cliEnv(cmd.Environ(), id, opts.Auth)
+	if runtime.GOOS != "windows" {
+		// frog 一键安装的 CLI 用 frog 自己装的 Node 运行。
+		if m := managedCLIBin(); m != "" && filepath.Dir(exe) == m {
+			cmd.Env = withPathDir(cmd.Env, managedNodeBin())
+		}
+		cmd.Env = withPathDir(cmd.Env, filepath.Dir(exe))
+	}
 	var stderr, stdout cliBuffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	var codex codexOutput

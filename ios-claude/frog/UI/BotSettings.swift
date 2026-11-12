@@ -561,8 +561,8 @@ struct AgentsView: View {
                 if let conn {
                     row(id: "", name: "Frog（内置）", detail: "用 API 渠道里的任务模型", installed: true, current: conn.cli.isEmpty)
                     ForEach(conn.clis ?? []) { c in
-                        row(id: c.id, name: c.name, detail: c.installed ? "已安装 · 用 CLI 自己的账户和模型" : "没有检测到",
-                            installed: c.installed, current: conn.cli == c.id)
+                        row(id: c.id, name: c.name, detail: Self.detail(c),
+                            installed: c.installed, current: conn.cli == c.id, cli: c)
                     }
                 } else if message == nil {
                     HStack { ProgressView(); Text("正在检测…").foregroundStyle(Theme.fg3) }
@@ -570,11 +570,12 @@ struct AgentsView: View {
             } header: {
                 Text("「\(session.profile.name)」的后台任务用")
             } footer: {
-                Text("只影响这个 Bot；聊天回复仍用聊天模型。检测的是「\(session.deviceName)」上的安装情况，CLI 要用运行 frog 的账户在那台机器上登录好；每次启动外部 CLI 前，都要在任务卡片里批准。")
+                Text("只影响这个 Bot；聊天回复仍用聊天模型。检测的是「\(session.deviceName)」上的安装情况；「安装」会把 Node.js 和 CLI 装进 frog 的数据目录，不需要 root。CLI 要用运行 frog 的账户在那台机器上登录好；每次启动外部 CLI 前，都要在任务卡片里批准。")
             }
             if let message {
                 Section { Text(message.0).foregroundStyle(message.1 ? Theme.danger : Theme.ok) }
             }
+            if session.isLocalDevice { PrivilegeSection(session: session) }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Agent")
@@ -588,22 +589,69 @@ struct AgentsView: View {
             }
         }
         .task { await load() }
-    }
-
-    private func row(id: String, name: String, detail: String, installed: Bool, current: Bool) -> some View {
-        Button { if installed && !current { use(id) } } label: {
-            HStack(spacing: 12) {
-                if id.isEmpty { FrogAgentAvatar(size: 32) } else { AgentIcon(id: id, client: session.client, size: 32) }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).foregroundStyle(Theme.fg)
-                    Text(detail).font(.footnote).foregroundStyle(Theme.fg3)
-                }
-                Spacer()
-                if current { Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent) }
+        // 安装在服务器后台进行：装的时候每 1.5 秒刷新一次，装完自动停。
+        .task(id: installing) {
+            while installing && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if let c = try? await session.loadConnections() { conn = c }
             }
         }
-        .disabled(!installed || busy)
-        .opacity(installed ? 1 : 0.5)
+    }
+
+    private var installing: Bool { conn?.clis?.contains { $0.installing } ?? false }
+
+    static func detail(_ c: CLIStatus) -> String {
+        if let job = c.install {
+            switch job.state {
+            case "running": return "正在安装：\(job.step ?? "准备")…"
+            case "failed": return "安装失败：\(job.error ?? "未知错误")"
+            default: break
+            }
+        }
+        guard c.installed else { return "没有检测到" }
+        return c.managed == true ? "已由 frog 安装" + (c.install?.version.map { " \($0)" } ?? "") : "已安装 · 用 CLI 自己的账户和模型"
+    }
+
+    private func row(id: String, name: String, detail: String, installed: Bool, current: Bool, cli: CLIStatus? = nil) -> some View {
+        let canInstall = session.isLocalDevice && cli?.installable == true
+        return HStack(spacing: 12) {
+            Button { if installed && !current { use(id) } } label: {
+                HStack(spacing: 12) {
+                    if id.isEmpty { FrogAgentAvatar(size: 32) } else { AgentIcon(id: id, client: session.client, size: 32) }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(name).foregroundStyle(Theme.fg)
+                        Text(detail).font(.footnote).foregroundStyle(cli?.install?.state == "failed" ? Theme.danger : Theme.fg3)
+                    }
+                    Spacer()
+                    if current { Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent) }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!installed || busy)
+            .opacity(installed || canInstall ? 1 : 0.5)
+            if let cli, canInstall {
+                if cli.installing {
+                    ProgressView()
+                } else {
+                    Button(cli.managed == true ? "更新" : "安装") { install(cli.id) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(busy || installing)
+                }
+            }
+        }
+    }
+
+    private func install(_ id: String) {
+        message = nil
+        Task {
+            do {
+                conn = try await session.installCLI(id)
+            } catch {
+                message = (error.localizedDescription, true)
+            }
+        }
     }
 
     private func load() async {
@@ -629,6 +677,57 @@ struct AgentsView: View {
             } catch {
                 message = (error.localizedDescription, true)
             }
+            busy = false
+        }
+    }
+}
+
+/// 提权到 root：Agent 需要 root 时弹卡片，输入登录密码授权。这里看状态、开关提权、结束免密窗口。
+struct PrivilegeSection: View {
+    let session: BotSession
+
+    @State private var st: PrivilegeStatus?
+    @State private var password = ""
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            if let st {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(st.sandbox.available ? "Agent 沙箱已启用" : "Agent 沙箱不可用").foregroundStyle(Theme.fg)
+                    Text(st.summary).font(.footnote).foregroundStyle(st.available ? Theme.fg3 : Theme.danger)
+                }
+                if st.available, (st.status?.grant_left_sec ?? 0) > 0 {
+                    Button("结束免密窗口") { act("revoke") }.disabled(busy)
+                }
+                if st.available {
+                    Button("关闭提权", role: .destructive) { act("disable") }.disabled(busy)
+                }
+                if !st.available, st.status?.configured == true, st.status?.enabled == false {
+                    SecureField("登录密码", text: $password).textContentType(.password)
+                    Button("开启提权") { act("enable") }.disabled(busy || password.isEmpty)
+                }
+            } else {
+                HStack { ProgressView(); Text("正在读取…").foregroundStyle(Theme.fg3) }
+            }
+            if let error { Text(error).foregroundStyle(Theme.danger) }
+        } header: {
+            Text("提权到 root")
+        } footer: {
+            Text("Agent 需要 root 时（例如装系统软件）会弹出卡片，你输入登录密码后由「\(session.deviceName)」上的提权助手执行，并记入审计日志。")
+        }
+        .task { st = try? await session.loadPrivilege() }
+    }
+
+    private func act(_ action: String) {
+        busy = true
+        error = nil
+        Task {
+            do {
+                st = try await session.privilegeAction(action, password: action == "enable" ? password : nil)
+                password = ""
+            } catch { self.error = error.localizedDescription }
             busy = false
         }
     }

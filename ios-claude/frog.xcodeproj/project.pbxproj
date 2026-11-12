@@ -222,7 +222,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.8;
+				MARKETING_VERSION = 0.1.9;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.llc370219.frogbot.claude.ios;
 				PRODUCT_NAME = frog;
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -256,7 +256,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.8;
+				MARKETING_VERSION = 0.1.9;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.llc370219.frogbot.claude.ios;
 				PRODUCT_NAME = frog;
 				SWIFT_EMIT_LOC_STRINGS = NO;

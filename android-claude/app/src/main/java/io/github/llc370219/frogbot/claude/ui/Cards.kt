@@ -337,12 +337,13 @@ private fun StepRow(step: Step, now: Double) {
 // ---------- 审批卡片 ----------
 
 val toolLabels = mapOf(
-    "shell" to "执行命令", "run_agent_cli" to "启动外部 Agent", "write_file" to "写入文件", "edit_file" to "修改文件",
+    "run_as_root" to "以 root 执行命令", "shell" to "执行命令", "run_agent_cli" to "启动外部 Agent", "write_file" to "写入文件", "edit_file" to "修改文件",
     "read_file" to "读取文件", "list_dir" to "查看目录", "grep" to "搜索", "delete_secret" to "删除密钥",
 )
 val riskLabels = mapOf("danger" to "高风险", "exec" to "执行命令", "write" to "写入文件", "read" to "只读")
 
 fun approvalQuestion(a: Approval) = when (a.toolName) {
+    "run_as_root" -> "允许以 root 身份执行这条命令吗？"
     "shell" -> "允许执行这条命令吗？"
     "run_agent_cli" -> "允许启动外部 Agent 吗？"
     "write_file" -> "允许写入这个文件吗？"
@@ -354,6 +355,7 @@ fun approvalQuestion(a: Approval) = when (a.toolName) {
 fun approvalTarget(a: Approval): String {
     val g = a.args
     return when (a.toolName) {
+        "run_as_root" -> "# " + g.str("command")
         "shell" -> "$ " + g.str("command")
         "run_agent_cli" -> g.str("cli") + "\n" + g.str("task")
         "write_file", "edit_file" -> g.str("path")
@@ -401,7 +403,9 @@ fun ApprovalCard(session: BotSession, a: Approval, onDetails: () -> Unit) {
         if (session.isLocalDevice) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
                 TextButton(onClick = onDetails) { Text("查看详情", color = ex.onAttContainer) }
-                Button(onClick = {
+                if (a.toolName == "run_as_root") {
+                    Button(onClick = onDetails) { Text("输入密码授权") } // root 命令要在详情里输入登录密码
+                } else Button(onClick = {
                     busy = true
                     scope.launch { runCatching { session.decide(a.id, "once") }; busy = false }
                 }, enabled = !busy) { Text("允许一次") }

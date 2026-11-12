@@ -14,7 +14,7 @@ var errCLIPaused = errors.New("CLI 已暂停")
 func (a *Agent) runCLIStep(ctx context.Context, t Task, msgs []Message, em *emitter, pc *pauseCtl) (string, error) {
 	name := CLIName(t.CLI)
 	if _, _, err := resolveCLI(t.CLI); err != nil {
-		return "", fmt.Errorf("找不到 %s。请在 frog 所在机器安装 CLI 并加入 PATH", name)
+		return "", fmt.Errorf("找不到 %s。请在「设置 → 模型与 Agent」里一键安装，或在 frog 所在机器手动安装", name)
 	}
 	g := a.Guard
 	if g == nil {

@@ -32,6 +32,8 @@ import (
 	"frogbot/internal/auth"
 	"frogbot/internal/bot"
 	"frogbot/internal/onefrog"
+	"frogbot/internal/rootd"
+	"frogbot/internal/sandbox"
 	"frogbot/web"
 )
 
@@ -48,9 +50,25 @@ func env(def string, keys ...string) string {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "reset-password" {
-		resetPassword(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "reset-password":
+			resetPassword(os.Args[2:])
+			return
+		case "sandbox-exec":
+			sandbox.Main(os.Args[2:])
+			return
+		case "sandbox-check":
+			sandbox.CheckMain(os.Args[2:])
+			return
+		case "rootd":
+			rootdMain(os.Args[2:])
+			return
+		}
+	}
+	// 主进程不可调试：Agent 的命令和主进程是同一个系统用户，否则可以 ptrace 主进程、读它的内存和环境变量。
+	if err := sandbox.SetNonDumpable(); err != nil {
+		log.Printf("⚠ 无法把进程设为不可调试：%v", err)
 	}
 	addrFlag := flag.String("addr", "", "监听地址，例如 127.0.0.1:8080（本机模式默认 127.0.0.1:8080，被占用时自动换下一个端口；服务器模式默认 0.0.0.0:8080）；也可用 ADDR")
 	portFlag := flag.Int("port", 0, "只改端口（服务器模式常用）；也可用 PORT")
@@ -115,6 +133,8 @@ func main() {
 	taskMin, _ := strconv.Atoi(env("30", "TASK_MAX_MINUTES"))
 	ctxTokens, _ := strconv.Atoi(env("60000", "CONTEXT_TOKENS"))
 
+	sandboxStatus := setupSandbox(dataDir, workspace)
+
 	bots, err := bot.OpenBots(bot.Config{
 		Name:           env("Frog", "BOT_NAME"),
 		DataDir:        dataDir,
@@ -135,6 +155,12 @@ func main() {
 	})
 	if err != nil {
 		fatal("%v", err)
+	}
+	if server {
+		// 提权：只在服务器模式、沙箱通过自检、并且装了提权助手时可用（每次都要用户输入登录密码批准）。
+		bot.SetPrivilege(&bot.Privilege{Client: &rootd.Client{Socket: env(rootd.DefaultSocket, "FROGBOT_ROOTD_SOCKET")},
+			Sandbox: sandboxStatus, Server: true})
+		gate.OnPasswordChange = bot.SyncPassword
 	}
 
 	var ui fs.FS
@@ -202,7 +228,11 @@ func main() {
 			fmt.Printf("  初始密码： %s   （只显示这一次，请马上记下；忘了用 frogbot reset-password 重置）\n", firstPassword)
 		}
 		fmt.Printf("\n  从外网访问用 http://<服务器公网 IP>:%s 。HTTP 是明文，强烈建议配域名 + HTTPS（见 README）。\n", portOf(addr))
-		fmt.Printf("  后台 agent 能在这台机器上执行命令（没有沙箱），请用专门的服务器。\n\n")
+		if sandboxStatus.Available {
+			fmt.Printf("  后台 agent 的命令在沙箱里运行（读不到数据目录），但仍能在这台机器上执行命令，请用专门的服务器。\n\n")
+		} else {
+			fmt.Printf("  后台 agent 能在这台机器上执行命令（沙箱不可用：%s），请用专门的服务器。\n\n", sandboxStatus.Reason)
+		}
 	} else {
 		fmt.Printf("\n  只在本机使用，没有登录功能。要从别的电脑访问请用 frogbot -server。按 Ctrl+C 退出。\n\n")
 	}
@@ -289,6 +319,7 @@ func resetPassword(args []string) {
 	if err := auth.SetPassword(dataDir, name, pw); err != nil {
 		fatal("%v", err)
 	}
+	syncRootdAfterReset(dataDir)
 	if *quiet {
 		if !*fromStdin {
 			fmt.Println(pw)
@@ -393,4 +424,40 @@ func fatal(format string, a ...any) {
 		fmt.Scanln(&s)
 	}
 	os.Exit(1)
+}
+
+// setupSandbox 在 Linux 上让 Agent 的命令进 Landlock 沙箱：数据目录（登录数据、会话密钥、密钥库）读不到，
+// 只开放一键安装的 CLI（只读）和工作区（可写）。通过自检才启用。
+func setupSandbox(dataDir, workspace string) sandbox.Status {
+	st := sandbox.Probe()
+	if !st.Available {
+		if runtime.GOOS == "linux" {
+			log.Printf("⚠ Agent 沙箱不可用：%s。提权功能将被禁用。", st.Reason)
+		}
+		return st
+	}
+	self, err := os.Executable()
+	if err == nil {
+		self, err = filepath.EvalSymlinks(self)
+	}
+	if err != nil {
+		return sandbox.Status{Reason: "找不到 frogbot 可执行文件：" + err.Error()}
+	}
+	spec := sandbox.Spec{
+		Protect: []string{dataDir},
+		Allow: []sandbox.Rule{
+			{Path: filepath.Join(dataDir, "tools"), Access: sandbox.ReadOnly},
+			{Path: workspace, Access: sandbox.ReadWrite},
+		},
+	}
+	// 例外目录要先存在才能加进规则：tools 在第一次一键安装前还没有，不建的话装好后要重启才能用。
+	_ = os.MkdirAll(workspace, 0o755)
+	_ = os.MkdirAll(filepath.Join(dataDir, "tools"), 0o755)
+	if err := sandbox.SelfTest(self, spec); err != nil {
+		log.Printf("⚠ Agent 沙箱自检没通过，不启用沙箱：%v。提权功能将被禁用。", err)
+		return sandbox.Status{Reason: err.Error()}
+	}
+	norm, _ := spec.Normalize()
+	onefrog.SetSandbox(self, norm)
+	return st
 }

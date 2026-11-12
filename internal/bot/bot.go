@@ -325,7 +325,11 @@ func (b *Bot) say(text string) {
 }
 
 // Decide 处理审批按钮。只有这个入口（用户点按钮 -> HTTP）能产生批准。
-func (b *Bot) Decide(id, decision string) error {
+func (b *Bot) Decide(id, decision string) error { return b.DecideWith(id, decision, "", 0) }
+
+// DecideWith 处理审批卡片。root 命令（run_as_root）批准时要带登录密码（或在免密窗口内），
+// 先让提权助手核对密码、记下这次授权，再放行；密码不对时卡片保持待审批，可以重输。
+func (b *Bot) DecideWith(id, decision, password string, grantMinutes int) error {
 	d := onefrog.UserDecision{DecidedBy: "user"}
 	switch decision {
 	case "once":
@@ -336,7 +340,23 @@ func (b *Bot) Decide(id, decision string) error {
 	default:
 		return fmt.Errorf("未知的决定: %s", decision)
 	}
+	if d.Approve && b.isRootApproval(id) {
+		d.Scope = onefrog.ScopeOnce
+		if err := currentPrivilege().authorize(password, grantMinutes); err != nil {
+			return err
+		}
+		d.Note = "root"
+	}
 	return b.approver.Resolve(id, d)
+}
+
+func (b *Bot) isRootApproval(id string) bool {
+	for _, r := range b.approver.Pending() {
+		if r.ID == id {
+			return r.ToolName == onefrog.RootTool
+		}
+	}
+	return false
 }
 
 // AnswerCard 处理选项卡片：选一个选项，或者关闭（= 不同意/不选择）。

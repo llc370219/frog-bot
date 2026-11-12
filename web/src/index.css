@@ -431,6 +431,18 @@ textarea:focus-visible{outline:none}
 .agent-cli-text b { color: var(--fg); font-size: 12.5px; font-weight: 550; }
 .agent-cli-text small { overflow: hidden; color: var(--fg3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .agent-cli-check { position: absolute; top: 9px; right: 9px; }
+.cli-installs { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--s2); }
+.cli-installs-head { display: grid; gap: 2px; }
+.cli-installs-head h4 { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--fg); font-size: 12.5px; font-weight: 600; }
+.cli-installs-head small { color: var(--fg3); font-size: 11px; }
+.cli-installs ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.cli-installs li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.cli-install-text { display: grid; flex: 1 1 200px; gap: 2px; min-width: 0; }
+.cli-install-text b { color: var(--fg); font-size: 12.5px; font-weight: 550; }
+.cli-install-text small { overflow: hidden; color: var(--fg3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.cli-installs li.is-failed .cli-install-text small { color: var(--danger, #d4483b); white-space: normal; }
+.cli-install-log { flex-basis: 100%; font-size: 11px; color: var(--fg3); }
+.cli-install-log pre { max-height: 180px; margin: 6px 0 0; padding: 8px; overflow: auto; border-radius: 8px; background: var(--canvas); color: var(--fg2, var(--fg)); font-size: 10.5px; white-space: pre-wrap; word-break: break-all; }
 .agent-cli-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--canvas); }
 .agent-cli-static { padding: 11px 12px; border: 1px dashed var(--line2); border-radius: 9px; }
 .agent-auth { display: grid; align-content: start; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }

@@ -76,6 +76,7 @@ func OpenBots(cfg Config) (*Bots, error) {
 	if err != nil {
 		return nil, err
 	}
+	onefrog.SetToolsDir(filepath.Join(cfg.DataDir, "tools"))
 	main, err := New(cfg)
 	if err != nil {
 		return nil, err

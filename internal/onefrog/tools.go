@@ -144,7 +144,11 @@ func writes(json.RawMessage) Risk   { return RiskWrite }
 
 // DefaultTools 返回内置的基础工具。
 func DefaultTools() []Tool {
-	return []Tool{readFileTool, writeFileTool, editFileTool, listDirTool, grepTool, ShellTool}
+	tools := []Tool{readFileTool, writeFileTool, editFileTool, listDirTool, grepTool, ShellTool}
+	if r := currentRootRunner(); r != nil && r.RootAvailable() {
+		tools = append(tools, rootTool)
+	}
+	return tools
 }
 
 var readFileTool = FuncTool{"read_file", "读取工作区内的文本文件。可用 offset(从1开始的行号)和 limit(行数)读取大文件的一部分。",
@@ -357,6 +361,9 @@ var ShellTool = FuncTool{"shell", "在工作区目录中用 bash 执行命令，
 		ctx, cancel := context.WithTimeout(ctx, min(to, 600*time.Second))
 		defer cancel()
 		cmd := shellCommand(ctx, a.Command)
+		if err := sandboxed(cmd); err != nil {
+			return "", err
+		}
 		cmd.Dir = env.Workspace
 		cmd.Env = SafeEnviron()
 		for k, v := range env.Env {

@@ -80,7 +80,7 @@ func (b *Bot) saveAgentConnection(draft agentConnection) error {
 		}
 		for _, cli := range onefrog.DetectCLIs() {
 			if cli.ID == id && !cli.Installed {
-				return fmt.Errorf("未检测到 %s，请先安装并加入 frog 所在机器的 PATH", cli.Name)
+				return fmt.Errorf("未检测到 %s，请先在下面一键安装，或在 frog 所在机器手动安装", cli.Name)
 			}
 		}
 	}

@@ -27,6 +27,10 @@ jobs:
         working-directory: web
       - run: go vet ./...
       - run: go test -race ./...
+      # Agent 沙箱必须真的在 Linux 上跑过（不能因为内核不支持而跳过）
+      - run: go test -v -count=1 -run 'Landlock|SelfTest' ./internal/sandbox
+        env:
+          FROG_REQUIRE_LANDLOCK: "1"
       - run: go build -trimpath -o bin/frogbot ./cmd/frogbot
       - uses: actions/upload-artifact@v4
         with:

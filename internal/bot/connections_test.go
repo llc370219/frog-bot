@@ -48,6 +48,8 @@ func TestMain(m *testing.M) {
 func TestAgentConnectionsExecuteOnApprovalAndSurviveRestart(t *testing.T) {
 	dir, path := t.TempDir(), t.TempDir()
 	t.Setenv("PATH", path)
+	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
+	t.Setenv("NVM_DIR", "")
 	t.Setenv("FROGBOT_CLI_TEST", "1")
 	exe, err := os.Executable()
 	if err != nil {
@@ -150,6 +152,8 @@ func TestAgentConnectionsExecuteOnApprovalAndSurviveRestart(t *testing.T) {
 		t.Fatal("selection lost on restart")
 	}
 	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
+	t.Setenv("NVM_DIR", "")
 	request("POST", settings, `{"cli":"pi"}`, http.StatusBadRequest)
 	request("POST", settings, `{"cli":""}`, http.StatusOK)
 	if bs.main.selectedCLI() != "" {

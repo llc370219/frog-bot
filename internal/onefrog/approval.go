@@ -229,6 +229,10 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 	if name == CLITool {
 		return Verdict{AskUser, "启动外部 CLI 后，文件与命令权限由该 CLI 管理", "policy"}, RiskDanger
 	}
+	// root 命令：任何审批模式、规则或审核模型都不能自动放行，只能由用户本人批准。
+	if name == RootTool {
+		return Verdict{AskUser, "以 root 身份执行：需要输入登录密码批准", "policy"}, RiskDanger
+	}
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
 	if p, ok := m["path"].(string); ok {
@@ -350,10 +354,19 @@ func (g *Guard) askUser(ctx context.Context, t Task, tool string, args json.RawM
 	now := g.now()
 	req := ApprovalRequest{ID: NewID("appr"), TaskID: t.ID, BotID: t.BotID, ToolName: tool, Args: args,
 		ArgsHash: hash, Risk: risk, Reason: reason, CreatedAt: now, ExpiresAt: now.Add(timeout)}
-	emit(EvApprovalRequested, req)
 	actx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	d, err := g.Approver.RequestApproval(actx, req) // 阻塞等待，不消耗 token
+	var d UserDecision
+	var err error
+	if ra, ok := g.Approver.(registeringApprover); ok {
+		// 先登记再通知界面：否则用户点得很快时，决定会比登记先到，被当成「不存在的审批」拒掉。
+		wait := ra.Register(req)
+		emit(EvApprovalRequested, req)
+		d, err = wait(actx)
+	} else {
+		emit(EvApprovalRequested, req)
+		d, err = g.Approver.RequestApproval(actx, req) // 阻塞等待，不消耗 token
+	}
 	rec := ApprovalRecord{ID: req.ID, TaskID: t.ID, ToolName: tool, ArgsHash: hash, Decision: Deny,
 		Scope: ScopeOnce, CreatedAt: g.now(), DecidedBy: d.DecidedBy}
 	verdict := Verdict{Deny, "用户拒绝了这个操作", "user"}
@@ -363,7 +376,7 @@ func (g *Guard) askUser(ctx context.Context, t Task, tool string, args json.RawM
 		rec.DecidedBy = "timeout"
 	case d.Approve:
 		rec.Decision = Allow
-		if d.Scope == ScopeSession {
+		if d.Scope == ScopeSession && tool != RootTool { // root 命令每条单独批准
 			rec.Scope = ScopeSession
 		}
 	}
@@ -410,17 +423,29 @@ func NewQueueApprover() *QueueApprover {
 	return &QueueApprover{pending: map[string]pendingApproval{}}
 }
 
+// registeringApprover 能把登记和等待分开：Guard 先登记、再发出审批事件、最后等待。
+type registeringApprover interface {
+	Register(req ApprovalRequest) (wait func(ctx context.Context) (UserDecision, error))
+}
+
 func (q *QueueApprover) RequestApproval(ctx context.Context, req ApprovalRequest) (UserDecision, error) {
+	return q.Register(req)(ctx)
+}
+
+// Register 立即登记审批（Resolve 从这一刻起就能找到它），返回的 wait 阻塞到用户决定或 ctx 结束。
+func (q *QueueApprover) Register(req ApprovalRequest) func(ctx context.Context) (UserDecision, error) {
 	p := pendingApproval{req, make(chan UserDecision, 1)}
 	q.mu.Lock()
 	q.pending[req.ID] = p
 	q.mu.Unlock()
-	defer func() { q.mu.Lock(); delete(q.pending, req.ID); q.mu.Unlock() }()
-	select {
-	case d := <-p.ch:
-		return d, nil
-	case <-ctx.Done():
-		return UserDecision{}, ctx.Err()
+	return func(ctx context.Context) (UserDecision, error) {
+		defer func() { q.mu.Lock(); delete(q.pending, req.ID); q.mu.Unlock() }()
+		select {
+		case d := <-p.ch:
+			return d, nil
+		case <-ctx.Done():
+			return UserDecision{}, ctx.Err()
+		}
 	}
 }
 

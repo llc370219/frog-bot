@@ -157,6 +157,8 @@ func TestAgentConnectionKeepsModelAndAuthPerBot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
+	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
+	t.Setenv("NVM_DIR", "")
 	cfg := Config{DataDir: filepath.Join(dir, "data"), Workspace: filepath.Join(dir, "ws")}
 	b, err := New(cfg)
 	if err != nil {

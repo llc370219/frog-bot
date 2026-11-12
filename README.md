@@ -37,7 +37,7 @@
 - **Bot / Agent 自定义**：每个 Bot 可以单独设置职责、头像，以及聊天模型和 Agent 模型。Agent 可以切换到官方订阅 CLI，默认屏蔽 API Key 环境变量，避免按量计费。审批策略可调（`untrusted` / `on-request` / `auto` / `never`）。多台设备的 Bot 之间可以互相协作。
 
 > [!WARNING]
-> 审批不等于沙箱：Agent 能在服务端机器上执行命令。请把服务端部署在**专门的 Linux 服务器**上。
+> Agent 能在服务端机器上执行命令。Linux 上它的命令跑在 Landlock 沙箱里，读不到 frog 的登录数据和密钥，但仍能访问这台机器的其余部分；需要 root 时会弹卡片，你输入登录密码才执行（见 [沙箱与提权](docs/advanced.md#agent-沙箱与提权)）。请把服务端部署在**专门的 Linux 服务器**上。
 
 ## 使用方法
 
