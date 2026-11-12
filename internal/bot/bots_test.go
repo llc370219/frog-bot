@@ -224,7 +224,12 @@ func TestBotInboxReplyCorrelationAndMemoryScopes(t *testing.T) {
 	if _, err := bs.Deliver(other.ID(), main.ID(), "reply body", "", reqID); err != nil {
 		t.Fatal(err)
 	}
-	replies := main.store.Inbox(true)
+	var replies []Message // 发送方自己也存了一份提问（sent），只看回给这个请求的
+	for _, m := range main.store.Inbox(true) {
+		if m.ReplyTo == reqID {
+			replies = append(replies, m)
+		}
+	}
 	if len(replies) != 1 || replies[0].Text != "reply body" || replies[0].ReplyTo != reqID {
 		t.Fatalf("correlated reply missing: %+v", replies)
 	}
