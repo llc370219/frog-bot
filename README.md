@@ -65,8 +65,9 @@ curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/ins
 
 - **macOS** 解压后将 `frog.app` 拖到「应用程序」。从早期客户端升级时手动安装一次。[下载 frog-macos.zip](https://github.com/llc370219/frog-bot/releases/latest/download/frog-macos.zip)
 - **Android** 在手机上打开 APK，按系统提示允许来源应用安装。如果旧客户端用调试密钥签名，请记下服务器地址，卸载旧版后再安装并登录。聊天、Bot 和任务保存在服务器。[下载 frog-android.apk](https://github.com/llc370219/frog-bot/releases/latest/download/frog-android.apk)
+- **Windows 10 / 11** 运行安装程序，SmartScreen 提示时选「更多信息 → 仍要运行」。首次打开时可以添加服务器，也可以点右下角「本机使用」，自动下载并在后台运行一个只供本机访问的 frog。[下载 frog-windows-setup.exe](https://github.com/llc370219/frog-bot/releases/latest/download/frog-windows-setup.exe)
 
-两个原生客户端都会自动检查 GitHub 正式版更新。Android 由系统安装界面确认安装。
+原生客户端都会自动检查 GitHub 正式版更新。Android 由系统安装界面确认安装，Windows 客户端提示有新版本后点击下载安装程序。
 
 ## 许可证
 

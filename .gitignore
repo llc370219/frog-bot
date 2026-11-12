@@ -26,6 +26,7 @@ dist/
 /web/dist/*
 !/web/dist/.gitkeep
 build/
+!/windows-claude/build/
 coverage/
 *.tsbuildinfo
 *.zip

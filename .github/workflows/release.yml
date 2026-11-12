@@ -97,12 +97,37 @@ jobs:
           path: ${{ runner.temp }}/frog-android.apk
           if-no-files-found: error
 
+  windows:
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: windows-claude/package-lock.json
+      - name: 构建 Windows 客户端
+        working-directory: windows-claude
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          npx electron-builder --win nsis --x64 --publish never
+          mkdir -p "$RUNNER_TEMP/frog-windows"
+          cp dist/frog-windows-setup.exe "$RUNNER_TEMP/frog-windows/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: ${{ runner.temp }}/frog-windows/
+          if-no-files-found: error
+
   publish:
-    needs: [server, mac, android]
+    needs: [server, mac, android, windows]
     if: >-
       ${{ !cancelled() && needs.server.result == 'success' &&
-          ((needs.mac.result == 'success' && needs.android.result == 'success') ||
-           (contains(github.ref_name, '-') && needs.mac.result == 'skipped' && needs.android.result == 'skipped')) }}
+          ((needs.mac.result == 'success' && needs.android.result == 'success' && needs.windows.result == 'success') ||
+           (contains(github.ref_name, '-') && needs.mac.result == 'skipped' && needs.android.result == 'skipped' && needs.windows.result == 'skipped')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -121,7 +146,7 @@ jobs:
           case "$tag" in
             *-*) channel=(--prerelease --latest=false) ;;
             *)
-              for file in frog-macos.zip frog-macos-appcast.xml frog-android.apk; do
+              for file in frog-macos.zip frog-macos-appcast.xml frog-android.apk frog-windows-setup.exe; do
                 test -s "out/$file"
               done
               ;;

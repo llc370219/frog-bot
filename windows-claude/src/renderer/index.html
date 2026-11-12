@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>frog</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app" class="shell">
+    <!-- 标题栏：高度与 main.js 中 TITLEBAR_HEIGHT (42) 保持一致；右侧 146px 留给系统窗口按钮 -->
+    <header class="titlebar">
+      <div class="tb-brand">
+        <img src="./frog.png" alt="" class="tb-logo" />
+        <span class="tb-appname">frog</span>
+        <svg class="tb-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        <div id="titlebar-context" class="tb-context">
+          <span class="tb-ctx-dot"></span>
+          <span class="tb-ctx-name">Windows 客户端</span>
+        </div>
+      </div>
+
+      <div class="tb-actions no-drag">
+        <button id="btn-update-pill" class="pill pill-accent hidden" title="发现新版本客户端">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          <span id="update-pill-text">有新版本</span>
+        </button>
+
+        <button id="btn-relay-pill" class="pill" title="客户端 Bot 互联状态">
+          <span class="relay-dot" id="relay-pill-dot"></span>
+          <span id="relay-pill-label">Bot 互联</span>
+        </button>
+
+        <span class="tb-divider"></span>
+
+        <button id="btn-reload" class="tb-btn" title="刷新当前服务器 (Ctrl+R)">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+        </button>
+
+        <button id="btn-theme" class="tb-btn" title="切换外观主题"></button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <!-- 服务器栏：宽度与 RAIL_WIDTH (62) 一致 -->
+      <aside class="rail" aria-label="服务器切换栏">
+        <div id="rail-servers" class="rail-servers"></div>
+
+        <button id="btn-add-server" class="rail-add" title="添加 frog 服务器">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+
+        <div class="rail-spacer"></div>
+
+        <div class="rail-tools">
+          <button id="btn-drawer-servers" class="rail-tool" title="服务器管理">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+          </button>
+          <button id="btn-drawer-relay" class="rail-tool" title="客户端 Bot 互联">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.5 6h7M7.2 8.2l3.6 7.6M16.8 8.2l-3.6 7.6"/></svg>
+          </button>
+          <button id="btn-drawer-settings" class="rail-tool" title="客户端设置与更新">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- 抽屉：宽度与 DRAWER_WIDTH (340) 一致 -->
+      <section id="drawer" class="drawer hidden" aria-label="客户端控制面板">
+        <div class="drawer-header">
+          <div class="drawer-heading">
+            <h2 id="drawer-title">服务器</h2>
+            <button id="btn-close-drawer" class="icon-btn" title="收起面板">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+          </div>
+          <div class="segmented" role="tablist">
+            <button data-tab="servers" class="seg-item active" role="tab">服务器</button>
+            <button data-tab="relay" class="seg-item" role="tab">Bot 互联</button>
+            <button data-tab="client" class="seg-item" role="tab">通用</button>
+          </div>
+        </div>
+        <div id="drawer-body" class="drawer-body"></div>
+      </section>
+
+      <!-- 主画布：服务器在线且已登录时，WebContentsView 精确覆盖 .stage-content 区域 -->
+      <main id="stage" class="stage">
+        <div id="stage-content" class="stage-content"></div>
+      </main>
+    </div>
+
+    <!-- 添加 / 编辑服务器 -->
+    <div id="modal-backdrop" class="modal-backdrop hidden">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <img src="./frog.png" alt="" class="modal-frog" />
+          <div class="modal-head-text">
+            <h2 id="modal-title">连接 frog 服务器</h2>
+            <p>API 密钥和 CLI 登录留在服务器上，客户端只保存 7 天登录会话。</p>
+          </div>
+          <button id="btn-modal-close" type="button" class="icon-btn" title="关闭">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <form id="server-form" class="modal-form" autocomplete="off">
+          <input type="hidden" id="f-id" />
+
+          <label class="field">
+            <span class="field-label">服务器地址</span>
+            <span class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+              <input id="f-url" type="text" placeholder="https://bot.example.com 或 192.168.1.10:8080" required spellcheck="false" />
+            </span>
+            <span class="field-hint">不写协议时，域名默认 https://，IP 或带端口的地址默认 http://</span>
+          </label>
+
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">显示名称 <em>选填</em></span>
+              <input id="f-name" type="text" placeholder="如：云主机 / 家里 NAS" />
+            </label>
+            <label class="field">
+              <span class="field-label">用户名</span>
+              <input id="f-user" type="text" placeholder="admin" autocomplete="username" spellcheck="false" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="field-label">密码</span>
+            <span class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+              <input id="f-pass" type="password" placeholder="本机免登录模式可留空" autocomplete="current-password" />
+              <button type="button" id="btn-toggle-pass" class="input-suffix" title="显示密码">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </span>
+          </label>
+
+          <div id="f-insecure-warn" class="banner banner-warn hidden">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+            <span>这是到非本机服务器的 HTTP 明文连接，密码和对话不加密。建议绑定域名并启用 HTTPS。</span>
+          </div>
+
+          <div id="f-error" class="banner banner-danger hidden" role="alert"></div>
+
+          <div class="modal-actions">
+            <button type="button" id="btn-modal-cancel" class="btn btn-ghost">取消</button>
+            <button type="submit" id="btn-modal-submit" class="btn btn-primary">连接并登录</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 确认对话框（替代系统 confirm） -->
+    <div id="confirm-backdrop" class="modal-backdrop hidden">
+      <div class="modal-card confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title" class="confirm-title"></h2>
+        <p id="confirm-body" class="confirm-body"></p>
+        <div class="modal-actions">
+          <button type="button" id="btn-confirm-cancel" class="btn btn-ghost">取消</button>
+          <button type="button" id="btn-confirm-ok" class="btn btn-danger">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
