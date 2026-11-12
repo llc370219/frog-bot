@@ -122,6 +122,21 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		}
 		writeJSON(w, b.connections(), nil)
 	})
+	// 一键安装 / 更新 CLI（整台设备共用，装到 <data>/tools）。进度通过 GET /api/settings/connections 的 clis[].install 查看。
+	// 只开放给登录的用户，设备互联的转发列表里没有它：不能远程给别的设备装软件。
+	mux.HandleFunc("POST /api/settings/clis/install", func(w http.ResponseWriter, r *http.Request) {
+		var draft struct {
+			ID string `json:"id"`
+		}
+		if !decodeJSON(w, r, &draft, 256) {
+			return
+		}
+		if err := onefrog.StartInstall(draft.ID); err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		writeJSON(w, b.connections(), nil)
+	})
 	mux.HandleFunc("GET /api/update", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		status, err := checkUpdate(r.Context(), releaseClient, latestReleaseAPI, currentVersion())
@@ -225,11 +240,38 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		writeJSON(w, map[string]string{"message": msg}, err)
 	})
 	mux.HandleFunc("POST /api/approvals/{id}", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Decision string }
-		if !decodeJSON(w, r, &body, 1024) {
+		var body struct {
+			Decision     string
+			Password     string `json:"password"`      // 只有 root 命令需要
+			GrantMinutes int    `json:"grant_minutes"` // root：之后多少分钟内免输密码（每条仍要批准）
+		}
+		if !decodeJSON(w, r, &body, 4096) {
 			return
 		}
-		writeJSON(w, map[string]bool{"ok": true}, b.Decide(r.PathValue("id"), body.Decision))
+		err := b.DecideWith(r.PathValue("id"), body.Decision, body.Password, body.GrantMinutes)
+		body.Password = ""
+		writeJSON(w, map[string]bool{"ok": true}, err)
+	})
+	// 提权状态和开关（整台设备共用；设备互联不转发）。
+	mux.HandleFunc("GET /api/settings/privilege", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, currentPrivilege().view(r.Context()), nil)
+	})
+	mux.HandleFunc("POST /api/settings/privilege", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Action   string `json:"action"`
+			Password string `json:"password"`
+		}
+		if !decodeJSON(w, r, &body, 4096) {
+			return
+		}
+		p := currentPrivilege()
+		err := p.action(r.Context(), body.Action, body.Password)
+		body.Password = ""
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		writeJSON(w, p.view(r.Context()), nil)
 	})
 	mux.HandleFunc("POST /api/cards/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

@@ -2,7 +2,7 @@ import SwiftUI
 
 private let riskLabel = ["danger": "高风险", "exec": "执行命令", "write": "写入文件", "read": "只读"]
 private let toolLabel = [
-    "shell": "执行命令", "run_agent_cli": "启动外部 Agent", "write_file": "写入文件", "edit_file": "修改文件",
+    "run_as_root": "以 root 执行命令", "shell": "执行命令", "run_agent_cli": "启动外部 Agent", "write_file": "写入文件", "edit_file": "修改文件",
     "read_file": "读取文件", "list_dir": "查看目录", "grep": "搜索", "delete_secret": "删除密钥",
 ]
 
@@ -47,6 +47,7 @@ struct ApprovalCardView: View {
 
     private var question: String {
         switch a.toolName {
+        case "run_as_root": return "允许以 root 身份执行这条命令吗？"
         case "shell": return "允许执行这条命令吗？"
         case "run_agent_cli": return "允许启动外部 Agent 吗？"
         case "write_file": return "允许写入这个文件吗？"
@@ -72,6 +73,9 @@ struct ApprovalCardView: View {
             }
             if session.isLocalDevice {
                 ApprovalDetail(approval: a)
+                if a.toolName == "run_as_root" {
+                    RootApprovalControls(session: session, approval: a)
+                } else {
                 Text(a.fromChat ? "只放行这一条 · 10 分钟内不处理会自动拒绝" : "只放行这一条 · 参数变了要重新确认 · 10 分钟内不处理会自动拒绝")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.fg3)
@@ -90,6 +94,7 @@ struct ApprovalCardView: View {
                 }
                 .disabled(busy)
                 if let error { Text(error).font(.system(size: 13)).foregroundStyle(Theme.danger) }
+                }
             } else {
                 Text("这个操作发生在「\(session.deviceName)」上，请在那台设备的 frog 界面查看详情并审批。")
                     .font(.system(size: 13.5))
@@ -127,6 +132,9 @@ struct ApprovalDetail: View {
         let g = approval.args
         VStack(alignment: .leading, spacing: 2) {
             switch approval.toolName {
+            case "run_as_root":
+                (Text("# ").foregroundColor(Theme.danger) + Text(g["command"].str))
+                    .lineLimit(16)
             case "shell":
                 (Text("$ ").foregroundColor(Theme.fg4) + secretText(g["command"].str))
                     .lineLimit(16)
@@ -364,6 +372,56 @@ struct SecretCardView: View {
         busy = true; error = nil
         Task {
             do { try await session.cancelSecret(request.id); value = "" } catch { self.error = error.localizedDescription }
+            busy = false
+        }
+    }
+}
+
+/// root 命令的审批：输入登录密码才执行；可以选之后 10 分钟内免输密码（每条仍要点批准）。
+@MainActor
+struct RootApprovalControls: View {
+    let session: BotSession
+    let approval: Approval
+
+    @State private var password = ""
+    @State private var grant = false
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SecureField("登录密码（免密窗口内可留空）", text: $password)
+                .textFieldStyle(.roundedBorder)
+                .textContentType(.password)
+                .onSubmit { decide("once") }
+            Toggle("之后 10 分钟内免输密码（每条 root 命令仍要批准）", isOn: $grant)
+                .font(.system(size: 13))
+            HStack(spacing: 8) {
+                Text("以 root 身份在服务器上运行，记入审计日志")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.fg3)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if busy { ProgressView() }
+                Button("拒绝") { decide("deny") }
+                    .buttonStyle(PillButtonStyle(kind: .secondary))
+                Button("授权并执行") { decide("once") }
+                    .buttonStyle(PillButtonStyle(kind: .danger))
+            }
+            .disabled(busy)
+            if let error { Text(error).font(.system(size: 13)).foregroundStyle(Theme.danger) }
+        }
+    }
+
+    private func decide(_ d: String) {
+        busy = true
+        error = nil
+        let pw = password
+        Task {
+            do {
+                try await session.decide(approval.id, d, password: d == "once" ? pw : nil, grantMinutes: d == "once" && grant ? 10 : 0)
+                password = ""
+            } catch { self.error = error.localizedDescription }
             busy = false
         }
     }

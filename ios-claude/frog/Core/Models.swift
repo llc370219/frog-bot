@@ -304,6 +304,48 @@ struct CLIStatus: Codable, Hashable, Identifiable {
     var id: String
     var name: String
     var installed: Bool
+    /// 检测到的可执行文件；managed 表示由 frog 一键安装；installable 表示这台设备可以一键安装/更新。
+    var path: String?
+    var managed: Bool?
+    var installable: Bool?
+    var install: CLIInstall?
+
+    var installing: Bool { install?.state == "running" }
+}
+
+/// 提权到 root 的状态（GET /api/settings/privilege）：只在服务器模式、Agent 沙箱可用并装了提权助手时 available。
+struct PrivilegeStatus: Codable, Hashable {
+    struct Sandbox: Codable, Hashable { var available: Bool; var reason: String? }
+    struct Helper: Codable, Hashable {
+        var configured: Bool
+        var enabled: Bool
+        var grant_left_sec: Int?
+        var locked_left_sec: Int?
+    }
+    var available: Bool
+    var reason: String?
+    var error: String?
+    var sandbox: Sandbox
+    var status: Helper?
+
+    /// 给界面看的一句话状态。
+    var summary: String {
+        if available {
+            if let s = status?.grant_left_sec, s > 0 { return "已开启 · 免密窗口还剩 \((s + 59) / 60) 分钟" }
+            return "已开启 · 每条 root 命令都要输入登录密码"
+        }
+        if let s = status?.locked_left_sec, s > 0 { return "密码输错太多次，\((s + 59) / 60) 分钟后再试" }
+        return reason ?? error ?? "不可用"
+    }
+}
+
+/// 一键安装的进度（frog 把 Node.js 和 CLI 装到服务器的数据目录，不需要 root）。
+struct CLIInstall: Codable, Hashable {
+    var state: String // running / done / failed
+    var step: String?
+    var error: String?
+    var log: String?
+    var version: String?
 }
 
 struct AgentConnections: Codable, Hashable {

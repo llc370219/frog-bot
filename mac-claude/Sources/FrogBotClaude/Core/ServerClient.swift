@@ -94,6 +94,10 @@ final class ServerClient {
     private(set) var config: ServerConfig
     private(set) var cookie: String?
     let session: URLSession
+    /// 每个 Bot 的 SSE 事件流各占一条长连接。URLSession 默认每台主机最多 6 条连接，
+    /// 和普通请求共用的话，Bot 一多，发消息、刷新列表就会排队到超时，界面显示「离线」。
+    /// 所以事件流单独用一个连接池，上限放宽到够每个 Bot 一条。
+    let streamSession: URLSession
 
     init(config: ServerConfig) {
         self.config = config
@@ -107,6 +111,9 @@ final class ServerClient {
         c.timeoutIntervalForRequest = 30
         c.waitsForConnectivity = false
         session = URLSession(configuration: c)
+        let sc = c.copy() as! URLSessionConfiguration
+        sc.httpMaximumConnectionsPerHost = 64
+        streamSession = URLSession(configuration: sc)
     }
 
     var hasSession: Bool { cookie != nil }

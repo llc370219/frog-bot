@@ -229,6 +229,10 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 	if name == CLITool {
 		return Verdict{AskUser, "启动外部 CLI 后，文件与命令权限由该 CLI 管理", "policy"}, RiskDanger
 	}
+	// root 命令：任何审批模式、规则或审核模型都不能自动放行，只能由用户本人批准。
+	if name == RootTool {
+		return Verdict{AskUser, "以 root 身份执行：需要输入登录密码批准", "policy"}, RiskDanger
+	}
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
 	if p, ok := m["path"].(string); ok {
@@ -363,7 +367,7 @@ func (g *Guard) askUser(ctx context.Context, t Task, tool string, args json.RawM
 		rec.DecidedBy = "timeout"
 	case d.Approve:
 		rec.Decision = Allow
-		if d.Scope == ScopeSession {
+		if d.Scope == ScopeSession && tool != RootTool { // root 命令每条单独批准
 			rec.Scope = ScopeSession
 		}
 	}

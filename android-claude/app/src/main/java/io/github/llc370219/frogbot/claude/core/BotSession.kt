@@ -393,7 +393,12 @@ class BotSession(
     suspend fun regenerate() { client.post("$basePath/regenerate") }
     suspend fun react(id: String, emoji: String) { client.post("$basePath/messages/$id/react", JSONObject().put("emoji", emoji)) }
     suspend fun task(id: String, action: String) { client.post("$basePath/tasks/$id/$action") }
-    suspend fun decide(id: String, decision: String) { client.post("$basePath/approvals/$id", JSONObject().put("decision", decision)) }
+    /** password 只有 root 命令（run_as_root）需要；grantMinutes > 0 表示之后这么多分钟内免输密码（每条仍要批准）。 */
+    suspend fun decide(id: String, decision: String, password: String? = null, grantMinutes: Int = 0) {
+        val body = JSONObject().put("decision", decision)
+        if (password != null) body.put("password", password).put("grant_minutes", grantMinutes)
+        client.post("$basePath/approvals/$id", body)
+    }
     suspend fun answer(cardId: String, answer: String) { client.post("$basePath/cards/$cardId", JSONObject().put("answer", answer)) }
     suspend fun dismiss(cardId: String) { client.post("$basePath/cards/$cardId", JSONObject().put("dismiss", true)) }
     suspend fun saveSecret(requestId: String, value: String) { client.post("$basePath/secrets", JSONObject().put("request_id", requestId).put("value", value)) }
@@ -420,6 +425,16 @@ class BotSession(
     suspend fun loadConnections(): AgentConnections = AgentConnections.from(client.getObject("$basePath/settings/connections"))
     suspend fun saveConnection(cli: String): AgentConnections =
         AgentConnections.from(client.post("$basePath/settings/connections", JSONObject().put("cli", cli)))
+    /** 提权状态和开关（整台服务器共用；设备互联不转发，只能管这台服务器本机）。 */
+    suspend fun loadPrivilege(): PrivilegeStatus = PrivilegeStatus.from(client.getObject("/api/settings/privilege"))
+    suspend fun privilegeAction(action: String, password: String? = null): PrivilegeStatus {
+        val body = JSONObject().put("action", action)
+        if (password != null) body.put("password", password)
+        return PrivilegeStatus.from(client.post("/api/settings/privilege", body))
+    }
+    /** 一键安装 / 更新 CLI。只能装在这台服务器本机：设备互联不转发这个接口。 */
+    suspend fun installCli(id: String): AgentConnections =
+        AgentConnections.from(client.post("/api/settings/clis/install", JSONObject().put("id", id)))
     suspend fun fetchModels(channel: ApiChannel): List<String> {
         val body = JSONObject().put("provider_id", channel.id).put("base_url", channel.baseUrl)
         if (!channel.authRequired) body.put("api_key", "") else channel.apiKey?.let { body.put("api_key", it) }

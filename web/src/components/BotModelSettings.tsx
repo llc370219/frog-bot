@@ -1,6 +1,6 @@
-import { BadgeCheck, Bot, Check, CircleAlert, Copy, Loader2, MessageSquare, Plug, RefreshCw, Save, Terminal, Undo2, Workflow } from 'lucide-react';
+import { BadgeCheck, Bot, Check, CircleAlert, Copy, Download, KeyRound, Loader2, MessageSquare, Plug, RefreshCw, Save, Terminal, Undo2, Workflow } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { AgentCLI, AgentConnection, AgentConnections, APIChannel, APISettings, BotProfile, CLIAuth, DeviceSettingsAPI } from '../api';
+import type { AgentCLI, AgentConnection, AgentConnections, APIChannel, APISettings, BotProfile, CLIAuth, DeviceSettingsAPI, PrivilegeStatus } from '../api';
 import { BotAvatar } from './BotAvatar';
 
 const message = (e: unknown) => e instanceof TypeError ? '无法连接 frog 后端，请确认服务已启动'
@@ -115,6 +115,22 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
       setNotice({ error: false, text: `已复制「${bots.find(b => b.id === copyFrom)?.name}」的模型和 Agent 设置，之后两个 Bot 各自独立。` });
       setCopyFrom(''); onSaved();
     } catch (e) { setNotice({ error: true, text: message(e) }); } finally { setWork(''); setSaving(false); }
+  }
+  const installing = conn?.clis.some(c => c.install?.state === 'running') ?? false;
+  // 安装在后台进行：装的时候每 1.5 秒刷新一次检测结果，装完自动停。
+  useEffect(() => {
+    if (!installing) return;
+    const timer = setInterval(() => {
+      target.connections().then(c => setConn(prev => prev ? { ...prev, clis: c.clis } : c)).catch(() => {});
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [installing, target]);
+  async function install(id: string) {
+    setNotice(undefined);
+    try {
+      const c = await target.installCLI(id);
+      setConn(prev => prev ? { ...prev, clis: c.clis } : c);
+    } catch (e) { setNotice({ error: true, text: message(e) }); }
   }
   async function detect() {
     setDetecting(true);
@@ -231,10 +247,12 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
             {c.id === cli && <Check size={14} className="agent-cli-check" />}
           </button></li>)}
         </ul>
+        <CLIInstalls clis={conn.clis} local={target.local} deviceName={deviceName} busy={busy} installing={installing} onInstall={install} />
         {selectedCLI && <CLIDetails c={selectedCLI} model={cliModel} setModel={setCliModel} auth={cliAuth} setAuth={setCliAuth} busy={busy} deviceName={deviceName} />}
         {!chatSet && <p className="settings-field-hint">这个 Bot 没有聊天模型时，你发的消息会直接交给所选 CLI 处理。</p>}
       </div>}
     </section>
+    {target.local && <PrivilegePanel target={target} deviceName={deviceName} />}
     {footer}
   </div>;
 }
@@ -261,5 +279,71 @@ function CLIDetails({ c, model, setModel, auth, setAuth, busy, deviceName }: {
         <span><b>沿用设备环境变量</b><small>保留 frog 进程里的 API Key / Base URL 环境变量，由 CLI 自行决定用哪种认证。</small></span></label>
     </fieldset>
     {c.login && <p className="agent-login"><Terminal size={13} />还没登录？在「{deviceName}」的终端运行 <code>{c.login}</code> 完成登录。</p>}
+  </div>;
+}
+
+/** 一键安装 / 更新：frog 把 Node.js 和 CLI 装到设备的数据目录，不需要 root，也不改系统目录。 */
+function CLIInstalls({ clis, local, deviceName, busy, installing, onInstall }: {
+  clis: AgentCLI[]; local: boolean; deviceName: string; busy: boolean; installing: boolean; onInstall: (id: string) => void;
+}) {
+  const rows = clis.filter(c => c.installable || c.install);
+  if (!rows.length) return null;
+  return <div className="cli-installs">
+    <div className="cli-installs-head"><h4>安装与更新</h4>
+      <small>{local ? `装到「${deviceName}」的 frog 数据目录（自带 Node.js），不需要 root。` : `只能在「${deviceName}」自己的设置页里安装。`}</small></div>
+    <ul>
+      {rows.map(c => {
+        const job = c.install;
+        const running = job?.state === 'running';
+        const status = running ? `正在安装：${job?.step || '准备'}…`
+          : job?.state === 'failed' ? `安装失败：${job.error}`
+          : job?.state === 'done' ? `已安装 ${job.version ?? ''}`.trim()
+          : c.installed ? (c.managed ? '已由 frog 安装' : `已安装在 ${c.path ?? '系统 PATH'}`) : '未安装';
+        return <li key={c.id} className={job?.state === 'failed' ? 'is-failed' : ''}>
+          <div className="cli-install-text"><b>{c.name}</b><small title={job?.error ?? c.path}>{status}</small></div>
+          {local && c.installable && <button type="button" className="settings-button" disabled={busy || installing} onClick={() => onInstall(c.id)}>
+            {running ? <Loader2 size={14} className="animate-spin" /> : c.managed ? <RefreshCw size={14} /> : <Download size={14} />}
+            {running ? '安装中' : c.managed ? '更新' : '安装'}</button>}
+          {job?.state === 'failed' && job.log && <details className="cli-install-log"><summary>查看日志</summary><pre>{job.log}</pre></details>}
+        </li>;
+      })}
+    </ul>
+  </div>;
+}
+
+/** 提权：Agent 需要 root 时弹卡片，用户输入登录密码授权。这里显示能不能用、开关和免密窗口。 */
+function PrivilegePanel({ target, deviceName }: { target: DeviceSettingsAPI; deviceName: string }) {
+  const [st, setSt] = useState<PrivilegeStatus>();
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    const c = new AbortController();
+    target.privilege(c.signal).then(setSt).catch(() => {});
+    return () => c.abort();
+  }, [target]);
+  if (!st) return null;
+  const s = st.status;
+  const grant = s?.grant_left_sec ? new Date(Date.now() + s.grant_left_sec * 1000) : undefined;
+  const act = async (action: 'enable' | 'disable' | 'revoke') => {
+    setBusy(true); setErr('');
+    try { setSt(await target.privilegeAction(action, action === 'enable' ? password : undefined)); setPassword(''); }
+    catch (e) { setErr(message(e)); } finally { setBusy(false); }
+  };
+  const text = st.available ? (grant ? `已开启 · 免密窗口到 ${grant.toLocaleTimeString()}` : '已开启 · 每条 root 命令都要输入登录密码')
+    : st.reason || st.error || '不可用';
+  return <div className="cli-installs">
+    <div className="cli-installs-head"><h4><KeyRound size={12} /> 提权到 root</h4>
+      <small>Agent 需要 root 时（例如装系统软件）会弹出卡片，你输入登录密码后由「{deviceName}」上的提权助手执行，并记入审计日志。</small></div>
+    <ul><li className={st.available ? '' : 'is-failed'}>
+      <div className="cli-install-text"><b>{st.sandbox.available ? 'Agent 沙箱已启用' : 'Agent 沙箱不可用'}</b><small title={text}>{text}</small></div>
+      {st.available && grant && <button type="button" className="settings-button" disabled={busy} onClick={() => act('revoke')}>结束免密窗口</button>}
+      {st.available && <button type="button" className="settings-button" disabled={busy} onClick={() => act('disable')}>关闭提权</button>}
+      {!st.available && s?.configured && !s.enabled && <form className="cli-install-text" onSubmit={e => { e.preventDefault(); void act('enable'); }}>
+        <input type="password" autoComplete="current-password" placeholder="登录密码" value={password} disabled={busy} onChange={e => setPassword(e.target.value)} />
+        <button type="submit" className="settings-button" disabled={busy || !password}>开启提权</button>
+      </form>}
+    </li></ul>
+    {err && <p className="settings-field-hint" style={{ color: 'var(--danger)' }}>{err}</p>}
   </div>;
 }

@@ -121,7 +121,7 @@ final class BotSession {
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 90 // 服务器每 20 秒发一次心跳
         do {
-            let (bytes, resp) = try await client.session.bytes(for: req)
+            let (bytes, resp) = try await client.streamSession.bytes(for: req)
             guard let http = resp as? HTTPURLResponse else { return .dropped }
             if http.statusCode == 401 { return .unauthorized }
             guard http.statusCode == 200 else { return .dropped }
@@ -432,7 +432,11 @@ final class BotSession {
     func regenerate() async throws { try await client.post(basePath + "/regenerate") }
     func react(_ id: String, _ emoji: String) async throws { try await client.post(basePath + "/messages/\(id)/react", body: ["emoji": emoji]) }
     func task(_ id: String, _ action: String) async throws { try await client.post(basePath + "/tasks/\(id)/\(action)") }
-    func decide(_ id: String, _ decision: String) async throws { try await client.post(basePath + "/approvals/\(id)", body: ["decision": decision]) }
+    func decide(_ id: String, _ decision: String, password: String? = nil, grantMinutes: Int = 0) async throws {
+        var body: [String: Any] = ["decision": decision]
+        if let password { body["password"] = password; body["grant_minutes"] = grantMinutes } // 只有 root 命令需要
+        try await client.post(basePath + "/approvals/\(id)", body: body)
+    }
     func answer(_ cardID: String, _ answer: String) async throws { try await client.post(basePath + "/cards/\(cardID)", body: ["answer": answer]) }
     func dismiss(_ cardID: String) async throws { try await client.post(basePath + "/cards/\(cardID)", body: ["dismiss": true]) }
     func saveSecret(_ requestID: String, _ value: String) async throws { try await client.post(basePath + "/secrets", body: ["request_id": requestID, "value": value]) }
@@ -472,6 +476,22 @@ final class BotSession {
 
     func saveConnection(_ cli: String) async throws -> AgentConnections {
         try await client.send("POST", basePath + "/settings/connections", body: ["cli": cli])
+    }
+
+    /// 提权状态和开关（整台服务器共用；设备互联不转发，只能管这台服务器本机）。
+    func loadPrivilege() async throws -> PrivilegeStatus {
+        try await client.get("/api/settings/privilege")
+    }
+
+    func privilegeAction(_ action: String, password: String? = nil) async throws -> PrivilegeStatus {
+        var body = ["action": action]
+        if let password { body["password"] = password }
+        return try await client.send("POST", "/api/settings/privilege", body: body)
+    }
+
+    /// 一键安装 / 更新 CLI。只能装在这台服务器本机：设备互联不转发这个接口。
+    func installCLI(_ id: String) async throws -> AgentConnections {
+        try await client.send("POST", "/api/settings/clis/install", body: ["id": id])
     }
 
     func fetchModels(_ probe: ChannelProbe) async throws -> [String] {

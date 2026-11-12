@@ -73,6 +73,7 @@ import io.github.llc370219.frogbot.claude.BuildConfig
 import io.github.llc370219.frogbot.claude.KeepAliveService
 import io.github.llc370219.frogbot.claude.R
 import io.github.llc370219.frogbot.claude.core.AgentConnections
+import io.github.llc370219.frogbot.claude.core.PrivilegeStatus
 import io.github.llc370219.frogbot.claude.core.ApiChannel
 import io.github.llc370219.frogbot.claude.core.ApiSettings
 import io.github.llc370219.frogbot.claude.core.AppState
@@ -85,6 +86,7 @@ import io.github.llc370219.frogbot.claude.core.ServerClient
 import io.github.llc370219.frogbot.claude.core.ServerEntry
 import io.github.llc370219.frogbot.claude.core.ServerStatus
 import io.github.llc370219.frogbot.claude.core.str
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private fun statusText(s: ServerEntry): String = when (val st = s.status) {
@@ -639,6 +641,20 @@ fun AgentsScreen(session: BotSession, nav: Nav) {
         runCatching { session.loadConnections() }.onSuccess { conn = it }.onFailure { msg = ServerClient.describe(it) to true }
     }
     LaunchedEffect(session.ref) { load() }
+    val installing = conn?.clis?.any { it.installing } == true
+    // 安装在服务器后台进行：装的时候每 1.5 秒刷新一次，装完自动停。
+    LaunchedEffect(installing) {
+        while (installing) {
+            delay(1500)
+            runCatching { session.loadConnections() }.onSuccess { conn = it }
+        }
+    }
+    fun install(id: String) {
+        msg = null
+        scope.launch {
+            runCatching { session.installCli(id) }.onSuccess { conn = it }.onFailure { msg = ServerClient.describe(it) to true }
+        }
+    }
     fun use(id: String) {
         busy = true; msg = null
         scope.launch {
@@ -663,16 +679,73 @@ fun AgentsScreen(session: BotSession, nav: Nav) {
             RadioButton(selected = c.cli.isEmpty(), onClick = { if (!busy) use("") })
         }
         c.clis.forEach { cli ->
+            val job = cli.install
+            val detail = when {
+                job?.state == "running" -> "正在安装：${job?.step ?: "准备"}…"
+                job?.state == "failed" -> "安装失败：${job?.error ?: "未知错误"}"
+                !cli.installed -> "没有检测到"
+                cli.managed -> "已由 frog 安装" + (job?.version?.let { " $it" } ?: "")
+                else -> "已安装 · 用 CLI 自己的账户"
+            }
+            val canInstall = session.isLocalDevice && cli.installable
             ListRow(
-                cli.name, "${cli.id} · " + if (cli.installed) "已安装 · 用 CLI 自己的账户" else "没有检测到",
+                cli.name, "${cli.id} · $detail",
                 leading = { AgentIcon(cli.id, 40.dp) },
                 titleColor = if (cli.installed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                 onClick = if (cli.installed && !busy) ({ use(cli.id) }) else null,
             ) {
-                RadioButton(selected = c.cli == cli.id, enabled = cli.installed, onClick = { if (!busy) use(cli.id) })
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (cli.installing) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else if (canInstall) {
+                        OutlinedButton(enabled = !busy && !installing, onClick = { install(cli.id) }) { Text(if (cli.managed) "更新" else "安装") }
+                    }
+                    RadioButton(selected = c.cli == cli.id, enabled = cli.installed, onClick = { if (!busy) use(cli.id) })
+                }
             }
         }
         msg?.let { Note(it.first, if (it.second) MaterialTheme.colorScheme.error else Frog.extra.ok) }
-        Note("检测的是「${session.deviceName}」上的安装情况。CLI 要用运行 frog 的账户在那台机器上登录好；每次启动外部 CLI 前都要在任务卡片里批准。")
+        if (session.isLocalDevice) PrivilegeSection(session)
+        Note("检测的是「${session.deviceName}」上的安装情况。「安装」会把 Node.js 和 CLI 装进 frog 的数据目录，不需要 root。CLI 要用运行 frog 的账户在那台机器上登录好；每次启动外部 CLI 前都要在任务卡片里批准。")
     }
+}
+
+/** 提权到 root：Agent 需要 root 时弹卡片，输入登录密码授权。这里看状态、开关提权、结束免密窗口。 */
+@Composable
+private fun PrivilegeSection(session: BotSession) {
+    val scope = rememberCoroutineScope()
+    var st by remember { mutableStateOf<PrivilegeStatus?>(null) }
+    var password by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(session.ref) { runCatching { session.loadPrivilege() }.onSuccess { st = it } }
+    fun act(action: String) {
+        busy = true; error = null
+        scope.launch {
+            runCatching { session.privilegeAction(action, if (action == "enable") password else null) }
+                .onSuccess { st = it; password = "" }.onFailure { error = ServerClient.describe(it) }
+            busy = false
+        }
+    }
+    val s = st ?: return
+    ListRow(
+        "提权到 root · " + if (s.sandboxOn) "Agent 沙箱已启用" else "Agent 沙箱不可用", s.summary,
+        titleColor = MaterialTheme.colorScheme.onSurface,
+    ) {
+        if (s.available) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (s.grantLeftSec > 0) TextButton(enabled = !busy, onClick = { act("revoke") }) { Text("结束免密") }
+                TextButton(enabled = !busy, onClick = { act("disable") }) { Text("关闭", color = MaterialTheme.colorScheme.error) }
+            }
+        }
+    }
+    if (!s.available && s.configured && !s.enabled) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(password, { password = it }, label = { Text("登录密码") }, singleLine = true,
+                visualTransformation = PasswordVisualTransformation(), enabled = !busy, modifier = Modifier.weight(1f))
+            TextButton(enabled = !busy && password.isNotEmpty(), onClick = { act("enable") }) { Text("开启提权") }
+        }
+    }
+    error?.let { Note(it, MaterialTheme.colorScheme.error) }
+    Note("Agent 需要 root 时（例如装系统软件）会弹出卡片，你输入登录密码后由「${session.deviceName}」上的提权助手执行，并记入审计日志。")
 }

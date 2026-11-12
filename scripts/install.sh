@@ -9,6 +9,8 @@
 #   FROGBOT_PASSWORD=…     登录密码（只在第一次安装时使用；不设就随机生成）
 #   VERSION=v0.1.2         安装指定版本（默认装最新发布的那个，正式版和测试版都算）
 #   DOMAIN=bot.example.com 用 Caddy 自动申请 HTTPS 证书，frog 只监听本机
+#   ROOT_HELPER=0          不安装提权助手（frogbot-rootd）。默认安装：Agent 需要 root 时弹卡片，
+#                          你输入登录密码后才以 root 执行，并写审计日志 /var/log/frogbot-rootd.log
 #
 # 再次运行 = 升级：保留数据、账号和密码，只替换程序。
 # 卸载：sudo bash install.sh uninstall    （保留数据；加 --purge 连数据一起删）
@@ -29,6 +31,9 @@ DATA_ROOT="$ROOT/var/lib/frogbot"
 ETC_DIR="$ROOT/etc/frogbot"
 ENV_FILE="$ETC_DIR/frogbot.env"
 UNIT_FILE="$ROOT/etc/systemd/system/frogbot.service"
+ROOTD_UNIT_FILE="$ROOT/etc/systemd/system/frogbot-rootd.service"
+ROOTD_STATE="$ROOT/etc/frogbot/rootd.json"
+ROOT_HELPER="${ROOT_HELPER:-1}"
 WRAPPER="$ROOT/usr/local/bin/frogbot"
 SVC_USER="frogbot"
 
@@ -173,9 +178,35 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=$DATA_ROOT
 ProtectHome=true
+# 提权助手的 socket（只读挂载也能连；目录不存在时忽略）
+ReadWritePaths=-/run/frogbot-rootd
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+write_rootd_unit() {
+  sandbox && return 0
+  cat > "$ROOTD_UNIT_FILE" <<UNIT
+[Unit]
+Description=frog 提权助手（用户输入登录密码授权后以 root 执行命令）
+Documentation=https://github.com/$REPO
+After=network.target
+
+[Service]
+Type=simple
+User=root
+# 只接受 frogbot.service 主进程的连接；密码哈希在 $ROOTD_STATE（root 0600）
+ExecStart=$APP_DIR/frogbot rootd -unit frogbot.service -user $SVC_USER -state $ROOTD_STATE
+RuntimeDirectory=frogbot-rootd
+RuntimeDirectoryMode=0755
+UMask=0077
+Restart=on-failure
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
@@ -194,7 +225,12 @@ case "${1:-}" in
     shift
     DATA_DIR="$(sed -n 's/^DATA_DIR=//p' "$ENV_FILE" 2>/dev/null)"
     if [ "$(id -u)" = 0 ] && id frogbot >/dev/null 2>&1; then
-      exec runuser -u frogbot -- "$APP" reset-password -data "$DATA_DIR" "$@"
+      runuser -u frogbot -- "$APP" reset-password -data "$DATA_DIR" "$@" || exit $?
+      # 提权助手单独保存一份密码哈希，重置后同步过去
+      if [ -f /etc/frogbot/rootd.json ]; then
+        "$APP" rootd sync-password -data "$DATA_DIR" >/dev/null && systemctl try-restart frogbot-rootd && echo "提权助手的密码也已同步。"
+      fi
+      exit 0
     fi
     exec "$APP" reset-password -data "$DATA_DIR" "$@" ;;
   version|-version|--version) exec "$APP" -version ;;
@@ -259,8 +295,8 @@ uninstall() {
   local purge="${1:-}"
   say "停止并移除 frog 服务"
   if ! sandbox && have systemctl; then
-    systemctl disable --now frogbot 2>/dev/null || true
-    rm -f "$UNIT_FILE"; systemctl daemon-reload || true
+    systemctl disable --now frogbot frogbot-rootd 2>/dev/null || true
+    rm -f "$UNIT_FILE" "$ROOTD_UNIT_FILE"; systemctl daemon-reload || true
   fi
   rm -rf "$APP_DIR" "$WRAPPER"
   if [ "$purge" = "--purge" ]; then
@@ -320,8 +356,27 @@ main() {
     fi
   fi
 
+  local rootd_note=""
+  if [ "$ROOT_HELPER" != 0 ] && ! sandbox; then
+    write_rootd_unit
+    mkdir -p "$ETC_DIR"
+    if [ ! -f "$ROOTD_STATE" ]; then
+      # 第一次装提权助手：把当前登录密码的哈希复制一份给它（之后网页上改密码会自动同步）
+      "$APP_DIR/frogbot" rootd sync-password -data "$DATA_ROOT/data" -state "$ROOTD_STATE" -enable >/dev/null \
+        || warn "提权助手没能读取登录密码，之后可运行：sudo frogbot reset-password"
+    fi
+    rootd_note="提权：      已开启（Agent 需要 root 时弹卡片，输入登录密码授权；审计日志 /var/log/frogbot-rootd.log）"
+  elif ! sandbox && [ -f "$ROOTD_UNIT_FILE" ]; then
+    systemctl disable --now frogbot-rootd 2>/dev/null || true
+    rm -f "$ROOTD_UNIT_FILE"
+  fi
+
   if ! sandbox; then
     systemctl daemon-reload
+    if [ -f "$ROOTD_UNIT_FILE" ]; then
+      systemctl enable frogbot-rootd >/dev/null 2>&1
+      systemctl restart frogbot-rootd || warn "提权助手启动失败：sudo journalctl -u frogbot-rootd"
+    fi
     systemctl enable frogbot >/dev/null 2>&1
     systemctl restart frogbot
     wait_health
@@ -347,7 +402,8 @@ DONE
   fi
   cat <<DONE
 
-  忘记密码：sudo frogbot reset-password
+${rootd_note:+  $rootd_note
+}  忘记密码：sudo frogbot reset-password
   查看状态：sudo systemctl status frogbot     日志：sudo journalctl -u frogbot -f
   数据目录：$DATA_ROOT     配置：$ENV_FILE
   升级：    再运行一次这条安装命令（保留数据和密码）

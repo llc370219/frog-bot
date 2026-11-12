@@ -67,9 +67,12 @@ export type ChannelUse = { bot_id: string; name: string; chat_provider_id?: stri
 export type ChannelsView = { providers: APIChannel[]; usage: ChannelUse[] };
 export type BotRoutes = Pick<APISettings, 'default_provider_id' | 'model' | 'agent_provider_id' | 'agent_model'>;
 export type CLIAuth = 'subscription' | 'env';
+export type CLIInstall = { state: 'running' | 'done' | 'failed'; step?: string; error?: string; log?: string; version?: string; started_at: string; finished_at?: string };
 export type AgentCLI = {
   id: string; name: string; installed: boolean;
   subscription?: string; login?: string; model_option?: boolean; models?: string[];
+  // path：检测到的可执行文件；managed：由 frog 一键安装；installable：这台设备可以一键安装/更新
+  path?: string; managed?: boolean; installable?: boolean; install?: CLIInstall;
 };
 // cli 为空 = 内置 Agent（用 Agent API 模型）；否则用该 CLI 在设备上登录的账户（官方订阅）。
 export type AgentConnection = { cli: string; cli_model?: string; cli_auth?: CLIAuth };
@@ -323,7 +326,9 @@ export function createBotAPI(botID: string, device = 'local') {
       return out[0];
     },
     fileURL: (path: string, download = false) => `${base}/files?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`,
-    decide: (id: string, decision: 'once' | 'session' | 'deny') => post(`${base}/approvals/${id}`, { decision }),
+    // root 命令（run_as_root）批准时带登录密码；grant_minutes > 0 表示之后这么多分钟内免输密码（每条仍要批准）。
+    decide: (id: string, decision: 'once' | 'session' | 'deny', root?: { password?: string; grant_minutes?: number }) =>
+      post(`${base}/approvals/${id}`, { decision, ...root }),
     answer: (id: string, answer: string) => post(`${base}/cards/${id}`, { answer }),
     dismiss: (id: string) => post(`${base}/cards/${id}`, { dismiss: true }),
     // 密钥值只走这个接口：直接加密落盘，不进聊天记录、事件流或模型上下文
@@ -349,6 +354,11 @@ export function createDeviceSettingsAPI(device: string, bot = 'main') {
     saveConnection: (c: AgentConnection): Promise<AgentConnections> => post(`${base}/settings/connections`, c),
     // 只支持同一台设备上的 Bot：复制来源 Bot 的聊天模型、Agent 模型和执行方式。
     copySettings: (from: string): Promise<APISettings> => post(`${base}/settings/copy`, { from }),
+    // 一键安装 / 更新 CLI（装到设备的数据目录）。只能装在本机：设备互联不转发这个接口。
+    installCLI: (id: string): Promise<AgentConnections> => post(`/api/settings/clis/install`, { id }),
+    privilege: (signal?: AbortSignal): Promise<PrivilegeStatus> => get(`/api/settings/privilege`, signal),
+    privilegeAction: (action: 'enable' | 'disable' | 'revoke', password?: string): Promise<PrivilegeStatus> =>
+      post(`/api/settings/privilege`, { action, password }),
     local: device === 'local',
     settings: async (signal?: AbortSignal): Promise<APISettings> => {
       const settings = await get<APISettings>(`${base}/settings`, signal);
@@ -373,6 +383,13 @@ export function createDeviceSettingsAPI(device: string, bot = 'main') {
     version: async (signal?: AbortSignal) => (await get<Info>(`${botPath('main', device)}/info`, signal)).version,
   };
 }
+
+// 提权状态（GET /api/settings/privilege）：只在服务器模式、Agent 沙箱可用并安装了提权助手时 available。
+export type PrivilegeStatus = {
+  available: boolean; reason?: string; error?: string;
+  sandbox: { available: boolean; abi?: number; reason?: string };
+  status?: { configured: boolean; enabled: boolean; grant_until?: string; grant_left_sec?: number; pending?: boolean; locked_until?: string; locked_left_sec?: number };
+};
 
 export type DeviceSettingsAPI = ReturnType<typeof createDeviceSettingsAPI>;
 
