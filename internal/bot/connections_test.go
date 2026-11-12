@@ -32,6 +32,12 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 		switch id {
+		case "pi":
+			// 真的走一遍 frog 的本机网关：临时配置里只有网关地址和 $FROG_GATEWAY_TOKEN，没有真实 Key
+			if err := piFixture(); err != nil {
+				fmt.Fprintln(os.Stderr, "pi fixture:", err)
+				os.Exit(1)
+			}
 		case "codex":
 			fmt.Println(`{"type":"item.completed","item":{"type":"command_execution","text":"ignore this"}}`)
 			fmt.Printf("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":%q}}\n", cliTestReply)
@@ -43,6 +49,52 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+const piTestKey = "sk-real-upstream-key"
+
+// piFixture 模拟 Pi：读 PI_CODING_AGENT_DIR/models.json，用 FROG_GATEWAY_TOKEN 调本机网关，打印回复。
+func piFixture() error {
+	args := strings.Join(os.Args[1:], " ")
+	if !strings.Contains(args, "--provider frog --model pi-model") {
+		return fmt.Errorf("wrong args: %s", args)
+	}
+	dir, token := os.Getenv("PI_CODING_AGENT_DIR"), os.Getenv("FROG_GATEWAY_TOKEN")
+	raw, err := os.ReadFile(filepath.Join(dir, "models.json"))
+	if err != nil || token == "" {
+		return fmt.Errorf("config missing: %v", err)
+	}
+	if strings.Contains(string(raw), piTestKey) || strings.Contains(strings.Join(os.Environ(), "\n"), piTestKey) {
+		return fmt.Errorf("real key leaked to the CLI")
+	}
+	var cfg struct {
+		Providers map[string]struct {
+			BaseURL string `json:"baseUrl"`
+			APIKey  string `json:"apiKey"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil || cfg.Providers["frog"].APIKey != "$FROG_GATEWAY_TOKEN" {
+		return fmt.Errorf("bad models.json: %s", raw)
+	}
+	body := `{"model":"some-other-model","messages":[{"role":"user","content":"hi"}]}`
+	req, _ := http.NewRequest("POST", cfg.Providers["frog"].BaseURL+"/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Choices []struct {
+			Message struct{ Content string } `json:"message"`
+		} `json:"choices"`
+	}
+	if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&out) != nil || len(out.Choices) == 0 {
+		return fmt.Errorf("gateway status %d", resp.StatusCode)
+	}
+	fmt.Println(out.Choices[0].Message.Content)
+	return nil
 }
 
 func TestAgentConnectionsExecuteOnApprovalAndSurviveRestart(t *testing.T) {
@@ -69,6 +121,19 @@ func TestAgentConnectionsExecuteOnApprovalAndSurviveRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 第三方 API：只认真实 Key，并且只收到设置里选的模型
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Model string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer "+piTestKey || req.Model != "pi-model" {
+			http.Error(w, "bad upstream request", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%q}}]}`, cliTestReply)
+	}))
+	defer upstream.Close()
+
 	cfg := Config{DataDir: filepath.Join(dir, "data"), Workspace: filepath.Join(dir, "workspace")}
 	open := func() *Bots {
 		t.Helper()
@@ -101,12 +166,26 @@ func TestAgentConnectionsExecuteOnApprovalAndSurviveRestart(t *testing.T) {
 		t.Fatalf("invalid detection result: %s", raw)
 	}
 	for _, cli := range detected.CLIs {
-		if !cli.Installed {
-			t.Fatalf("%s fixture not detected", cli.ID)
+		if !cli.Installed || cli.Supported != (cli.ID == "pi") || (cli.ID != "pi") != (cli.Note == "暂不支持") {
+			t.Fatalf("%s: wrong detection %+v", cli.ID, cli)
 		}
 	}
 	request("POST", settings, `{"cli":"powershell"}`, http.StatusBadRequest)
 	request("POST", settings, `{}`, http.StatusBadRequest)
+	for _, id := range []string{"codex", "claude", "grok", "agy"} {
+		if got := request("POST", settings, fmt.Sprintf(`{"cli":%q}`, id), http.StatusBadRequest); !strings.Contains(got, "暂不支持") {
+			t.Fatalf("%s: %s", id, got)
+		}
+	}
+	key := piTestKey
+	pool, _ := json.Marshal(map[string]any{"providers": []APIChannel{
+		{ID: "relay", Name: "Relay", BaseURL: upstream.URL + "/v1", Enabled: true, AuthRequired: true, APIKey: &key, Models: []string{"pi-model"}},
+	}})
+	request("POST", "/api/channels", string(pool), http.StatusOK)
+	request("POST", settings, `{"cli":"pi"}`, http.StatusBadRequest) // 没选渠道
+	request("POST", settings, `{"cli":"pi","cli_channel":"relay","cli_model":"other"}`, http.StatusBadRequest)
+	request("POST", settings, `{"cli":"pi","cli_channel":"relay","cli_model":"pi-model"}`, http.StatusOK)
+
 	const botPath = "/api/bots/main"
 	run := func(cli, decision, status string) {
 		t.Helper()
@@ -140,21 +219,18 @@ func TestAgentConnectionsExecuteOnApprovalAndSurviveRestart(t *testing.T) {
 			t.Fatalf("unexpected CLI result: %+v", task)
 		}
 	}
-	request("POST", settings, `{"cli":"codex"}`, http.StatusOK)
-	run("codex", "deny", "failed")
-	for _, id := range ids {
-		request("POST", settings, fmt.Sprintf(`{"cli":%q}`, id), http.StatusOK)
-		run(id, "once", "completed")
-	}
+	run("pi", "deny", "failed")
+	run("pi", "once", "completed")
 	bs.Close()
 	bs = open()
-	if bs.main.selectedCLI() != "agy" {
+	if bs.main.selectedCLI() != "pi" || bs.main.cliOptions("pi").Channel != "relay" {
 		t.Fatal("selection lost on restart")
 	}
+	run("pi", "once", "completed") // 重启后网关重新启动，照样能用
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
 	t.Setenv("NVM_DIR", "")
-	request("POST", settings, `{"cli":"pi"}`, http.StatusBadRequest)
+	request("POST", settings, `{"cli":"pi","cli_channel":"relay","cli_model":"pi-model"}`, http.StatusBadRequest)
 	request("POST", settings, `{"cli":""}`, http.StatusOK)
 	if bs.main.selectedCLI() != "" {
 		t.Fatal("could not switch back to built-in Agent")

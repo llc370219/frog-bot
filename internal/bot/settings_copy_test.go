@@ -149,7 +149,7 @@ func TestAgentConnectionKeepsModelAndAuthPerBot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := "claude"
+	name := "pi"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
@@ -164,11 +164,24 @@ func TestAgentConnectionKeepsModelAndAuthPerBot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b.saveAgentConnection(agentConnection{CLI: "claude", CLIOptions: onefrog.CLIOptions{Model: "--yolo"}}); err == nil {
+	key := "sk-test"
+	if _, err := b.SaveSettings(APISettings{BaseURL: "https://relay.example/v1", Model: "m1", APIKey: &key}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.saveAgentConnection(agentConnection{CLI: "pi", CLIOptions: onefrog.CLIOptions{Channel: "primary", Model: "--yolo"}}); err == nil {
 		t.Fatal("accepted a flag as model")
 	}
-	if err := b.saveAgentConnection(agentConnection{CLI: "claude", CLIOptions: onefrog.CLIOptions{Model: "opus", Auth: onefrog.CLIAuthEnv}}); err != nil {
+	if err := b.saveAgentConnection(agentConnection{CLI: "pi", CLIOptions: onefrog.CLIOptions{Channel: "primary", Model: "not-in-channel"}}); err == nil {
+		t.Fatal("accepted a model that is not in the channel")
+	}
+	if err := b.saveAgentConnection(agentConnection{CLI: "pi"}); err == nil {
+		t.Fatal("Pi without an API channel must be rejected")
+	}
+	if err := b.saveAgentConnection(agentConnection{CLI: "pi", CLIOptions: onefrog.CLIOptions{Channel: "primary", Model: "m1", Auth: onefrog.CLIAuthEnv}}); err != nil {
 		t.Fatal(err)
+	}
+	if err := b.saveAgentConnection(agentConnection{CLI: "claude"}); err == nil || !strings.Contains(err.Error(), "暂不支持") {
+		t.Fatalf("unsupported CLI must be rejected: %v", err)
 	}
 	b.Close()
 	b, err = New(cfg)
@@ -176,7 +189,8 @@ func TestAgentConnectionKeepsModelAndAuthPerBot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if o := b.cliOptions("claude"); o.Model != "opus" || o.Auth != onefrog.CLIAuthEnv {
+	// Pi 固定用 API 渠道，不管请求里写了什么认证方式
+	if o := b.cliOptions("pi"); o.Model != "m1" || o.Channel != "primary" || o.Auth != onefrog.CLIAuthChannel {
 		t.Fatalf("options lost on restart: %+v", o)
 	}
 	if o := b.cliOptions("codex"); o.Model != "" || o.Auth != onefrog.CLIAuthSubscription {

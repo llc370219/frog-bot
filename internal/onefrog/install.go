@@ -86,6 +86,9 @@ func managedNodeBin() string {
 
 // installSupported 说明这台机器能不能一键安装这个 CLI；不能时返回原因。
 func installSupported(id string) error {
+	if !SupportedCLI(id) {
+		return fmt.Errorf("%s 暂不支持", CLIName(id))
+	}
 	if npmPackages[id] == "" {
 		return fmt.Errorf("%s 暂不支持一键安装，请按官方说明手动安装", CLIName(id))
 	}

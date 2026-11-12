@@ -4,7 +4,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val frogVersion = providers.gradleProperty("frogVersion").getOrElse("0.1.9")
+val frogVersion = providers.gradleProperty("frogVersion").getOrElse("0.1.10")
 val versionComponent = "(0|[1-9][0-9]{0,2})"
 require(Regex("$versionComponent\\.$versionComponent\\.$versionComponent").matches(frogVersion)) {
     "frogVersion must be a stable MAJOR.MINOR.PATCH version with components from 0 to 999"

@@ -119,8 +119,8 @@ echo "added 1 package"
 	if status[2].ID != "pi" || status[2].Path != filepath.Join(other, "pi") || status[2].Managed || !status[2].Installable {
 		t.Fatalf("before install: %+v", status[2])
 	}
-	if status[3].Installable {
-		t.Fatalf("grok has no npm package and must not be installable: %+v", status[3])
+	if status[3].Installable || status[0].Installable || status[1].Installable {
+		t.Fatalf("only Pi is supported and installable: %+v", status)
 	}
 	waitInstall := func() *InstallState {
 		t.Helper()
@@ -145,7 +145,8 @@ echo "added 1 package"
 		t.Fatalf("after install: %+v", p)
 	}
 	// 运行时要能找到 frog 装的 node（pi 是 #!/usr/bin/env node）。
-	out, err := runCLI(context.Background(), "pi", t.TempDir(), "hi", CLIOptions{})
+	useStubGateway(t)
+	out, err := runCLI(context.Background(), "pi", t.TempDir(), "hi", CLIOptions{Channel: "c", Model: "m"})
 	if err != nil || strings.TrimSpace(out) != version {
 		t.Fatalf("runCLI = %q, %v", out, err)
 	}

@@ -470,6 +470,9 @@ struct AgentsPane: View {
     @State private var conn: AgentConnections?
     @State private var busy = false
     @State private var message: (String, Bool)?
+    @State private var channels: [APIChannel] = []
+    @State private var piChannel = ""
+    @State private var piModel = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -490,7 +493,7 @@ struct AgentsPane: View {
                               current: conn.cli.isEmpty, client: session.client) { use("") }
                     ForEach(conn.clis ?? []) { c in
                         AgentCard(id: c.id, name: c.name, detail: "\(c.id) · " + Self.detail(c),
-                                  installed: c.installed, current: conn.cli == c.id, client: session.client,
+                                  installed: c.installed && c.supported != false, current: conn.cli == c.id, client: session.client,
                                   cli: c, canInstall: session.isLocalDevice && c.installable == true,
                                   installBusy: busy || installing, install: { install(c.id) }) { use(c.id) }
                     }
@@ -498,9 +501,12 @@ struct AgentsPane: View {
             } else if message == nil {
                 ProgressView().controlSize(.small).padding(.top, 20)
             }
+            if let pi = conn?.clis?.first(where: { $0.id == "pi" }), pi.installed, pi.supported != false {
+                piSection.padding(.top, 14)
+            }
             if let message { Caption(text: message.0, tone: message.1 ? Theme.danger : Theme.ok) }
             if session.isLocalDevice { PrivilegeSection(session: session).padding(.top, 18) }
-            Caption(text: "检测的是「\(session.deviceName)」上的安装情况。「安装」会把 Node.js 和 CLI 装进 frog 的数据目录，不需要 root。CLI 要用运行 frog 的账户在那台机器上登录好；每次启动外部 CLI 前，都要在任务卡片里批准。")
+            Caption(text: "检测的是「\(session.deviceName)」上的安装情况。「安装」会把 Node.js 和 CLI 装进 frog 的数据目录，不需要 root。Claude Code、Codex 等暂不支持；每次启动外部 CLI 前，都要在任务卡片里批准。")
                 .padding(.top, 6)
         }
         .task { await load() }
@@ -515,6 +521,41 @@ struct AgentsPane: View {
 
     private var installing: Bool { conn?.clis?.contains { $0.installing } ?? false }
 
+    /// Pi 用 frog 的 API 渠道：选渠道和模型。Key 留在 frog 里，Pi 只拿到本机网关的临时令牌。
+    private var piSection: some View {
+        let models = channels.first { $0.id == piChannel }?.visibleModels ?? []
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Pi 的 API 渠道").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.fg3)
+            if channels.isEmpty {
+                Caption(text: "「\(session.deviceName)」还没有 API 渠道，请先在「API 渠道」里添加。", tone: Theme.danger)
+            } else {
+                HStack(spacing: 10) {
+                    Picker("渠道", selection: $piChannel) {
+                        Text("选择渠道").tag("")
+                        ForEach(channels.filter { $0.enabled }) { Text($0.name).tag($0.id) }
+                    }
+                    .frame(maxWidth: 240)
+                    .onChange(of: piChannel) { _, id in
+                        let m = channels.first { $0.id == id }?.visibleModels ?? []
+                        if !m.contains(piModel) { piModel = m.first ?? "" }
+                    }
+                    Picker("模型", selection: $piModel) {
+                        Text("选择模型").tag("")
+                        ForEach(models, id: \.self) { Text($0).tag($0) }
+                    }
+                    .frame(maxWidth: 280)
+                    Spacer()
+                    Button(conn?.cli == "pi" ? "保存" : "使用 Pi") { use("pi") }
+                        .buttonStyle(PillButtonStyle(kind: .primary, compact: true))
+                        .disabled(busy || piChannel.isEmpty || piModel.isEmpty)
+                }
+                Caption(text: "Pi 通过 frog 的本机网关调用这里选的渠道和模型；渠道的 Key 不会交给 Pi。")
+            }
+        }
+        .padding(12)
+        .card(fill: Theme.groupFill, border: Theme.line)
+    }
+
     static func detail(_ c: CLIStatus) -> String {
         if let job = c.install {
             switch job.state {
@@ -523,8 +564,9 @@ struct AgentsPane: View {
             default: break
             }
         }
+        if c.supported == false { return c.note ?? "暂不支持" }
         guard c.installed else { return "没有检测到" }
-        return c.managed == true ? "已由 frog 安装" + (c.install?.version.map { " \($0)" } ?? "") : "已安装 · 用 CLI 自己的账户"
+        return c.managed == true ? "已由 frog 安装" + (c.install?.version.map { " \($0)" } ?? "") : "已安装 · 用 frog 的 API 渠道"
     }
 
     private func install(_ id: String) {
@@ -542,6 +584,11 @@ struct AgentsPane: View {
         busy = true
         do {
             conn = try await session.loadConnections()
+            channels = (try? await session.loadSettings())?.channels ?? channels
+            if piChannel.isEmpty {
+                piChannel = conn?.cli_channel ?? channels.first { $0.enabled }?.id ?? ""
+                piModel = conn?.cli_channel != nil ? (conn?.cli_model ?? "") : (channels.first { $0.id == piChannel }?.visibleModels.first ?? "")
+            }
             if message?.1 == true { message = nil }
         } catch {
             message = ("读不到 Agent 设置：\(error.localizedDescription)", true)
@@ -554,7 +601,8 @@ struct AgentsPane: View {
         message = nil
         Task {
             do {
-                conn = try await session.saveConnection(id)
+                conn = id == "pi" ? try await session.saveConnection(id, channel: piChannel, model: piModel)
+                    : try await session.saveConnection(id)
                 let name = id.isEmpty ? "Frog（内置）" : (conn?.clis?.first { $0.id == id }?.name ?? id)
                 message = ("「\(session.profile.name)」的新任务将使用 \(name)，正在进行的任务不受影响。", false)
             } catch {

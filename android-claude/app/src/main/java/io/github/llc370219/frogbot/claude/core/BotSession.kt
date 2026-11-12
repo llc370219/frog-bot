@@ -423,8 +423,13 @@ class BotSession(
         saveRoutes(channel, model, s.agentChannel, s.agentModel)
     }
     suspend fun loadConnections(): AgentConnections = AgentConnections.from(client.getObject("$basePath/settings/connections"))
-    suspend fun saveConnection(cli: String): AgentConnections =
-        AgentConnections.from(client.post("$basePath/settings/connections", JSONObject().put("cli", cli)))
+    /** 选择 Agent。Pi 要同时给出 API 渠道和模型。 */
+    suspend fun saveConnection(cli: String, channel: String? = null, model: String? = null): AgentConnections {
+        val body = JSONObject().put("cli", cli)
+        if (channel != null) body.put("cli_channel", channel)
+        if (model != null) body.put("cli_model", model)
+        return AgentConnections.from(client.post("$basePath/settings/connections", body))
+    }
     /** 提权状态和开关（整台服务器共用；设备互联不转发，只能管这台服务器本机）。 */
     suspend fun loadPrivilege(): PrivilegeStatus = PrivilegeStatus.from(client.getObject("/api/settings/privilege"))
     suspend fun privilegeAction(action: String, password: String? = null): PrivilegeStatus {
