@@ -36,6 +36,7 @@ coverage/
 *.test
 *.out
 /bin/
+/ios-claude/Frameworks/
 /frogbot
 /frog-bot
 /onefrog

@@ -238,26 +238,22 @@ final class AppModel {
         for (ref, session) in sessions where ref.server == s.id { session.stop() }
     }
 
-    /// 添加服务器，或给已有服务器重新登录 / 修改设置。若地址栏直接粘贴了 frogpair:// 配对码则自动走一键配对。
-    func connect(existing: ServerEntry?, name: String, address: String, username: String, password: String,
-                 proxyMode: ProxyRouteMode? = nil, customProxy: String = "") async throws {
-        if address.range(of: "frogpair://", options: [.caseInsensitive]) != nil {
-            try await connectWithPairCode(address, existing: existing, customName: name, proxyMode: proxyMode, customProxy: customProxy)
+    /// 添加主机或更新连接设置。输入 vless:// 或 frogp2p:// 时直接走内置 sing-box 隧道。
+    func connect(existing: ServerEntry?, name: String, address: String, username: String, password: String) async throws {
+        if ServerConfig.extractTunnelURI(address) != nil {
+            try await connectWithPairCode(address, existing: existing, customName: name)
             return
         }
         guard let url = ServerConfig.normalize(address) else {
-            throw APIError.invalid("地址格式不对，例如 https://bot.example.com 或粘贴 frogpair:// 配对码")
+            throw APIError.invalid("请输入有效的 vless://、frogp2p:// 或 https:// 地址")
         }
         let user = username.trimmingCharacters(in: .whitespaces)
-        let trimmedProxy = customProxy.trimmingCharacters(in: .whitespacesAndNewlines)
         var config = ServerConfig(
             id: existing?.id ?? UUID(),
             name: name.trimmingCharacters(in: .whitespaces),
             url: url.absoluteString,
             username: user.isEmpty ? "admin" : user,
-            tlsPin: existing?.config.url == url.absoluteString ? existing?.config.tlsPin : nil,
-            proxyMode: proxyMode ?? existing?.config.proxyMode,
-            customProxy: !trimmedProxy.isEmpty ? trimmedProxy : existing?.config.customProxy
+            tunnelURI: nil
         )
         let client = ServerClient(config: config)
         let me = try await client.me()
@@ -266,32 +262,37 @@ final class AppModel {
             try await client.login(username: config.username, password: password)
         }
         try await finishConnect(existing: existing, config: &config, client: client, authEnabled: me.enabled, fallbackHost: url.host)
+        syncTunnels()
     }
 
-    /// 扫码或粘贴 frogpair:// 配对码一键建立加密连接（支持 TLS 证书指纹锁定）。
-    func connectWithPairCode(_ raw: String, existing: ServerEntry? = nil, customName: String = "",
-                             proxyMode: ProxyRouteMode? = nil, customProxy: String = "") async throws {
-        guard let parsed = ServerConfig.parsePairCode(raw) else {
-            throw APIError.invalid("未识别到有效的 frog 配对码，请在电脑端「设置 › 远程连接」点击生成手机配对码")
+    /// 扫码或粘贴 vless:// / frogp2p:// 连接码，启动 App 内置 sing-box 加密隧道直连主机内网。
+    func connectWithPairCode(_ raw: String, existing: ServerEntry? = nil, customName: String = "") async throws {
+        guard let extracted = ServerConfig.extractTunnelURI(raw) else {
+            throw APIError.invalid("未识别到有效的 vless:// 或 frogp2p:// 连接码")
         }
+        let tun = try FrogBoxManager.shared.acquire(uri: extracted.uri)
         let preferredName = customName.trimmingCharacters(in: .whitespaces)
-        let trimmedProxy = customProxy.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = !preferredName.isEmpty ? preferredName : (extracted.serverName ?? tun.serverName)
+
         var config = ServerConfig(
             id: existing?.id ?? UUID(),
-            name: !preferredName.isEmpty ? preferredName : (parsed.serverName ?? ""),
-            url: parsed.endpointURL,
-            username: "paired-device",
-            tlsPin: parsed.tlsPin,
-            proxyMode: proxyMode ?? existing?.config.proxyMode,
-            customProxy: !trimmedProxy.isEmpty ? trimmedProxy : existing?.config.customProxy
+            name: resolvedName,
+            url: "http://frog.internal",
+            username: "sing-box",
+            tunnelURI: extracted.uri
         )
         let client = ServerClient(config: config)
-        let devName = UIDevice.current.name
-        if let remoteName = try await client.redeemPair(token: parsed.token, deviceName: devName),
-           config.name.isEmpty, !remoteName.isEmpty {
-            config.name = remoteName
+        do {
+            try await finishConnect(existing: existing, config: &config, client: client, authEnabled: false, fallbackHost: resolvedName.isEmpty ? "frog" : resolvedName)
+            syncTunnels()
+        } catch {
+            syncTunnels()
+            throw error
         }
-        try await finishConnect(existing: existing, config: &config, client: client, authEnabled: true, fallbackHost: URL(string: parsed.endpointURL)?.host)
+    }
+
+    private func syncTunnels() {
+        FrogBoxManager.shared.sync(keeping: Set(servers.compactMap(\.config.tunnelURI)))
     }
 
     private func finishConnect(existing: ServerEntry?, config: inout ServerConfig, client: ServerClient, authEnabled: Bool, fallbackHost: String?) async throws {
@@ -348,6 +349,7 @@ final class AppModel {
         Task { try? await client.post("/api/auth/logout") }
         client.forgetSession()
         servers.removeAll { $0.id == s.id }
+        syncTunnels()
         persist()
         if selection?.server == s.id {
             selection = nil
@@ -392,19 +394,6 @@ final class AppModel {
         persist()
         syncSessions(s)
         relay.apply()
-    }
-
-    func updateProxyRoute(_ s: ServerEntry, mode: ProxyRouteMode, customProxy: String) {
-        let trimmed = customProxy.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedCustom = trimmed.isEmpty ? nil : trimmed
-        guard mode != s.config.effectiveProxyMode || normalizedCustom != s.config.customProxy else { return }
-        s.config.proxyMode = mode
-        s.config.customProxy = normalizedCustom
-        stopSessions(of: s)
-        for ref in sessions.keys where ref.server == s.id { sessions[ref] = nil }
-        s.client = ServerClient(config: s.config)
-        persist()
-        Task { await refresh(s) }
     }
 
     func move(from: IndexSet, to: Int) {

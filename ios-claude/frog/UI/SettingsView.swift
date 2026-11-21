@@ -154,7 +154,11 @@ struct SettingsView: View {
 @MainActor
 func statusText(_ s: ServerEntry) -> String {
     switch s.status {
-    case .online: return s.config.baseURL?.host ?? s.config.url
+    case .online:
+        if let badge = s.config.tunnelBadge {
+            return "\(badge) · \(s.config.displayEndpoint)"
+        }
+        return s.config.displayEndpoint
     case .connecting: return "连接中…"
     case .needsLogin: return "需要验证"
     case .offline: return "离线"
@@ -179,8 +183,6 @@ struct ServerSettingsView: View {
     @Binding var path: [Nav]
 
     @State private var name = ""
-    @State private var proxyMode: ProxyRouteMode = .system
-    @State private var customProxy = ""
     @State private var channel = "stable"
     @State private var update: UpdateStatus?
     @State private var checking = false
@@ -203,45 +205,30 @@ struct ServerSettingsView: View {
             Section("连接") {
                 TextField("名称", text: $name)
                     .onSubmit { model.rename(server, to: name) }
-                LabeledContent("地址") {
+                if let badge = server.config.tunnelBadge {
+                    LabeledContent("协议") {
+                        Label(badge, systemImage: "lock.shield.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.accent)
+                    }
+                }
+                LabeledContent("节点") {
                     HStack(spacing: 5) {
                         if server.config.isInsecure {
                             Image(systemName: "lock.open.fill")
                                 .font(.caption2)
                                 .foregroundStyle(Theme.warn)
                         }
-                        Text(server.config.baseURL?.host ?? server.config.url)
+                        Text(server.config.displayEndpoint)
+                            .font(.system(.subheadline, design: .monospaced))
                             .foregroundStyle(Theme.fg3)
                             .lineLimit(1)
                     }
                 }
                 LabeledContent("状态") {
-                    Text(statusText(server)).foregroundStyle(statusColor(server))
+                    Text(server.isOnline ? "在线" : statusText(server)).foregroundStyle(statusColor(server))
                 }
-                Picker("代理", selection: $proxyMode) {
-                    ForEach(ProxyRouteMode.allCases, id: \.self) { m in
-                        Text(m.label).tag(m)
-                    }
-                }
-                .onChange(of: proxyMode) { _, next in
-                    model.updateProxyRoute(server, mode: next, customProxy: customProxy)
-                }
-                if proxyMode == .custom {
-                    HStack {
-                        TextField("socks5://127.0.0.1:7890", text: $customProxy)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .font(.system(.subheadline, design: .monospaced))
-                            .submitLabel(.done)
-                            .onSubmit { model.updateProxyRoute(server, mode: proxyMode, customProxy: customProxy) }
-                        Button("应用") {
-                            Haptics.tap()
-                            model.updateProxyRoute(server, mode: proxyMode, customProxy: customProxy)
-                        }
-                        .font(.subheadline.weight(.medium))
-                    }
-                }
-                Button("编辑连接…") { model.sheet = .editServer(server.id) }
+                Button("更换连接…") { model.sheet = .editServer(server.id) }
             }
 
             Section("Bot") {
@@ -318,13 +305,11 @@ struct ServerSettingsView: View {
                 }
             }
 
-            if server.authEnabled {
+            if server.authEnabled && !server.config.isTunneled {
                 Section("账号") {
                     LabeledContent("用户", value: server.config.username)
-                    if server.config.username != "paired-device" {
-                        Button("修改密码…") { changingPassword = true }
-                            .disabled(!server.isOnline)
-                    }
+                    Button("修改密码…") { changingPassword = true }
+                        .disabled(!server.isOnline)
                     Button("退出登录", role: .destructive) { confirmLogout = true }
                 }
             }
@@ -338,8 +323,6 @@ struct ServerSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             name = server.config.name
-            proxyMode = server.config.effectiveProxyMode
-            customProxy = server.config.customProxy ?? ""
             if server.isOnline && update == nil {
                 checkServerUpdate(targetChannel: nil)
             }

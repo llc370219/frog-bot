@@ -16,8 +16,6 @@ struct ServerSheet: View {
     @State private var address = ""
     @State private var username = "admin"
     @State private var password = ""
-    @State private var proxyMode: ProxyRouteMode = .system
-    @State private var customProxy = ""
     @State private var busy = false
     @State private var error: String?
     @State private var showingScanner = false
@@ -30,11 +28,16 @@ struct ServerSheet: View {
         switch mode {
         case .add: return "连接主机"
         case .login: return server?.name ?? "重新验证"
-        case .edit: return "编辑连接"
+        case .edit: return "更换连接"
         }
     }
 
+    private var isTunnelAddress: Bool {
+        ServerConfig.extractTunnelURI(address) != nil
+    }
+
     private var insecure: Bool {
+        if isTunnelAddress { return false }
         guard let u = ServerConfig.normalize(address) else { return false }
         return u.scheme == "http" && !ServerConfig.isLoopback(u.host ?? "")
     }
@@ -42,34 +45,32 @@ struct ServerSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if mode != .edit {
-                    Section {
-                        VStack(spacing: 10) {
-                            Button {
-                                Haptics.tap()
-                                showingScanner = true
-                            } label: {
-                                Label("扫码连接", systemImage: "qrcode.viewfinder")
-                                    .font(.system(size: 15.5, weight: .semibold))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(PillButtonStyle(kind: .primary))
-                            .disabled(busy)
-
-                            Button {
-                                pasteAndPair()
-                            } label: {
-                                Label("粘贴配对码", systemImage: "doc.on.clipboard")
-                                    .font(.system(size: 14.5, weight: .medium))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(PillButtonStyle(kind: .secondary))
-                            .disabled(busy)
+                Section {
+                    VStack(spacing: 10) {
+                        Button {
+                            Haptics.tap()
+                            showingScanner = true
+                        } label: {
+                            Label("扫码连接", systemImage: "qrcode.viewfinder")
+                                .font(.system(size: 15.5, weight: .semibold))
+                                .frame(maxWidth: .infinity)
                         }
-                        .padding(.vertical, 4)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4))
+                        .buttonStyle(PillButtonStyle(kind: .primary))
+                        .disabled(busy)
+
+                        Button {
+                            pasteAndPair()
+                        } label: {
+                            Label("粘贴连接码", systemImage: "doc.on.clipboard")
+                                .font(.system(size: 14.5, weight: .medium))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(PillButtonStyle(kind: .secondary))
+                        .disabled(busy)
                     }
+                    .padding(.vertical, 4)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4))
                 }
 
                 if mode == .add && !showManual {
@@ -79,7 +80,7 @@ struct ServerSheet: View {
                             focused = .address
                         } label: {
                             HStack {
-                                Label("手动输入地址", systemImage: "keyboard")
+                                Label("手动输入", systemImage: "keyboard")
                                     .foregroundStyle(Theme.fg2)
                                 Spacer()
                                 Image(systemName: "chevron.right")
@@ -92,14 +93,17 @@ struct ServerSheet: View {
                     if mode != .login {
                         Section {
                             HStack(spacing: 8) {
-                                TextField("https://host:port", text: $address)
+                                TextField("vless:// · frogp2p:// · https://", text: $address)
                                     .keyboardType(.URL)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
                                     .textContentType(.URL)
                                     .focused($focused, equals: .address)
-                                    .submitLabel(.next)
-                                    .onSubmit { focused = .username }
+                                    .submitLabel(isTunnelAddress ? .go : .next)
+                                    .onSubmit {
+                                        if isTunnelAddress { connect() }
+                                        else { focused = .username }
+                                    }
                                 if insecure {
                                     Image(systemName: "lock.open.fill")
                                         .font(.footnote)
@@ -111,32 +115,20 @@ struct ServerSheet: View {
                         }
                     }
 
-                    Section {
-                        TextField("用户名", text: $username)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .textContentType(.username)
-                            .focused($focused, equals: .username)
-                            .submitLabel(.next)
-                            .onSubmit { focused = .password }
-                        SecureField(mode == .edit ? "密码（留空不改）" : "密码", text: $password)
-                            .textContentType(.password)
-                            .focused($focused, equals: .password)
-                            .submitLabel(.go)
-                            .onSubmit(connect)
-                    }
-
-                    Section {
-                        Picker("代理", selection: $proxyMode) {
-                            ForEach(ProxyRouteMode.allCases, id: \.self) { m in
-                                Text(m.label).tag(m)
-                            }
-                        }
-                        if proxyMode == .custom {
-                            TextField("socks5://127.0.0.1:7890", text: $customProxy)
+                    if !isTunnelAddress {
+                        Section {
+                            TextField("用户名", text: $username)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
-                                .font(.system(.subheadline, design: .monospaced))
+                                .textContentType(.username)
+                                .focused($focused, equals: .username)
+                                .submitLabel(.next)
+                                .onSubmit { focused = .password }
+                            SecureField(mode == .edit ? "密码（留空不改）" : "密码", text: $password)
+                                .textContentType(.password)
+                                .focused($focused, equals: .password)
+                                .submitLabel(.go)
+                                .onSubmit(connect)
                         }
                     }
                 }
@@ -174,10 +166,8 @@ struct ServerSheet: View {
             .onAppear {
                 if let s = server {
                     name = s.config.name
-                    address = s.config.url
+                    address = s.config.tunnelURI ?? s.config.url
                     username = s.config.username
-                    proxyMode = s.config.effectiveProxyMode
-                    customProxy = s.config.customProxy ?? ""
                 }
                 if mode == .edit { showManual = true }
             }
@@ -200,7 +190,7 @@ struct ServerSheet: View {
         error = nil
         Task {
             do {
-                try await model.connectWithPairCode(raw, existing: server, customName: name, proxyMode: proxyMode, customProxy: customProxy)
+                try await model.connectWithPairCode(raw, existing: server, customName: name)
                 Haptics.success()
                 dismiss()
             } catch {
@@ -217,7 +207,7 @@ struct ServerSheet: View {
         error = nil
         Task {
             do {
-                try await model.connect(existing: server, name: name, address: address, username: username, password: password, proxyMode: proxyMode, customProxy: customProxy)
+                try await model.connect(existing: server, name: name, address: address, username: username, password: password)
                 Haptics.success()
                 dismiss()
             } catch {

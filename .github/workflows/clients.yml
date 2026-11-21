@@ -69,6 +69,11 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: 编译内置 sing-box 核心 (FrogBox.xcframework)
+        run: bash ios-claude/scripts/build-frogbox.sh
       - name: 编译 iOS 客户端（模拟器，不签名）
         run: |
           xcodebuild -project ios-claude/frog.xcodeproj -scheme frog -configuration Debug \

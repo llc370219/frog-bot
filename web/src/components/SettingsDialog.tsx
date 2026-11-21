@@ -79,7 +79,7 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
         <nav className="settings-nav" aria-label="设置分类">
           {navButton('models', <Cpu size={16} aria-hidden="true" />, '模型与 Agent')}
           {navButton('api', <Plug size={16} aria-hidden="true" />, 'API 渠道')}
-          {device.id === 'local' && navButton('remote', <ShieldCheck size={15} aria-hidden="true" />, '远程连接')}
+          {device.id === 'local' && navButton('remote', <ShieldCheck size={15} aria-hidden="true" />, '加密隧道')}
           {navButton('update', <RefreshCw size={15} aria-hidden="true" />, '软件版本')}
           {showAccount && navButton('account', <KeyRound size={15} aria-hidden="true" />, '账号')}
         </nav>

@@ -208,7 +208,7 @@ struct FirstRunView: View {
                 Button {
                     pastePair()
                 } label: {
-                    Label(busy ? "正在连接…" : "粘贴配对码", systemImage: "doc.on.clipboard")
+                    Label(busy ? "正在连接…" : "粘贴连接码", systemImage: "doc.on.clipboard")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PillButtonStyle(kind: .secondary))
@@ -250,7 +250,7 @@ struct FirstRunView: View {
     private func pastePair() {
         Haptics.tap()
         guard let clip = UIPasteboard.general.string, !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            error = "剪贴板为空，请先在电脑端复制配对码"
+            error = "剪贴板为空"
             return
         }
         pair(clip)

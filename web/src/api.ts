@@ -480,9 +480,9 @@ export const agyAPI = {
     post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/permissions/${encodeURIComponent(permID)}`, { option_id: optionID }),
 };
 
-// ---------- 内置远程连接与一键配对 ----------
+// ---------- 内置 sing-box 加密隧道与一键配对 ----------
 
-export type RemoteMode = 'off' | 'quick' | 'bridge' | 'direct';
+export type RemoteMode = 'off' | 'reality' | 'p2p';
 
 export type RemotePairedDevice = {
   id: string;
@@ -496,22 +496,22 @@ export type RemoteStatus = {
   ready: boolean;
   status_text: string;
   error?: string;
-  endpoint_url?: string;
-  tls_pin?: string;
-  direct_listen: string;
+  reality_listen: string;
+  p2p_listen: string;
   public_host: string;
-  bridge_uri: string;
+  sni: string;
   server_name: string;
   detected_ip: string;
-  bridge_command: string;
+  candidates?: string[];
   devices: RemotePairedDevice[];
 };
 
 export type RemoteSaveInput = {
   mode: RemoteMode;
-  direct_listen: string;
+  reality_listen: string;
+  p2p_listen: string;
   public_host: string;
-  bridge_uri: string;
+  sni: string;
   server_name: string;
 };
 

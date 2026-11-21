@@ -1,77 +1,65 @@
-import CryptoKit
 import Foundation
-import Security
 import UniformTypeIdentifiers
 
-struct ParsedPairCode {
-    var endpointURL: String
-    var token: String
-    var tlsPin: String?
-    var serverName: String?
-}
-
-enum ProxyRouteMode: String, Codable, CaseIterable, Hashable {
-    case system
-    case direct
-    case custom
-
-    var label: String {
-        switch self {
-        case .system: return "系统默认"
-        case .direct: return "直连"
-        case .custom: return "自定义"
-        }
-    }
-}
-
-/// 一台 frog 服务器的连接设置（保存在本机）。不保存密码。
+/// 一台 frog 主机的连接配置（支持内置 sing-box VLESS-Reality / P2P 隧道或常规 HTTP/HTTPS）。
 struct ServerConfig: Codable, Hashable, Identifiable {
     var id: UUID
     var name: String
     var url: String
     var username: String
-    var tlsPin: String? = nil
-    var proxyMode: ProxyRouteMode? = nil
-    var customProxy: String? = nil
+    var tunnelURI: String? = nil
 
-    var effectiveProxyMode: ProxyRouteMode { proxyMode ?? .system }
+    var isTunneled: Bool {
+        !(tunnelURI ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var tunnelBadge: String? {
+        guard let raw = tunnelURI?.lowercased() else { return nil }
+        if raw.hasPrefix("vless://") { return "VLESS-Reality" }
+        if raw.hasPrefix("frogp2p://") { return "P2P" }
+        return "加密隧道"
+    }
+
+    var displayEndpoint: String {
+        if let raw = tunnelURI, let u = URL(string: raw), let h = u.host, !h.isEmpty {
+            if let p = u.port { return "\(h):\(p)" }
+            return h
+        }
+        return baseURL?.host ?? url
+    }
 
     var baseURL: URL? { URL(string: url) }
 
-    /// 明文 HTTP 且不是本机地址：密码和聊天内容在网络上不加密。
+    /// 走内置加密隧道时全程密文直达内网，永不触发明文警告。
     var isInsecure: Bool {
+        if isTunneled { return false }
         guard let u = baseURL else { return false }
         return u.scheme?.lowercased() == "http" && !ServerConfig.isLoopback(u.host ?? "")
     }
 
-    static func parsePairCode(_ raw: String) -> ParsedPairCode? {
+    static func extractTunnelURI(_ raw: String) -> (uri: String, serverName: String?)? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 支持从一段文字里提取 frogpair://... 链接
-        let candidate: String
-        if let r = trimmed.range(of: "frogpair://", options: [.caseInsensitive]) {
-            let tail = trimmed[r.lowerBound...]
-            candidate = String(tail.prefix { !$0.isWhitespace })
-        } else {
-            return nil
+        for prefix in ["vless://", "frogp2p://"] {
+            if let r = trimmed.range(of: prefix, options: [.caseInsensitive]) {
+                let tail = trimmed[r.lowerBound...]
+                let candidate = String(tail.prefix { !$0.isWhitespace })
+                var srvName: String? = nil
+                if let hashIdx = candidate.firstIndex(of: "#") {
+                    let frag = String(candidate[candidate.index(after: hashIdx)...])
+                    let decoded = frag.removingPercentEncoding ?? frag
+                    if !decoded.trimmingCharacters(in: .whitespaces).isEmpty {
+                        srvName = decoded.trimmingCharacters(in: .whitespaces)
+                    }
+                }
+                return (candidate, srvName)
+            }
         }
-        guard let comps = URLComponents(string: candidate),
-              let items = comps.queryItems else { return nil }
-        func val(_ k: String) -> String? {
-            items.first(where: { $0.name == k })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard var endpoint = val("u"), !endpoint.isEmpty,
-              let token = val("t"), !token.isEmpty else { return nil }
-        while endpoint.hasSuffix("/") { endpoint.removeLast() }
-        guard let u = URL(string: endpoint), let scheme = u.scheme?.lowercased(),
-              scheme == "https" || scheme == "http" else { return nil }
-        let fp = val("fp")?.lowercased()
-        let validPin = (fp?.count == 64) ? fp : nil
-        return ParsedPairCode(endpointURL: endpoint, token: token, tlsPin: validPin, serverName: val("n"))
+        return nil
     }
 
     static func isLoopback(_ host: String) -> Bool {
         let h = host.lowercased()
-        return h == "localhost" || h.hasSuffix(".localhost") || h.hasPrefix("127.") || h == "::1" || h == "[::1]"
+        return h == "localhost" || h.hasSuffix(".localhost") || h.hasPrefix("127.") || h == "::1" || h == "[::1]" || h == "frog.internal"
     }
 
     /// 把用户输入的地址整理成完整 URL：没写协议时，IP、带端口或本机地址默认 http，域名默认 https。
@@ -100,7 +88,7 @@ enum APIError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .unauthorized: return "登录已过期，请重新登录"
+        case .unauthorized: return "授权已失效，请重新验证"
         case .server(_, let m): return m
         case .network(let m): return m
         case .invalid(let m): return m
@@ -110,8 +98,6 @@ enum APIError: LocalizedError, Equatable {
     var status: Int? { if case .server(let s, _) = self { return s }; return nil }
 }
 
-/// 会话 Cookie 按服务器分别保存在「应用程序支持/FrogBotClaude/sessions.json」（仅本人可读，权限 0600），
-/// 这样同一台机器不同端口的两个 frog 也不会互相覆盖登录。
 enum SessionVault {
     private static var dir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -138,54 +124,20 @@ enum SessionVault {
     static func get(_ id: UUID) -> String? { load()[id.uuidString] }
 }
 
-/// 自签名 TLS 1.3 证书指纹锁定代理（比对叶证书 DER 的 SHA-256 指纹，免域名免装根证书且防中间人攻击）
-final class PinnedTLSDelegate: NSObject, URLSessionDelegate, Sendable {
-    let pinHex: String?
-
-    init(pinHex: String?) {
-        let p = pinHex?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        self.pinHex = p.isEmpty ? nil : p
-    }
-
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust,
-              let pin = pinHex else {
-            return (.performDefaultHandling, nil)
-        }
-        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
-              let leaf = chain.first else {
-            return (.cancelAuthenticationChallenge, nil)
-        }
-        let der = SecCertificateCopyData(leaf) as Data
-        let got = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
-        guard got == pin else {
-            return (.cancelAuthenticationChallenge, nil)
-        }
-        return (.useCredential, URLCredential(trust: trust))
-    }
-}
-
-/// 和一台服务器说话：普通请求、登录、上传、下载。
-/// 浏览器之外的请求不带 Origin 头，服务器的跨站检查自然放行；登录靠服务器发的会话 Cookie。
 @MainActor
 final class ServerClient {
     static let cookieName = "frogbot_session"
 
     private(set) var config: ServerConfig
     private(set) var cookie: String?
-    private let tlsDelegate: PinnedTLSDelegate
+    private let tunnelBootError: String?
     let session: URLSession
-    /// 每个 Bot 的 SSE 事件流各占一条长连接。URLSession 默认每台主机最多 6 条连接，
-    /// 和普通请求共用的话，Bot 一多，发消息、刷新列表就会排队到超时，界面显示「离线」。
-    /// 所以事件流单独用一个连接池，上限放宽到够每个 Bot 一条。
     let streamSession: URLSession
 
     init(config: ServerConfig) {
         self.config = config
         self.cookie = SessionVault.get(config.id)
-        let delegate = PinnedTLSDelegate(pinHex: config.tlsPin)
-        self.tlsDelegate = delegate
+
         let c = URLSessionConfiguration.default
         c.httpCookieStorage = nil
         c.httpShouldSetCookies = false
@@ -194,48 +146,32 @@ final class ServerClient {
         c.urlCache = nil
         c.timeoutIntervalForRequest = 30
         c.waitsForConnectivity = false
-        if let proxyDict = Self.proxyDictionary(mode: config.effectiveProxyMode, raw: config.customProxy) {
-            c.connectionProxyDictionary = proxyDict
-        }
-        session = URLSession(configuration: c, delegate: delegate, delegateQueue: nil)
-        let sc = c.copy() as! URLSessionConfiguration
-        sc.httpMaximumConnectionsPerHost = 64
-        streamSession = URLSession(configuration: sc, delegate: delegate, delegateQueue: nil)
-    }
 
-    private static func proxyDictionary(mode: ProxyRouteMode, raw: String?) -> [AnyHashable: Any]? {
-        switch mode {
-        case .system:
-            return nil // 默认跟随系统 VPN / TUN / 系统代理
-        case .direct:
-            return [:] // 显式清空 HTTP/SOCKS 代理字典，绕过系统应用层代理
-        case .custom:
-            var s = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !s.isEmpty else { return nil }
-            if !s.contains("://") { s = "socks5://" + s }
-            guard let u = URL(string: s), let host = u.host, !host.isEmpty else { return nil }
-            let scheme = (u.scheme ?? "socks5").lowercased()
-            let port = u.port ?? (scheme.hasPrefix("http") ? 8080 : 1080)
-            if scheme.hasPrefix("socks") {
-                return [
-                    "SOCKSEnable": 1,
-                    "SOCKSProxy": host,
-                    "SOCKSPort": port,
-                ]
-            } else {
-                return [
+        var bootErr: String? = nil
+        if let uri = config.tunnelURI?.trimmingCharacters(in: .whitespacesAndNewlines), !uri.isEmpty {
+            do {
+                let tun = try FrogBoxManager.shared.acquire(uri: uri)
+                c.connectionProxyDictionary = [
                     "HTTPEnable": 1,
-                    "HTTPProxy": host,
-                    "HTTPPort": port,
+                    "HTTPProxy": "127.0.0.1",
+                    "HTTPPort": tun.port,
                     "HTTPSEnable": 1,
-                    "HTTPSProxy": host,
-                    "HTTPSPort": port,
+                    "HTTPSProxy": "127.0.0.1",
+                    "HTTPSPort": tun.port,
                 ]
+            } catch {
+                bootErr = error.localizedDescription
             }
         }
+        self.tunnelBootError = bootErr
+
+        session = URLSession(configuration: c)
+        let sc = c.copy() as! URLSessionConfiguration
+        sc.httpMaximumConnectionsPerHost = 64
+        streamSession = URLSession(configuration: sc)
     }
 
-    var hasSession: Bool { cookie != nil }
+    var hasSession: Bool { config.isTunneled || cookie != nil }
 
     func update(config: ServerConfig) { self.config = config }
 
@@ -244,36 +180,10 @@ final class ServerClient {
         SessionVault.set(nil, for: config.id)
     }
 
-    /// 兑换一次性配对码，领取独立设备长效会话 Cookie。
-    func redeemPair(token: String, deviceName: String) async throws -> String? {
-        var r = makeRequest("POST", "/api/remote/pair")
-        r.setValue(nil, forHTTPHeaderField: "Cookie")
-        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        r.httpBody = try JSONSerialization.data(withJSONObject: ["token": token, "device_name": deviceName])
-        let data: Data, resp: URLResponse
-        do {
-            (data, resp) = try await session.data(for: r)
-        } catch let e as URLError {
-            throw APIError.network(Self.describe(e))
-        }
-        guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有正常响应") }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
-        }
-        let json = JSON.parse(data) ?? .null
-        let sessionTok = json["session"].string ?? Self.sessionCookie(from: http, url: r.url!)
-        guard let value = sessionTok, !value.isEmpty else {
-            throw APIError.invalid("配对响应缺少会话令牌")
-        }
-        cookie = value
-        SessionVault.set(value, for: config.id)
-        return json["server_name"].string
-    }
-
     // MARK: 请求
 
     func url(_ path: String, query: [URLQueryItem] = []) -> URL {
-        let base = config.baseURL ?? URL(string: "http://127.0.0.1")!
+        let base = config.baseURL ?? URL(string: "http://frog.internal")!
         var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
         var prefix = comps.path
         while prefix.hasSuffix("/") { prefix.removeLast() }
@@ -290,15 +200,17 @@ final class ServerClient {
         return r
     }
 
-    /// 发请求，检查状态码；返回响应体。401 抛 `.unauthorized`，其他错误带上服务器给的说明。
     func send(_ req: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if let tunnelBootError {
+            throw APIError.invalid(tunnelBootError)
+        }
         let data: Data, resp: URLResponse
         do {
             (data, resp) = try await session.data(for: req)
         } catch let e as URLError {
             throw APIError.network(Self.describe(e))
         }
-        guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有正常响应") }
+        guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有响应") }
         if http.statusCode == 401 { throw APIError.unauthorized }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
@@ -311,7 +223,7 @@ final class ServerClient {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw APIError.invalid("服务器返回的数据看不懂，可能版本太旧或地址不是 frog")
+            throw APIError.invalid("返回数据无法解析")
         }
     }
 
@@ -324,12 +236,10 @@ final class ServerClient {
         r.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, _) = try await send(r)
         let out = JSON.parse(data) ?? .null
-        // 部分接口出错时仍返回 200 + {"error": "..."}
         if let msg = out["error"].string, !msg.isEmpty { throw APIError.server(status: 400, message: msg) }
         return out
     }
 
-    /// 发送 Codable 请求体，按类型解析返回值。
     func send<B: Encodable, T: Decodable>(_ method: String = "POST", _ path: String, body: B, as type: T.Type = T.self) async throws -> T {
         var r = makeRequest(method, path)
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -339,7 +249,7 @@ final class ServerClient {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw APIError.invalid("服务器返回的数据看不懂，可能版本太旧")
+            throw APIError.invalid("返回数据无法解析")
         }
     }
 
@@ -355,7 +265,7 @@ final class ServerClient {
         do {
             return try await get("/api/auth/me")
         } catch let e as APIError where e.status == 404 {
-            return AuthInfo(enabled: false, authenticated: true, username: nil) // 很老的版本没有这个接口
+            return AuthInfo(enabled: false, authenticated: true, username: nil)
         }
     }
 
@@ -370,12 +280,12 @@ final class ServerClient {
         } catch let e as URLError {
             throw APIError.network(Self.describe(e))
         }
-        guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有正常响应") }
+        guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有响应") }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
         }
         guard let value = Self.sessionCookie(from: http, url: r.url!) else {
-            throw APIError.invalid("登录成功了，但服务器没有给出会话，请确认地址指向 frog")
+            throw APIError.invalid("服务器未返回登录会话")
         }
         cookie = value
         SessionVault.set(value, for: config.id)
@@ -387,7 +297,7 @@ final class ServerClient {
         let access = file.startAccessingSecurityScopedResource()
         defer { if access { file.stopAccessingSecurityScopedResource() } }
         let content: Data
-        do { content = try Data(contentsOf: file) } catch { throw APIError.invalid("读不了文件「\(file.lastPathComponent)」") }
+        do { content = try Data(contentsOf: file) } catch { throw APIError.invalid("无法读取「\(file.lastPathComponent)」") }
         return try await upload(path, name: file.lastPathComponent, data: content)
     }
 
@@ -420,7 +330,6 @@ final class ServerClient {
         if let c = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url).first(where: { $0.name == cookieName }) {
             return c.value
         }
-        // 兜底：自己解析 Set-Cookie
         guard let raw = http.value(forHTTPHeaderField: "Set-Cookie"),
               let range = raw.range(of: "\(cookieName)=") else { return nil }
         let rest = raw[range.upperBound...]
@@ -434,25 +343,25 @@ final class ServerClient {
             return String(s.prefix(200))
         }
         switch status {
-        case 403: return "服务器拒绝了请求（403）"
-        case 404: return "找不到这个接口（404），请确认地址指向 frog 并且版本够新"
-        case 429: return "尝试太频繁，请稍后再试"
-        case 502, 503, 504: return "服务器暂时不可用（\(status)）"
+        case 403: return "请求被拒绝（403）"
+        case 404: return "接口不存在（404）"
+        case 429: return "请求过于频繁"
+        case 502, 503, 504: return "隧道或主机不可达（\(status)）"
         default: return "请求失败（\(status)）"
         }
     }
 
     static func describe(_ e: URLError) -> String {
         switch e.code {
-        case .cannotConnectToHost: return "连不上服务器：端口没开或服务没启动"
-        case .cannotFindHost, .dnsLookupFailed: return "找不到这个地址，请检查域名或 IP"
-        case .timedOut: return "连接超时：请检查网络、防火墙或安全组"
-        case .notConnectedToInternet, .networkConnectionLost: return "网络断开了"
+        case .cannotConnectToHost: return "无法连接主机"
+        case .cannotFindHost, .dnsLookupFailed: return "找不到主机地址"
+        case .timedOut: return "连接超时"
+        case .notConnectedToInternet, .networkConnectionLost: return "网络已断开"
         case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
              .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot:
-            return "HTTPS 证书有问题，无法建立安全连接"
-        case .appTransportSecurityRequiresSecureConnection: return "系统拦截了明文 HTTP 连接"
-        default: return "网络错误：\(e.localizedDescription)"
+            return "TLS 握手失败"
+        case .appTransportSecurityRequiresSecureConnection: return "系统拦截了明文 HTTP"
+        default: return e.localizedDescription
         }
     }
 }

@@ -7,7 +7,11 @@ license; the full license texts follow.
 
 Go (compiled into frogbot):
   - Go standard library and runtime           BSD-3-Clause
-  - golang.org/x/crypto v0.31.0 (bcrypt)       BSD-3-Clause
+  - golang.org/x/crypto v0.33.0               BSD-3-Clause
+  - github.com/metacubex/utls v1.8.4          BSD-3-Clause / MPL-2.0
+  - github.com/hashicorp/yamux v0.1.2         MPL-2.0
+  - github.com/andybalholm/brotli v1.0.6      MIT
+  - github.com/klauspost/compress v1.17.9     BSD-3-Clause
 
 Web UI (bundled into the embedded frontend):
   - react                        19.3.1    MIT

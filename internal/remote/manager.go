@@ -1,9 +1,7 @@
 package remote
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"crypto/tls"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,21 +16,27 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	ModeOff    = "off"
-	ModeQuick  = "quick"  // 免服务器一键免费云穿透（Cloudflare Quick Tunnel）
-	ModeBridge = "bridge" // 自建加密中转穿透（frogbot bridge）
-	ModeDirect = "direct" // 直连加密模式（内置自签 TLS 1.3 + 指纹钉扎）
+	ModeOff     = "off"
+	ModeReality = "reality" // sing-box VLESS-Reality 隐身直连（云服务器 / 公网 IPv4 / IPv6）
+	ModeP2P     = "p2p"     // WireGuard 式 UDP P2P 打洞穿透（家庭内网无公网端口）
 
 	pairTTL = 10 * time.Minute
 )
 
+type devIDCtxKey struct{}
+
 type PairedDevice struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
-	TokenHash  string    `json:"token_hash"`
+	UUID       string    `json:"uuid"`
+	PeerID     string    `json:"peer_id"`
+	PeerPSK    string    `json:"peer_psk"`
+	Activated  bool      `json:"activated"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	LastSeenAt time.Time `json:"last_seen_at"`
 }
@@ -45,22 +49,31 @@ type PublicDevice struct {
 }
 
 type Config struct {
-	Mode          string         `json:"mode"`
-	DirectListen  string         `json:"direct_listen"`
-	PublicHost    string         `json:"public_host"`
-	BridgeURI     string         `json:"bridge_uri"`
-	ServerName    string         `json:"server_name"`
-	TunnelID      string         `json:"tunnel_id"`
-	GatewaySecret string         `json:"gateway_secret"`
-	Devices       []PairedDevice `json:"devices"`
+	Mode           string         `json:"mode"`
+	RealityListen  string         `json:"reality_listen"`
+	P2PListen      string         `json:"p2p_listen"`
+	PublicHost     string         `json:"public_host"`
+	SNI            string         `json:"sni"`
+	CamouflageDest string         `json:"camouflage_dest,omitempty"`
+	ServerName     string         `json:"server_name"`
+	RealityPrivKey string         `json:"reality_priv_key"`
+	RealityPubKey  string         `json:"reality_pub_key"`
+	RealityShortID string         `json:"reality_short_id"`
+	P2PPrivKey     string         `json:"p2p_priv_key"`
+	P2PPubKey      string         `json:"p2p_pub_key"`
+	Devices        []PairedDevice `json:"devices"`
+
+	// 兼容旧版配置文件平滑升级
+	LegacyDirectListen string `json:"direct_listen,omitempty"`
 }
 
 type SaveInput struct {
-	Mode         string `json:"mode"`
-	DirectListen string `json:"direct_listen"`
-	PublicHost   string `json:"public_host"`
-	BridgeURI    string `json:"bridge_uri"`
-	ServerName   string `json:"server_name"`
+	Mode          string `json:"mode"`
+	RealityListen string `json:"reality_listen"`
+	P2PListen     string `json:"p2p_listen"`
+	PublicHost    string `json:"public_host"`
+	SNI           string `json:"sni"`
+	ServerName    string `json:"server_name"`
 }
 
 type StatusView struct {
@@ -68,14 +81,13 @@ type StatusView struct {
 	Ready         bool           `json:"ready"`
 	StatusText    string         `json:"status_text"`
 	Error         string         `json:"error,omitempty"`
-	EndpointURL   string         `json:"endpoint_url,omitempty"`
-	TLSPin        string         `json:"tls_pin,omitempty"`
-	DirectListen  string         `json:"direct_listen"`
+	RealityListen string         `json:"reality_listen"`
+	P2PListen     string         `json:"p2p_listen"`
 	PublicHost    string         `json:"public_host"`
-	BridgeURI     string         `json:"bridge_uri"`
+	SNI           string         `json:"sni"`
 	ServerName    string         `json:"server_name"`
 	DetectedIP    string         `json:"detected_ip"`
-	BridgeCommand string         `json:"bridge_command"`
+	Candidates    []string       `json:"candidates,omitempty"`
 	Devices       []PublicDevice `json:"devices"`
 }
 
@@ -85,49 +97,44 @@ type PairResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-type pendingPair struct {
-	expires time.Time
-}
-
-type failBucket struct {
-	count int
-	until time.Time
-}
-
 type Manager struct {
 	dataDir string
 	app     http.Handler
 
-	mu          sync.RWMutex
-	cfg         Config
-	pairs       map[string]pendingPair
-	fails       map[string]failBucket
+	internalLn   *chanListener
+	internalHTTP *http.Server
+
+	mu            sync.RWMutex
+	cfg           Config
 	lastTouchSave time.Time
 
-	// 当前激活的运行时
-	directLn  net.Listener
-	directSv  *http.Server
-	directPin string
-	directPort string
-	directErr string
-
-	bridgeCli *bridgeTunnelClient
-	bridgeParsed parsedBridgeURI
-
-	quickTun *quickTunnel
+	realityInb *realityInbound
+	p2pInb     *p2pInbound
+	runtimeErr string
 }
 
 func NewManager(dataDir string, app http.Handler) (*Manager, error) {
 	m := &Manager{
-		dataDir: dataDir,
-		app:     app,
-		pairs:   map[string]pendingPair{},
-		fails:   map[string]failBucket{},
+		dataDir:    dataDir,
+		app:        app,
+		internalLn: newChanListener(),
 	}
+	m.internalHTTP = &http.Server{
+		Handler:           m.tunnelHTTPHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       95 * time.Second,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if tc, ok := c.(*taggedConn); ok {
+				return context.WithValue(ctx, devIDCtxKey{}, tc.devID)
+			}
+			return ctx
+		},
+	}
+	go func() { _ = m.internalHTTP.Serve(m.internalLn) }()
+
 	m.loadConfig()
 	if err := m.applyRuntimeLocked(); err != nil {
-		// 启动时不因远程端口被占用而阻止主进程，记录在状态中供界面展示
-		m.directErr = err.Error()
+		m.runtimeErr = err.Error()
 	}
 	return m, nil
 }
@@ -141,27 +148,76 @@ func (m *Manager) loadConfig() {
 	if raw, err := os.ReadFile(m.cfgPath()); err == nil {
 		_ = json.Unmarshal(raw, &cfg)
 	}
-	if cfg.Mode == "" {
+	switch cfg.Mode {
+	case ModeOff, ModeReality, ModeP2P:
+	case "direct":
+		cfg.Mode = ModeReality
+	default:
 		cfg.Mode = ModeOff
 	}
-	if cfg.DirectListen == "" {
-		cfg.DirectListen = ":8443"
+	if cfg.RealityListen == "" {
+		if cfg.LegacyDirectListen != "" {
+			cfg.RealityListen = cfg.LegacyDirectListen
+		} else {
+			cfg.RealityListen = ":8443"
+		}
+	}
+	cfg.LegacyDirectListen = ""
+	if cfg.P2PListen == "" {
+		cfg.P2PListen = ":51820"
+	}
+	if cfg.SNI == "" {
+		cfg.SNI = DefaultRealitySNI
 	}
 	if cfg.ServerName == "" {
 		if h, err := os.Hostname(); err == nil && h != "" {
 			cfg.ServerName = h
 		} else {
-			cfg.ServerName = "我的电脑"
+			cfg.ServerName = "frog"
 		}
 	}
-	if len(cfg.TunnelID) < 24 {
-		cfg.TunnelID = randomHex(12)
+	ensureKeys(&cfg)
+
+	// 过滤掉无加密凭证的旧版残留设备记录
+	validDevs := cfg.Devices[:0]
+	now := time.Now()
+	for _, d := range cfg.Devices {
+		if d.UUID == "" || len(d.PeerID) != 16 || len(d.PeerPSK) != 64 {
+			continue
+		}
+		if !d.Activated && !d.ExpiresAt.IsZero() && now.After(d.ExpiresAt) {
+			continue
+		}
+		validDevs = append(validDevs, d)
 	}
-	if len(cfg.GatewaySecret) < 24 {
-		cfg.GatewaySecret = randomHex(12)
-	}
+	cfg.Devices = validDevs
+
 	m.cfg = cfg
 	_ = m.saveConfigLocked()
+}
+
+func ensureKeys(cfg *Config) {
+	if pub, err := RealityPublicKeyFromPrivate(cfg.RealityPrivKey); err == nil {
+		cfg.RealityPubKey = pub
+	} else {
+		priv, pub, err := GenerateRealityKeyPair()
+		if err == nil {
+			cfg.RealityPrivKey, cfg.RealityPubKey = priv, pub
+		}
+	}
+	if len(cfg.RealityShortID) != 16 {
+		cfg.RealityShortID = randomHex(8)
+	} else if _, err := hex.DecodeString(cfg.RealityShortID); err != nil {
+		cfg.RealityShortID = randomHex(8)
+	}
+	if pub, err := RealityPublicKeyFromPrivate(cfg.P2PPrivKey); err == nil {
+		cfg.P2PPubKey = pub
+	} else {
+		priv, pub, err := GenerateRealityKeyPair()
+		if err == nil {
+			cfg.P2PPrivKey, cfg.P2PPubKey = priv, pub
+		}
+	}
 }
 
 func (m *Manager) saveConfigLocked() error {
@@ -186,124 +242,120 @@ func (m *Manager) saveConfigLocked() error {
 
 func (m *Manager) Close() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.stopRuntimeLocked()
+	m.mu.Unlock()
+	_ = m.internalLn.Close()
+	_ = m.internalHTTP.Close()
 }
 
 func (m *Manager) stopRuntimeLocked() {
-	if m.directLn != nil {
-		_ = m.directLn.Close()
-		m.directLn = nil
+	if m.realityInb != nil {
+		_ = m.realityInb.Close()
+		m.realityInb = nil
 	}
-	if m.directSv != nil {
-		_ = m.directSv.Close()
-		m.directSv = nil
+	if m.p2pInb != nil {
+		_ = m.p2pInb.Close()
+		m.p2pInb = nil
 	}
-	m.directPin = ""
-	m.directPort = ""
-	m.directErr = ""
-
-	if m.bridgeCli != nil {
-		b := m.bridgeCli
-		m.bridgeCli = nil
-		go b.Close()
-	}
-	if m.quickTun != nil {
-		q := m.quickTun
-		m.quickTun = nil
-		go q.Close()
-	}
+	m.runtimeErr = ""
 }
 
 func (m *Manager) applyRuntimeLocked() error {
 	m.stopRuntimeLocked()
-	gw := m.gatewayHandler()
-
 	switch m.cfg.Mode {
 	case ModeOff:
 		return nil
 
-	case ModeDirect:
-		cert, fp, err := EnsureCert(
-			filepath.Join(m.dataDir, "remote_tls.crt"),
-			filepath.Join(m.dataDir, "remote_tls.key"),
-		)
-		if err != nil {
-			return err
-		}
-		listen := strings.TrimSpace(m.cfg.DirectListen)
-		if listen == "" {
-			listen = ":8443"
-		}
-		if !strings.Contains(listen, ":") {
-			listen = ":" + listen
-		}
-		ln, err := tls.Listen("tcp", listen, &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS13,
+	case ModeReality:
+		inb, err := startRealityInbound(realityServerParams{
+			Listen:         m.cfg.RealityListen,
+			SNI:            m.cfg.SNI,
+			CamouflageDest: m.cfg.CamouflageDest,
+			PrivateKeyB64:  m.cfg.RealityPrivKey,
+			ShortIDHex:     m.cfg.RealityShortID,
+			Router:         m.routeTunnelConn,
 		})
 		if err != nil {
-			return fmt.Errorf("监听 %s 失败: %w", listen, err)
+			return err
 		}
-		_, port, _ := net.SplitHostPort(ln.Addr().String())
-		sv := &http.Server{
-			Handler:           gw,
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       95 * time.Second,
-		}
-		m.directLn = ln
-		m.directSv = sv
-		m.directPin = fp
-		m.directPort = port
-		go func() { _ = sv.Serve(ln) }()
+		m.realityInb = inb
+		m.syncPeersLocked()
 		return nil
 
-	case ModeBridge:
-		cli, parsed, err := startBridgeTunnelClient(m.cfg.BridgeURI, m.cfg.TunnelID, gw)
+	case ModeP2P:
+		inb, err := startP2PInbound(m.cfg.P2PListen, m.cfg.P2PPrivKey, m.routeTunnelConn)
 		if err != nil {
 			return err
 		}
-		m.bridgeCli = cli
-		m.bridgeParsed = parsed
-		return nil
-
-	case ModeQuick:
-		qt, err := startQuickTunnel(m.dataDir, gw)
-		if err != nil {
-			return err
+		m.p2pInb = inb
+		// 若配置使用了随机端口 :0，固化实际端口以便重启后已配对设备仍能直连
+		if strings.HasSuffix(strings.TrimSpace(m.cfg.P2PListen), ":0") && inb.Port() > 0 {
+			m.cfg.P2PListen = fmt.Sprintf(":%d", inb.Port())
 		}
-		m.quickTun = qt
+		m.syncPeersLocked()
 		return nil
 
 	default:
-		return fmt.Errorf("未知的远程模式: %s", m.cfg.Mode)
+		return fmt.Errorf("未知的隧道模式: %s", m.cfg.Mode)
+	}
+}
+
+func (m *Manager) syncPeersLocked() {
+	now := time.Now()
+	var ids, uuids []string
+	var p2pCreds []P2PPeerCredential
+
+	pruned := m.cfg.Devices[:0]
+	for _, d := range m.cfg.Devices {
+		if !d.Activated && !d.ExpiresAt.IsZero() && now.After(d.ExpiresAt) {
+			continue
+		}
+		pruned = append(pruned, d)
+		ids = append(ids, d.ID)
+		uuids = append(uuids, d.UUID)
+
+		var pid [8]byte
+		var psk [32]byte
+		if _, err1 := hex.Decode(pid[:], []byte(d.PeerID)); err1 == nil {
+			if _, err2 := hex.Decode(psk[:], []byte(d.PeerPSK)); err2 == nil {
+				p2pCreds = append(p2pCreds, P2PPeerCredential{
+					DevID:   d.ID,
+					PeerID:  pid,
+					PeerPSK: psk,
+				})
+			}
+		}
+	}
+	m.cfg.Devices = pruned
+
+	if m.realityInb != nil {
+		m.realityInb.UpdateUsers(ids, uuids)
+	}
+	if m.p2pInb != nil {
+		m.p2pInb.UpdatePeers(p2pCreds)
 	}
 }
 
 func (m *Manager) UpdateConfig(in SaveInput) (StatusView, error) {
 	mode := strings.TrimSpace(in.Mode)
 	switch mode {
-	case ModeOff, ModeQuick, ModeBridge, ModeDirect:
+	case ModeOff, ModeReality, ModeP2P:
 	default:
-		return StatusView{}, errors.New("不支持的远程模式")
-	}
-	if mode == ModeBridge {
-		if _, err := parseBridgeURI(in.BridgeURI); err != nil {
-			return StatusView{}, err
-		}
+		return StatusView{}, errors.New("不支持的隧道模式")
 	}
 
 	m.mu.Lock()
 	prev := m.cfg
 	m.cfg.Mode = mode
-	if strings.TrimSpace(in.DirectListen) != "" {
-		m.cfg.DirectListen = strings.TrimSpace(in.DirectListen)
+	if v := strings.TrimSpace(in.RealityListen); v != "" {
+		m.cfg.RealityListen = normalizeListenAddr(v, ":8443")
 	}
-	m.cfg.PublicHost = strings.TrimSpace(in.PublicHost)
-	if strings.TrimSpace(in.BridgeURI) != "" || mode != ModeBridge {
-		if strings.TrimSpace(in.BridgeURI) != "" {
-			m.cfg.BridgeURI = strings.TrimSpace(in.BridgeURI)
-		}
+	if v := strings.TrimSpace(in.P2PListen); v != "" {
+		m.cfg.P2PListen = normalizeListenAddr(v, ":51820")
+	}
+	m.cfg.PublicHost = cleanHostInput(in.PublicHost)
+	if sni := cleanHostInput(in.SNI); sni != "" {
+		m.cfg.SNI = sni
 	}
 	if name := strings.TrimSpace(in.ServerName); name != "" {
 		m.cfg.ServerName = name
@@ -320,6 +372,16 @@ func (m *Manager) UpdateConfig(in SaveInput) (StatusView, error) {
 	return st, nil
 }
 
+// SetCamouflageDest 仅供离线单元测试覆盖 REALITY 伪装回落目标。
+func (m *Manager) SetCamouflageDest(dest string) {
+	m.mu.Lock()
+	m.cfg.CamouflageDest = dest
+	if m.cfg.Mode == ModeReality {
+		_ = m.applyRuntimeLocked()
+	}
+	m.mu.Unlock()
+}
+
 func (m *Manager) Status() StatusView {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -330,134 +392,160 @@ func (m *Manager) statusLocked() StatusView {
 	detected := detectAdvertiseIP()
 	devs := make([]PublicDevice, 0, len(m.cfg.Devices))
 	for _, d := range m.cfg.Devices {
+		if !d.Activated {
+			continue
+		}
+		name := d.Name
+		if name == "" {
+			name = "移动设备"
+		}
 		devs = append(devs, PublicDevice{
 			ID:         d.ID,
-			Name:       d.Name,
+			Name:       name,
 			CreatedAt:  d.CreatedAt,
 			LastSeenAt: d.LastSeenAt,
 		})
 	}
 	view := StatusView{
 		Mode:          m.cfg.Mode,
-		DirectListen:  m.cfg.DirectListen,
+		RealityListen: m.cfg.RealityListen,
+		P2PListen:     m.cfg.P2PListen,
 		PublicHost:    m.cfg.PublicHost,
-		BridgeURI:     m.cfg.BridgeURI,
+		SNI:           m.cfg.SNI,
 		ServerName:    m.cfg.ServerName,
 		DetectedIP:    detected,
-		BridgeCommand: "frogbot bridge -listen :8443",
 		Devices:       devs,
 	}
 
 	switch m.cfg.Mode {
 	case ModeOff:
-		view.StatusText = "未开启远程访问"
+		view.StatusText = "已关闭"
 
-	case ModeDirect:
-		if m.directErr != "" {
-			view.Error = m.directErr
+	case ModeReality:
+		if m.runtimeErr != "" {
+			view.Error = m.runtimeErr
 			view.StatusText = "启动失败"
 			break
 		}
-		if m.directLn != nil {
+		if m.realityInb != nil {
 			host := m.cfg.PublicHost
 			if host == "" {
 				host = detected
 			}
-			// 若用户填了带端口或纯主机，统一规整
-			if strings.Contains(host, "://") {
-				if u, err := url.Parse(host); err == nil && u.Hostname() != "" {
-					host = u.Hostname()
-				}
-			}
-			if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
-				host = h
-			}
 			view.Ready = true
-			view.TLSPin = m.directPin
-			view.EndpointURL = fmt.Sprintf("https://%s/r/%s", net.JoinHostPort(host, m.directPort), m.cfg.GatewaySecret)
-			view.StatusText = "直连加密监听中（TLS 1.3 + 证书指纹锁定）"
+			view.StatusText = fmt.Sprintf("VLESS-Reality · %s", net.JoinHostPort(host, m.realityInb.Port()))
 		}
 
-	case ModeBridge:
-		if m.bridgeCli != nil {
-			ok, lastErr := m.bridgeCli.Status()
-			view.TLSPin = m.bridgeParsed.PinHex
-			view.EndpointURL = fmt.Sprintf("https://%s/t/%s/r/%s", m.bridgeParsed.HostPort, m.cfg.TunnelID, m.cfg.GatewaySecret)
-			if ok {
-				view.Ready = true
-				view.StatusText = "已连通自建加密中转节点（本机零端口暴露）"
+	case ModeP2P:
+		if m.runtimeErr != "" {
+			view.Error = m.runtimeErr
+			view.StatusText = "启动失败"
+			break
+		}
+		if m.p2pInb != nil {
+			cands := m.p2pInb.CandidateEndpoints(m.cfg.PublicHost)
+			view.Ready = true
+			view.Candidates = cands
+			if len(cands) > 0 {
+				view.StatusText = fmt.Sprintf("P2P UDP · %s", cands[0])
 			} else {
-				view.StatusText = "正在连接中转节点…"
-				view.Error = lastErr
-			}
-		}
-
-	case ModeQuick:
-		if m.quickTun != nil {
-			base, stText, lastErr := m.quickTun.State()
-			view.StatusText = stText
-			view.Error = lastErr
-			if base != "" {
-				view.Ready = true
-				view.EndpointURL = strings.TrimRight(base, "/") + "/r/" + m.cfg.GatewaySecret
+				view.StatusText = fmt.Sprintf("P2P UDP · :%d", m.p2pInb.Port())
 			}
 		}
 	}
 	return view
 }
 
-// CreatePair 生成 10 分钟有效的一次性配对码与矢量二维码。
+// CreatePair 为新客户端签发独立密钥凭证（VLESS UUID 或 P2P PeerKey），生成标准连接码与二维码。
+// 未在 10 分钟内完成首次握手的凭证自动作废；一旦连接即永久绑定该设备，支持按台随时吊销。
 func (m *Manager) CreatePair() (PairResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	st := m.statusLocked()
-	if !st.Ready || st.EndpointURL == "" {
-		if st.Mode == ModeOff {
-			return PairResponse{}, errors.New("请先选择一种远程连接模式并开启")
-		}
-		return PairResponse{}, errors.New("加密通道尚未就绪，请稍候几秒再试")
+
+	if m.cfg.Mode == ModeOff {
+		return PairResponse{}, errors.New("请先开启加密隧道")
 	}
 
 	now := time.Now()
-	for k, p := range m.pairs {
-		if now.After(p.expires) {
-			delete(m.pairs, k)
-		}
-	}
-	tok := randomHex(16)
 	exp := now.Add(pairTTL)
-	m.pairs[tok] = pendingPair{expires: exp}
+	dev := PairedDevice{
+		ID:         "dev_" + randomHex(6),
+		Name:       "移动设备",
+		UUID:       newUUID(),
+		PeerID:     randomHex(8),
+		PeerPSK:    randomHex(32),
+		Activated:  false,
+		ExpiresAt:  exp,
+		CreatedAt:  now,
+		LastSeenAt: now,
+	}
 
-	q := url.Values{}
-	q.Set("u", st.EndpointURL)
-	q.Set("t", tok)
-	if st.TLSPin != "" {
-		q.Set("fp", st.TLSPin)
+	var uri string
+	switch m.cfg.Mode {
+	case ModeReality:
+		if m.realityInb == nil {
+			return PairResponse{}, errors.New("VLESS-Reality 尚未就绪")
+		}
+		host := m.cfg.PublicHost
+		if host == "" {
+			host = detectAdvertiseIP()
+		}
+		uri = BuildRealityURI(RealityClientOptions{
+			ServerAddr: net.JoinHostPort(host, m.realityInb.Port()),
+			UUID:       dev.UUID,
+			SNI:        m.cfg.SNI,
+			PublicKey:  m.cfg.RealityPubKey,
+			ShortID:    m.cfg.RealityShortID,
+			ServerName: m.cfg.ServerName,
+		})
+
+	case ModeP2P:
+		if m.p2pInb == nil {
+			return PairResponse{}, errors.New("P2P 隧道尚未就绪")
+		}
+		cands := m.p2pInb.CandidateEndpoints(m.cfg.PublicHost)
+		uri = BuildP2PURI(P2PClientOptions{
+			PeerIDHex:    dev.PeerID,
+			PeerPSKHex:   dev.PeerPSK,
+			ServerPubB64: m.cfg.P2PPubKey,
+			Candidates:   cands,
+			ServerName:   m.cfg.ServerName,
+		})
+
+	default:
+		return PairResponse{}, errors.New("不支持的隧道模式")
 	}
-	if st.ServerName != "" {
-		q.Set("n", st.ServerName)
-	}
-	code := "frogpair://connect?" + q.Encode()
-	svg, err := EncodeQRSVG(code)
+
+	svg, err := EncodeQRSVG(uri)
 	if err != nil {
 		return PairResponse{}, err
 	}
+
+	m.cfg.Devices = append(m.cfg.Devices, dev)
+	m.syncPeersLocked()
+	_ = m.saveConfigLocked()
+
 	return PairResponse{
-		PairCode:  code,
+		PairCode:  uri,
 		QRSVG:     svg,
 		ExpiresAt: exp,
 	}, nil
 }
 
-// RotateGatewaySecret 重置随机安全路径并清空所有已配对设备。
+// RotateGatewaySecret 重新生成服务端密钥对并可清空全部授权设备。
 func (m *Manager) RotateGatewaySecret(clearDevices bool) StatusView {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.cfg.GatewaySecret = randomHex(12)
-	m.pairs = map[string]pendingPair{}
+	m.cfg.RealityPrivKey = ""
+	m.cfg.RealityPubKey = ""
+	m.cfg.RealityShortID = ""
+	m.cfg.P2PPrivKey = ""
+	m.cfg.P2PPubKey = ""
+	ensureKeys(&m.cfg)
 	if clearDevices {
 		m.cfg.Devices = nil
 	}
+	_ = m.applyRuntimeLocked()
 	_ = m.saveConfigLocked()
 	return m.statusLocked()
 }
@@ -466,8 +554,126 @@ func (m *Manager) RevokeDevice(id string) StatusView {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cfg.Devices = slices.DeleteFunc(m.cfg.Devices, func(d PairedDevice) bool { return d.ID == id })
+	m.syncPeersLocked()
 	_ = m.saveConfigLocked()
 	return m.statusLocked()
+}
+
+// ---------- 服务端加密隧道流量路由（直达本机 frog + 内网设备） ----------
+
+func (m *Manager) touchAndVerifyDevice(devID, reportedName string) (string, bool) {
+	now := time.Now()
+	cleanName := strings.TrimSpace(reportedName)
+	if utf8.RuneCountInString(cleanName) > 48 {
+		cleanName = string([]rune(cleanName)[:48])
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.cfg.Devices {
+		d := &m.cfg.Devices[i]
+		if d.ID != devID {
+			continue
+		}
+		if !d.Activated {
+			if !d.ExpiresAt.IsZero() && now.After(d.ExpiresAt) {
+				m.syncPeersLocked()
+				return "", false
+			}
+			d.Activated = true
+			d.ExpiresAt = time.Time{}
+			if cleanName != "" {
+				d.Name = cleanName
+			}
+			d.LastSeenAt = now
+			m.lastTouchSave = now
+			_ = m.saveConfigLocked()
+			return d.Name, true
+		}
+		changed := false
+		if cleanName != "" && cleanName != d.Name {
+			d.Name = cleanName
+			changed = true
+		}
+		d.LastSeenAt = now
+		if changed || now.Sub(m.lastTouchSave) > time.Minute {
+			m.lastTouchSave = now
+			_ = m.saveConfigLocked()
+		}
+		return d.Name, true
+	}
+	return "", false
+}
+
+func (m *Manager) routeTunnelConn(ctx context.Context, devID string, conn net.Conn, dest TargetAddr) {
+	if _, ok := m.touchAndVerifyDevice(devID, ""); !ok {
+		return
+	}
+	target := dest.String()
+	host := dest.Host
+
+	if isFrogInternalHost(host) {
+		tc := &taggedConn{Conn: conn, devID: devID, closed: make(chan struct{})}
+		if !m.internalLn.Push(tc) {
+			return
+		}
+		select {
+		case <-tc.closed:
+		case <-ctx.Done():
+			_ = tc.Close()
+		}
+		return
+	}
+
+	// 注意：上层 VLESS NewConnectionEx 在函数返回时会关闭 conn；但对于 internalLn，我们需要接管或桥接！
+	if !isInternalTarget(host) {
+		return
+	}
+	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	lanConn, err := (&net.Dialer{}).DialContext(dctx, "tcp", target)
+	cancel()
+	if err != nil {
+		return
+	}
+	pipeBidirectional(conn, lanConn)
+}
+
+func (m *Manager) tunnelHTTPHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		devID, _ := r.Context().Value(devIDCtxKey{}).(string)
+		devName, ok := m.touchAndVerifyDevice(devID, r.Header.Get("X-Frog-Device-Name"))
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "设备授权已吊销"})
+			return
+		}
+
+		// 防跨站请求伪造（供外部 sing-box 浏览器访问内网面板时防护；原生 App 无 Origin 头直接放行）
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if origin := r.Header.Get("Origin"); origin != "" {
+				u, err := url.Parse(origin)
+				if err != nil || !strings.EqualFold(u.Host, r.Host) {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "拒绝跨站请求"})
+					return
+				}
+			}
+		}
+
+		if r.Method == http.MethodGet && r.URL.Path == "/api/auth/me" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"enabled":       false,
+				"authenticated": true,
+				"username":      devName,
+			})
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/auth/logout" {
+			m.RevokeDevice(devID)
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+
+		m.app.ServeHTTP(w, r)
+	})
 }
 
 // ---------- 管理端 HTTP 路由（挂在主服务 /api/settings/remote 下） ----------
@@ -509,201 +715,6 @@ func (m *Manager) AdminHandler() http.Handler {
 		writeJSON(w, http.StatusOK, m.RevokeDevice(r.PathValue("id")))
 	})
 	return mux
-}
-
-// ---------- 远程安全网关（隐藏路径 + 一次性配对 + 独立设备令牌鉴权） ----------
-
-func (m *Manager) gatewayHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-
-		// 1. 校验秘密入口路径 /r/{gatewaySecret}，不匹配一律静默返回 404，杜绝扫描器识别与爆破
-		if !strings.HasPrefix(r.URL.Path, "/r/") {
-			http.NotFound(w, r)
-			return
-		}
-		rest := strings.TrimPrefix(r.URL.Path, "/r/")
-		seg := rest
-		subPath := "/"
-		if idx := strings.IndexByte(rest, '/'); idx >= 0 {
-			seg = rest[:idx]
-			subPath = rest[idx:]
-		}
-
-		m.mu.RLock()
-		wantSecret := m.cfg.GatewaySecret
-		srvName := m.cfg.ServerName
-		m.mu.RUnlock()
-
-		if len(seg) != len(wantSecret) || subtle.ConstantTimeCompare([]byte(seg), []byte(wantSecret)) != 1 {
-			http.NotFound(w, r)
-			return
-		}
-
-		// 2. 同源检查（防跨站请求伪造；iOS/macOS 原生客户端无 Origin 头自然放行）
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			if origin := r.Header.Get("Origin"); origin != "" {
-				u, err := url.Parse(origin)
-				if err != nil || !strings.EqualFold(u.Host, r.Host) {
-					writeJSON(w, http.StatusForbidden, map[string]string{"error": "拒绝跨站请求"})
-					return
-				}
-			}
-		}
-
-		// 3. 一次性配对兑换接口
-		if r.Method == http.MethodPost && subPath == "/api/remote/pair" {
-			m.handlePairRedeem(w, r, srvName)
-			return
-		}
-
-		// 4. 登录态查询与退出
-		devName, devID, ok := m.authenticateDevice(r)
-		if r.Method == http.MethodGet && subPath == "/api/auth/me" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"enabled":       true,
-				"authenticated": ok,
-				"username":      devName,
-			})
-			return
-		}
-		if r.Method == http.MethodPost && subPath == "/api/auth/logout" {
-			if ok && devID != "" {
-				m.RevokeDevice(devID)
-			}
-			http.SetCookie(w, &http.Cookie{
-				Name:     "frogbot_session",
-				Value:    "",
-				Path:     "/",
-				MaxAge:   -1,
-				HttpOnly: true,
-				Secure:   true,
-				SameSite: http.SameSiteLaxMode,
-			})
-			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-			return
-		}
-
-		if !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "远程授权已失效，请在客户端重新扫码或粘贴配对码连接"})
-			return
-		}
-
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = subPath
-		r2.URL.RawPath = ""
-		m.app.ServeHTTP(w, r2)
-	})
-}
-
-func (m *Manager) handlePairRedeem(w http.ResponseWriter, r *http.Request, srvName string) {
-	ip := remoteIP(r)
-	now := time.Now()
-
-	m.mu.Lock()
-	if fb, exists := m.fails[ip]; exists && now.Before(fb.until) {
-		m.mu.Unlock()
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "尝试次数过多，请稍后再试"})
-		return
-	}
-	m.mu.Unlock()
-
-	var body struct {
-		Token      string `json:"token"`
-		DeviceName string `json:"device_name"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无效的配对请求"})
-		return
-	}
-	tok := strings.TrimSpace(body.Token)
-	devName := strings.TrimSpace(body.DeviceName)
-	if devName == "" {
-		devName = "移动设备"
-	}
-	if len([]rune(devName)) > 48 {
-		devName = string([]rune(devName)[:48])
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	p, ok := m.pairs[tok]
-	if !ok || now.After(p.expires) {
-		delete(m.pairs, tok)
-		fb := m.fails[ip]
-		fb.count++
-		if fb.count >= 6 {
-			fb.until = now.Add(5 * time.Minute)
-		}
-		m.fails[ip] = fb
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "配对码无效或已过期，请在电脑端重新生成"})
-		return
-	}
-	// 一次性立即销毁
-	delete(m.pairs, tok)
-	delete(m.fails, ip)
-
-	sessionToken := "fgr_" + randomHex(32)
-	sum := sha256.Sum256([]byte(sessionToken))
-	dev := PairedDevice{
-		ID:         "dev_" + randomHex(6),
-		Name:       devName,
-		TokenHash:  hex.EncodeToString(sum[:]),
-		CreatedAt:  now,
-		LastSeenAt: now,
-	}
-	m.cfg.Devices = append(m.cfg.Devices, dev)
-	_ = m.saveConfigLocked()
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "frogbot_session",
-		Value:    sessionToken,
-		Path:     "/",
-		MaxAge:   365 * 24 * 3600,
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	})
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"session":     sessionToken,
-		"server_name": srvName,
-		"device_id":   dev.ID,
-	})
-}
-
-func (m *Manager) authenticateDevice(r *http.Request) (name, id string, ok bool) {
-	c, err := r.Cookie("frogbot_session")
-	if err != nil || len(c.Value) < 32 {
-		return "", "", false
-	}
-	sum := sha256.Sum256([]byte(c.Value))
-	want := hex.EncodeToString(sum[:])
-
-	now := time.Now()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range m.cfg.Devices {
-		d := &m.cfg.Devices[i]
-		if len(d.TokenHash) == len(want) && subtle.ConstantTimeCompare([]byte(d.TokenHash), []byte(want)) == 1 {
-			d.LastSeenAt = now
-			if now.Sub(m.lastTouchSave) > time.Minute {
-				m.lastTouchSave = now
-				_ = m.saveConfigLocked()
-			}
-			return d.Name, d.ID, true
-		}
-	}
-	return "", "", false
-}
-
-func remoteIP(r *http.Request) string {
-	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return h
-	}
-	return r.RemoteAddr
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
