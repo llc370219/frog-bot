@@ -50,15 +50,39 @@ type ModelOption struct {
 
 // StatusView 返回服务器上 agy CLI 的可用性与缓存的模型/模式列表。
 type StatusView struct {
-	Installed    bool          `json:"installed"`
-	Path         string        `json:"path,omitempty"`
-	AgentVersion string        `json:"agent_version,omitempty"`
-	ProjectsRoot string        `json:"projects_root"`
-	Modes        []ModeOption  `json:"modes"`
-	Models       []ModelOption `json:"models"`
-	DefaultMode  string        `json:"default_mode"`
-	DefaultModel string        `json:"default_model,omitempty"`
-	Error        string        `json:"error,omitempty"`
+	Installed    bool            `json:"installed"`
+	Path         string          `json:"path,omitempty"`
+	AgentVersion string          `json:"agent_version,omitempty"`
+	ProjectsRoot string          `json:"projects_root"`
+	Modes        []ModeOption    `json:"modes"`
+	Models       []ModelOption   `json:"models"`
+	Commands     []CommandOption `json:"commands,omitempty"`
+	DefaultMode  string          `json:"default_mode"`
+	DefaultModel string          `json:"default_model,omitempty"`
+	Error        string          `json:"error,omitempty"`
+}
+
+// CommandOption 描述 agy 通过 available_commands_update 上报的可用斜杠命令。
+type CommandOption struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	InputHint   string `json:"input_hint,omitempty"`
+}
+
+// QueuedPrompt 描述忙碌期间排队等待（follow_up）或待插话（steer）的用户消息。
+type QueuedPrompt struct {
+	ID        string    `json:"id"`
+	Text      string    `json:"text"`
+	Behavior  string    `json:"behavior,omitempty"` // follow_up | steer
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SendResult 是发送消息的即时响应：空闲时立刻开跑，忙碌时返回排队/插话状态。
+type SendResult struct {
+	Queued    bool          `json:"queued"`
+	Behavior  string        `json:"behavior,omitempty"`
+	Message   *ChatMessage  `json:"message,omitempty"`
+	QueueItem *QueuedPrompt `json:"queue_item,omitempty"`
 }
 
 // SessionSummary 是会话列表里的一条记录。
@@ -71,6 +95,7 @@ type SessionSummary struct {
 	Model              string    `json:"model,omitempty"`
 	Busy               bool      `json:"busy"`
 	PendingPermissions int       `json:"pending_permissions"`
+	QueuedCount        int       `json:"queued_count"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
@@ -92,7 +117,9 @@ type ToolCall struct {
 	Name   string `json:"name"`
 	Title  string `json:"title,omitempty"`
 	Kind   string `json:"kind,omitempty"`
-	Status string `json:"status,omitempty"` // in_progress | completed | failed
+	Status string `json:"status,omitempty"` // pending | in_progress | completed | failed
+	Detail string `json:"detail,omitempty"` // 入参概要（命令/路径/关键词）
+	Output string `json:"output,omitempty"` // 执行结果或变更摘要
 }
 
 // PermissionReq 是 agy 在非全自动模式下发出的确认请求。
@@ -114,6 +141,7 @@ type Snapshot struct {
 	Session     SessionSummary  `json:"session"`
 	Messages    []ChatMessage   `json:"messages"`
 	Permissions []PermissionReq `json:"permissions"`
+	Queue       []QueuedPrompt  `json:"queue,omitempty"`
 	Streaming   string          `json:"streaming"`
 	Thinking    string          `json:"thinking"`
 	ThinkStart  int64           `json:"think_start,omitempty"`
@@ -123,6 +151,7 @@ type Snapshot struct {
 	MaxTokens   int64           `json:"max_tokens,omitempty"`
 	Modes       []ModeOption    `json:"modes"`
 	Models      []ModelOption   `json:"models"`
+	Commands    []CommandOption `json:"commands,omitempty"`
 }
 
 // StreamEvent 是 SSE 推送的单条事件。
@@ -169,6 +198,7 @@ type sessionRuntime struct {
 	busy       bool
 	msgs       []ChatMessage
 	perms      []*pendingPerm
+	queue      []QueuedPrompt
 	streaming  strings.Builder
 	thinking   strings.Builder
 	thinkStart time.Time
@@ -197,6 +227,7 @@ type Hub struct {
 	sessions  map[string]*sessionRuntime
 	modes     []ModeOption
 	models    []ModelOption
+	commands  []CommandOption
 	defMode   string
 	defModel  string
 	agentVer  string
@@ -517,6 +548,7 @@ func (h *Hub) Status(ctx context.Context) StatusView {
 	h.mu.Lock()
 	modes := slices.Clone(h.modes)
 	models := slices.Clone(h.models)
+	commands := slices.Clone(h.commands)
 	defMode := h.defMode
 	defModel := h.defModel
 	ver := h.agentVer
@@ -530,6 +562,7 @@ func (h *Hub) Status(ctx context.Context) StatusView {
 		ProjectsRoot: root,
 		Modes:        modes,
 		Models:       models,
+		Commands:     commands,
 		DefaultMode:  defMode,
 		DefaultModel: defModel,
 	}
@@ -550,6 +583,26 @@ func (h *Hub) Status(ctx context.Context) StatusView {
 
 // ---------- 会话（对话）管理 ----------
 
+type acpConfigOption struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Category     string `json:"category"`
+	CurrentValue string `json:"currentValue"`
+	Options      []struct {
+		Value       string `json:"value"`
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+	} `json:"options"`
+}
+
+type acpCommandWire struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Input       *struct {
+		Hint string `json:"hint,omitempty"`
+	} `json:"input,omitempty"`
+}
+
 type acpSessionMetaResp struct {
 	SessionID string `json:"sessionId"`
 	Models    struct {
@@ -563,6 +616,8 @@ type acpSessionMetaResp struct {
 		CurrentModeID  string       `json:"currentModeId"`
 		AvailableModes []ModeOption `json:"availableModes"`
 	} `json:"modes"`
+	ConfigOptions     []acpConfigOption `json:"configOptions"`
+	AvailableCommands []acpCommandWire  `json:"availableCommands"`
 }
 
 func (h *Hub) captureCapabilitiesLocked(resp acpSessionMetaResp) {
@@ -584,9 +639,75 @@ func (h *Hub) captureCapabilitiesLocked(resp acpSessionMetaResp) {
 			h.models = models
 		}
 	}
+	for _, cfg := range resp.ConfigOptions {
+		cat := strings.ToLower(cfg.Category)
+		if cat == "" {
+			cat = strings.ToLower(cfg.ID)
+		}
+		switch cat {
+		case "mode", "permission_mode":
+			if len(cfg.Options) > 0 {
+				modes := make([]ModeOption, 0, len(cfg.Options))
+				for _, o := range cfg.Options {
+					if o.Value != "" {
+						name := o.Name
+						if name == "" {
+							name = o.Value
+						}
+						modes = append(modes, ModeOption{ID: o.Value, Name: name, Description: o.Description})
+					}
+				}
+				if len(modes) > 0 {
+					h.modes = modes
+				}
+			}
+		case "model":
+			if len(cfg.Options) > 0 {
+				models := make([]ModelOption, 0, len(cfg.Options))
+				for _, o := range cfg.Options {
+					if o.Value != "" {
+						name := o.Name
+						if name == "" {
+							name = o.Value
+						}
+						models = append(models, ModelOption{ID: o.Value, Name: name})
+					}
+				}
+				if len(models) > 0 {
+					h.models = models
+				}
+			}
+			if cfg.CurrentValue != "" && h.defModel == "" {
+				h.defModel = cfg.CurrentValue
+			}
+		}
+	}
 	if resp.Models.CurrentModelID != "" && h.defModel == "" {
 		h.defModel = resp.Models.CurrentModelID
 	}
+	if len(resp.AvailableCommands) > 0 {
+		h.commands = toCommandOptions(resp.AvailableCommands)
+	}
+}
+
+func toCommandOptions(wire []acpCommandWire) []CommandOption {
+	out := make([]CommandOption, 0, len(wire))
+	for _, c := range wire {
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			continue
+		}
+		hint := ""
+		if c.Input != nil {
+			hint = strings.TrimSpace(c.Input.Hint)
+		}
+		out = append(out, CommandOption{
+			Name:        name,
+			Description: strings.TrimSpace(c.Description),
+			InputHint:   hint,
+		})
+	}
+	return out
 }
 
 func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSummary, error) {
@@ -742,6 +863,7 @@ func (h *Hub) summaryFromRuntimeLocked(rt *sessionRuntime) SessionSummary {
 		Model:              rt.model,
 		Busy:               rt.busy,
 		PendingPermissions: pending,
+		QueuedCount:        len(rt.queue),
 		UpdatedAt:          rt.updatedAt,
 	}
 }
@@ -1027,22 +1149,95 @@ func (h *Hub) DeleteSession(ctx context.Context, sessionID string) error {
 
 // ---------- 对话收发与事件流 ----------
 
-func (h *Hub) SendPrompt(ctx context.Context, sessionID, projectID, text string) (ChatMessage, error) {
+// SendPrompt 发送一条指令给 agy：空闲时立刻执行；忙碌时按 Pi RPC 模式支持 follow_up 排队或 steer 打断插话。
+func (h *Hub) SendPrompt(ctx context.Context, sessionID, projectID, text, behavior string) (SendResult, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return ChatMessage{}, errors.New("消息内容不能为空")
+		return SendResult{}, errors.New("消息内容不能为空")
+	}
+	if behavior != "" && behavior != "follow_up" && behavior != "steer" {
+		return SendResult{}, errors.New("behavior 只能为空、follow_up 或 steer")
 	}
 	c, rt, err := h.ensureLoaded(ctx, sessionID, projectID)
 	if err != nil {
-		return ChatMessage{}, err
+		return SendResult{}, err
 	}
 
 	now := time.Now()
 	h.mu.Lock()
 	if rt.busy {
+		if behavior == "" {
+			behavior = "follow_up"
+		}
+		item := QueuedPrompt{
+			ID:        newShortID("qp"),
+			Text:      text,
+			Behavior:  behavior,
+			CreatedAt: now,
+		}
+		if behavior == "steer" {
+			// steer 插在普通 follow_up 之前（但保持多条 steer 的提交顺序）
+			insertAt := 0
+			for insertAt < len(rt.queue) && rt.queue[insertAt].Behavior == "steer" {
+				insertAt++
+			}
+			rt.queue = slices.Insert(rt.queue, insertAt, item)
+			for _, p := range rt.perms {
+				if p.req.Status == "pending" {
+					p.req.Status = "cancelled"
+					select {
+					case p.ch <- "":
+					default:
+					}
+					h.broadcastLocked(rt, "permission.upsert", p.req)
+				}
+			}
+		} else {
+			rt.queue = append(rt.queue, item)
+		}
+		h.broadcastLocked(rt, "queue.update", slices.Clone(rt.queue))
+		h.broadcastLocked(rt, "session.meta", map[string]any{
+			"session":     h.summaryFromRuntimeLocked(rt),
+			"used_tokens": rt.usedTokens,
+			"max_tokens":  rt.maxTokens,
+		})
 		h.mu.Unlock()
-		return ChatMessage{}, errors.New("agy 正在执行上一轮，请等待完成或先点击停止")
+		if behavior == "steer" && c != nil && c.alive() {
+			_ = c.notify("session/cancel", map[string]any{"sessionId": sessionID})
+		}
+		return SendResult{Queued: true, Behavior: behavior, QueueItem: &item}, nil
 	}
+
+	userMsg := h.startTurnLocked(rt, sessionID, text, now)
+	h.mu.Unlock()
+
+	go h.runPromptLoop(c, rt, text)
+	return SendResult{Queued: false, Message: &userMsg}, nil
+}
+
+// CancelQueued 从排队队列中撤回一条尚未开始执行的 follow_up / steer 消息。
+func (h *Hub) CancelQueued(sessionID, queueID string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rt := h.sessions[sessionID]
+	if rt == nil {
+		return errors.New("会话不存在")
+	}
+	idx := slices.IndexFunc(rt.queue, func(q QueuedPrompt) bool { return q.ID == queueID })
+	if idx < 0 {
+		return errors.New("队列里没有这条待发消息")
+	}
+	rt.queue = slices.Delete(rt.queue, idx, idx+1)
+	h.broadcastLocked(rt, "queue.update", slices.Clone(rt.queue))
+	h.broadcastLocked(rt, "session.meta", map[string]any{
+		"session":     h.summaryFromRuntimeLocked(rt),
+		"used_tokens": rt.usedTokens,
+		"max_tokens":  rt.maxTokens,
+	})
+	return nil
+}
+
+func (h *Hub) startTurnLocked(rt *sessionRuntime, sessionID, text string, now time.Time) ChatMessage {
 	userMsg := ChatMessage{
 		ID:        newShortID("umsg"),
 		Role:      "user",
@@ -1068,13 +1263,55 @@ func (h *Hub) SendPrompt(ctx context.Context, sessionID, projectID, text string)
 
 	h.broadcastLocked(rt, "message", userMsg)
 	h.broadcastLocked(rt, "status", map[string]any{"busy": true, "title": rt.title})
-	h.mu.Unlock()
-
-	go h.runPromptTurn(c, rt, text)
-	return userMsg, nil
+	return userMsg
 }
 
-func (h *Hub) runPromptTurn(c *acpClient, rt *sessionRuntime, text string) {
+func (h *Hub) runPromptLoop(c *acpClient, rt *sessionRuntime, text string) {
+	curText := text
+	curClient := c
+	for curText != "" {
+		h.executeOneTurn(curClient, rt, curText)
+
+		h.mu.Lock()
+		if h.closed || h.sessions[rt.id] != rt || len(rt.queue) == 0 {
+			rt.busy = false
+			h.broadcastLocked(rt, "status", map[string]any{"busy": false, "title": rt.title})
+			h.mu.Unlock()
+			return
+		}
+		next := rt.queue[0]
+		rt.queue = rt.queue[1:]
+		h.broadcastLocked(rt, "queue.update", slices.Clone(rt.queue))
+		needEnsure := curClient == nil || !curClient.alive() || !rt.loaded
+		h.mu.Unlock()
+
+		if needEnsure {
+			var err error
+			curClient, rt, err = h.ensureLoaded(context.Background(), rt.id, rt.projectID)
+			if err != nil {
+				h.mu.Lock()
+				rt.msgs = append(rt.msgs, ChatMessage{
+					ID:        newShortID("amsg"),
+					Role:      "assistant",
+					Error:     err.Error(),
+					CreatedAt: time.Now(),
+				})
+				h.broadcastLocked(rt, "message", rt.msgs[len(rt.msgs)-1])
+				rt.busy = false
+				h.broadcastLocked(rt, "status", map[string]any{"busy": false, "title": rt.title})
+				h.mu.Unlock()
+				return
+			}
+		}
+
+		h.mu.Lock()
+		h.startTurnLocked(rt, rt.id, next.Text, time.Now())
+		curText = next.Text
+		h.mu.Unlock()
+	}
+}
+
+func (h *Hub) executeOneTurn(c *acpClient, rt *sessionRuntime, text string) {
 	var promptRes struct {
 		StopReason string `json:"stopReason"`
 	}
@@ -1109,11 +1346,7 @@ func (h *Hub) runPromptTurn(c *acpClient, rt *sessionRuntime, text string) {
 		}
 		thinkMs = end.Sub(rt.thinkStart).Milliseconds()
 	}
-	for i := range rt.liveTools {
-		if rt.liveTools[i].Status == "" || rt.liveTools[i].Status == "in_progress" || rt.liveTools[i].Status == "pending" {
-			rt.liveTools[i].Status = "completed"
-		}
-	}
+	finalizeTools(rt.liveTools)
 	var errMsg string
 	if err != nil && promptRes.StopReason != "cancelled" {
 		errMsg = err.Error()
@@ -1132,13 +1365,16 @@ func (h *Hub) runPromptTurn(c *acpClient, rt *sessionRuntime, text string) {
 		rt.msgs = append(rt.msgs, asst)
 		h.broadcastLocked(rt, "message", asst)
 	}
-	rt.busy = false
+	hasMore := len(rt.queue) > 0 && !h.closed && h.sessions[rt.id] == rt
 	rt.streaming.Reset()
 	rt.thinking.Reset()
 	rt.thinkStart = time.Time{}
 	rt.thinkEnd = time.Time{}
 	rt.liveTools = nil
 	rt.updatedAt = time.Now()
+	if !hasMore {
+		rt.busy = false
+	}
 	if m, ok := h.meta[rt.id]; ok {
 		m.UpdatedAt = rt.updatedAt
 		m.Title = rt.title
@@ -1148,7 +1384,7 @@ func (h *Hub) runPromptTurn(c *acpClient, rt *sessionRuntime, text string) {
 		h.saveMetaLocked()
 	}
 	h.broadcastLocked(rt, "turn.done", map[string]any{
-		"busy":        false,
+		"busy":        hasMore,
 		"stop_reason": promptRes.StopReason,
 		"error":       errMsg,
 	})
@@ -1159,6 +1395,10 @@ func (h *Hub) StopPrompt(sessionID string) error {
 	c := h.client
 	rt := h.sessions[sessionID]
 	if rt != nil {
+		if len(rt.queue) > 0 {
+			rt.queue = nil
+			h.broadcastLocked(rt, "queue.update", []QueuedPrompt{})
+		}
 		for _, p := range rt.perms {
 			if p.req.Status == "pending" {
 				p.req.Status = "cancelled"
@@ -1255,6 +1495,7 @@ func (h *Hub) snapshotLocked(rt *sessionRuntime) Snapshot {
 		Session:     h.summaryFromRuntimeLocked(rt),
 		Messages:    slices.Clone(rt.msgs),
 		Permissions: perms,
+		Queue:       slices.Clone(rt.queue),
 		Streaming:   rt.streaming.String(),
 		Thinking:    rt.thinking.String(),
 		ThinkStart:  tsStart,
@@ -1264,6 +1505,7 @@ func (h *Hub) snapshotLocked(rt *sessionRuntime) Snapshot {
 		MaxTokens:   rt.maxTokens,
 		Modes:       slices.Clone(h.modes),
 		Models:      slices.Clone(h.models),
+		Commands:    slices.Clone(h.commands),
 	}
 }
 
@@ -1283,25 +1525,49 @@ func (h *Hub) broadcastLocked(rt *sessionRuntime, kind string, data any) {
 
 // ---------- 处理 agy acp 推来的通知与权限请求 ----------
 
+type acpWireUpdate struct {
+	SessionUpdate     string            `json:"sessionUpdate"`
+	Content           json.RawMessage   `json:"content"`
+	Delta             string            `json:"delta"`
+	Text              string            `json:"text"`
+	ToolCallID        string            `json:"toolCallId"`
+	Name              string            `json:"name"`
+	Title             string            `json:"title"`
+	Kind              string            `json:"kind"`
+	Status            string            `json:"status"`
+	Args              json.RawMessage   `json:"args"`
+	RawInput          json.RawMessage   `json:"rawInput"`
+	RawOutput         json.RawMessage   `json:"rawOutput"`
+	Locations         []acpToolLocation `json:"locations"`
+	ModeID            string            `json:"modeId"`
+	ConfigOptions     []acpConfigOption `json:"configOptions"`
+	AvailableCommands []acpCommandWire  `json:"availableCommands"`
+	Used              int64             `json:"used"`
+	Size              int64             `json:"size"`
+	Usage             *struct {
+		Used int64 `json:"used"`
+		Size int64 `json:"size"`
+	} `json:"usage"`
+}
+
+type acpToolLocation struct {
+	Path string `json:"path"`
+	Line int    `json:"line,omitempty"`
+}
+
 func (h *Hub) handleUpdate(sessionID string, raw json.RawMessage) {
-	var u struct {
-		SessionUpdate string `json:"sessionUpdate"`
-		Content       struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		ToolCallID string          `json:"toolCallId"`
-		Name       string          `json:"name"`
-		Title      string          `json:"title"`
-		Kind       string          `json:"kind"`
-		Status     string          `json:"status"`
-		Args       json.RawMessage `json:"args"`
-		ModeID     string          `json:"modeId"`
-		Used       int64           `json:"used"`
-		Size       int64           `json:"size"`
-	}
+	var u acpWireUpdate
 	if json.Unmarshal(raw, &u) != nil {
 		return
+	}
+	text := extractTextChunk(u.Content, u.Delta, u.Text)
+	if u.Usage != nil {
+		if u.Used == 0 && u.Usage.Used > 0 {
+			u.Used = u.Usage.Used
+		}
+		if u.Size == 0 && u.Usage.Size > 0 {
+			u.Size = u.Usage.Size
+		}
 	}
 
 	h.mu.Lock()
@@ -1312,44 +1578,74 @@ func (h *Hub) handleUpdate(sessionID string, raw json.RawMessage) {
 	}
 
 	if rt.replaying {
-		h.applyReplayUpdateLocked(rt, u.SessionUpdate, u.Content.Text, u.ToolCallID, u.Name, u.Title, u.Kind, u.Status, u.Used, u.Size)
+		h.applyReplayUpdateLocked(rt, u, text)
 		return
 	}
 
 	switch u.SessionUpdate {
 	case "agent_thought_chunk":
-		if u.Content.Text == "" {
+		if text == "" {
 			return
 		}
 		if rt.thinkStart.IsZero() {
 			rt.thinkStart = time.Now()
 		}
 		rt.thinkEnd = time.Time{}
-		rt.thinking.WriteString(u.Content.Text)
-		h.broadcastLocked(rt, "thinking.delta", map[string]string{"text": u.Content.Text})
+		rt.thinking.WriteString(text)
+		h.broadcastLocked(rt, "thinking.delta", map[string]string{"text": text})
 
 	case "agent_message_chunk":
-		if u.Content.Text == "" {
+		if text == "" {
 			return
 		}
 		if !rt.thinkStart.IsZero() && rt.thinkEnd.IsZero() {
 			rt.thinkEnd = time.Now()
 		}
-		rt.streaming.WriteString(u.Content.Text)
-		h.broadcastLocked(rt, "text.delta", map[string]string{"text": u.Content.Text})
+		rt.streaming.WriteString(text)
+		h.broadcastLocked(rt, "text.delta", map[string]string{"text": text})
 
 	case "tool_call", "tool_call_update":
 		if !rt.thinkStart.IsZero() && rt.thinkEnd.IsZero() {
 			rt.thinkEnd = time.Now()
 		}
-		tc := upsertToolCall(&rt.liveTools, u.ToolCallID, u.Name, u.Title, u.Kind, u.Status, u.Args)
+		tc := upsertToolCall(&rt.liveTools, u)
 		h.broadcastLocked(rt, "tool.upsert", tc)
 
 	case "current_mode_update":
 		if u.ModeID != "" {
 			rt.mode = u.ModeID
-			h.broadcastLocked(rt, "session.meta", map[string]any{"session": h.summaryFromRuntimeLocked(rt)})
+			h.broadcastLocked(rt, "session.meta", map[string]any{
+				"session":     h.summaryFromRuntimeLocked(rt),
+				"used_tokens": rt.usedTokens,
+				"max_tokens":  rt.maxTokens,
+			})
 		}
+
+	case "config_option_update", "config_options_update":
+		if len(u.ConfigOptions) > 0 {
+			h.captureCapabilitiesLocked(acpSessionMetaResp{ConfigOptions: u.ConfigOptions})
+			for _, cfg := range u.ConfigOptions {
+				cat := strings.ToLower(cfg.Category)
+				if cat == "" {
+					cat = strings.ToLower(cfg.ID)
+				}
+				if (cat == "mode" || cat == "permission_mode") && cfg.CurrentValue != "" {
+					rt.mode = cfg.CurrentValue
+				} else if cat == "model" && cfg.CurrentValue != "" {
+					rt.model = cfg.CurrentValue
+				}
+			}
+			h.broadcastLocked(rt, "session.meta", map[string]any{
+				"session":     h.summaryFromRuntimeLocked(rt),
+				"used_tokens": rt.usedTokens,
+				"max_tokens":  rt.maxTokens,
+			})
+		}
+
+	case "available_commands_update":
+		cmds := toCommandOptions(u.AvailableCommands)
+		h.commands = cmds
+		h.broadcastLocked(rt, "commands", cmds)
 
 	case "session_info_update":
 		if t := strings.TrimSpace(u.Title); t != "" {
@@ -1359,7 +1655,11 @@ func (h *Hub) handleUpdate(sessionID string, raw json.RawMessage) {
 				h.meta[rt.id] = m
 				h.saveMetaLocked()
 			}
-			h.broadcastLocked(rt, "session.meta", map[string]any{"session": h.summaryFromRuntimeLocked(rt)})
+			h.broadcastLocked(rt, "session.meta", map[string]any{
+				"session":     h.summaryFromRuntimeLocked(rt),
+				"used_tokens": rt.usedTokens,
+				"max_tokens":  rt.maxTokens,
+			})
 		}
 
 	case "usage_update":
@@ -1377,8 +1677,8 @@ func (h *Hub) handleUpdate(sessionID string, raw json.RawMessage) {
 	}
 }
 
-func (h *Hub) applyReplayUpdateLocked(rt *sessionRuntime, kind, text, callID, name, title, toolKind, status string, used, size int64) {
-	switch kind {
+func (h *Hub) applyReplayUpdateLocked(rt *sessionRuntime, u acpWireUpdate, text string) {
+	switch u.SessionUpdate {
 	case "user_message_chunk":
 		// 遇到新一条用户消息前，先把上一轮助理消息落入列表
 		if rt.replayAsst.Len() > 0 || rt.replayThk.Len() > 0 || len(rt.replayTls) > 0 {
@@ -1393,13 +1693,15 @@ func (h *Hub) applyReplayUpdateLocked(rt *sessionRuntime, kind, text, callID, na
 		rt.replayAsst.WriteString(text)
 	case "tool_call", "tool_call_update":
 		h.flushReplayUserLocked(rt)
-		upsertToolCall(&rt.replayTls, callID, name, title, toolKind, status, nil)
+		upsertToolCall(&rt.replayTls, u)
+	case "available_commands_update":
+		h.commands = toCommandOptions(u.AvailableCommands)
 	case "usage_update":
-		if used > 0 {
-			rt.usedTokens = used
+		if u.Used > 0 {
+			rt.usedTokens = u.Used
 		}
-		if size > 0 {
-			rt.maxTokens = size
+		if u.Size > 0 {
+			rt.maxTokens = u.Size
 		}
 	}
 }
@@ -1422,6 +1724,7 @@ func (h *Hub) flushReplayUserLocked(rt *sessionRuntime) {
 func (h *Hub) flushReplayAssistantLocked(rt *sessionRuntime) {
 	a := strings.TrimSpace(rt.replayAsst.String())
 	th := strings.TrimSpace(rt.replayThk.String())
+	finalizeTools(rt.replayTls)
 	if a != "" || th != "" || len(rt.replayTls) > 0 {
 		rt.msgs = append(rt.msgs, ChatMessage{
 			ID:        newShortID("amsg"),
@@ -1444,44 +1747,194 @@ func (h *Hub) flushReplayTurnLocked(rt *sessionRuntime, all bool) {
 	}
 }
 
-func upsertToolCall(list *[]ToolCall, id, name, title, kind, status string, args json.RawMessage) ToolCall {
+func finalizeTools(tools []ToolCall) {
+	for i := range tools {
+		if tools[i].Status == "" || tools[i].Status == "in_progress" || tools[i].Status == "pending" {
+			tools[i].Status = "completed"
+		}
+	}
+}
+
+func upsertToolCall(list *[]ToolCall, u acpWireUpdate) ToolCall {
+	id := u.ToolCallID
 	if id == "" {
 		id = newShortID("tc")
 	}
-	if title == "" && len(args) > 0 {
-		var m map[string]any
-		if json.Unmarshal(args, &m) == nil {
-			for _, k := range []string{"toolSummary", "CommandLine", "AbsolutePath", "Path", "Query", "Url"} {
-				if v, ok := m[k].(string); ok && v != "" {
-					title = truncateRunes(v, 80)
-					break
-				}
-			}
-		}
+	detail := extractToolDetail(u.Args, u.RawInput, u.Locations)
+	output := extractToolOutput(u.RawOutput, u.Content)
+	title := strings.TrimSpace(u.Title)
+	if title == "" && detail != "" {
+		title = truncateRunes(firstNonEmptyLine(detail), 80)
+	}
+	status := strings.TrimSpace(u.Status)
+	if status == "" && output != "" {
+		status = "completed"
 	}
 	if status == "" {
 		status = "in_progress"
 	}
 	for i := range *list {
 		if (*list)[i].ID == id {
-			if name != "" {
-				(*list)[i].Name = name
+			if u.Name != "" {
+				(*list)[i].Name = u.Name
 			}
 			if title != "" {
 				(*list)[i].Title = title
 			}
-			if kind != "" {
-				(*list)[i].Kind = kind
+			if u.Kind != "" {
+				(*list)[i].Kind = u.Kind
 			}
 			if status != "" {
 				(*list)[i].Status = status
 			}
+			if detail != "" {
+				(*list)[i].Detail = detail
+			}
+			if output != "" {
+				(*list)[i].Output = output
+			}
 			return (*list)[i]
 		}
 	}
-	tc := ToolCall{ID: id, Name: name, Title: title, Kind: kind, Status: status}
+	tc := ToolCall{
+		ID:     id,
+		Name:   u.Name,
+		Title:  title,
+		Kind:   u.Kind,
+		Status: status,
+		Detail: detail,
+		Output: output,
+	}
 	*list = append(*list, tc)
 	return tc
+}
+
+// extractTextChunk 同时兼容单对象 content、内容块数组 content（如 pi-acp）以及 delta/text 兜底字段。
+func extractTextChunk(raw json.RawMessage, delta, text string) string {
+	if len(raw) > 0 && string(raw) != "null" {
+		var single struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &single) == nil && single.Text != "" {
+			return single.Text
+		}
+		var blocks []struct {
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Content *struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(raw, &blocks) == nil {
+			var sb strings.Builder
+			for _, b := range blocks {
+				if b.Text != "" {
+					sb.WriteString(b.Text)
+				} else if b.Content != nil && b.Content.Text != "" {
+					sb.WriteString(b.Content.Text)
+				}
+			}
+			if sb.Len() > 0 {
+				return sb.String()
+			}
+		}
+	}
+	if delta != "" {
+		return delta
+	}
+	return text
+}
+
+func extractToolDetail(args, rawInput json.RawMessage, locs []acpToolLocation) string {
+	for _, raw := range []json.RawMessage{args, rawInput} {
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal(raw, &m) == nil {
+			for _, k := range []string{"CommandLine", "command", "cmd", "AbsolutePath", "TargetFile", "Path", "path", "Query", "query", "Url", "url", "toolSummary"} {
+				if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+					return truncateRunes(strings.TrimSpace(v), 500)
+				}
+			}
+			if pretty, err := json.Marshal(m); err == nil && len(pretty) > 2 {
+				return truncateRunes(string(pretty), 500)
+			}
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil && strings.TrimSpace(s) != "" {
+			return truncateRunes(strings.TrimSpace(s), 500)
+		}
+	}
+	if len(locs) > 0 {
+		var parts []string
+		for _, l := range locs {
+			if l.Path == "" {
+				continue
+			}
+			if l.Line > 0 {
+				parts = append(parts, fmt.Sprintf("%s:%d", l.Path, l.Line))
+			} else {
+				parts = append(parts, l.Path)
+			}
+		}
+		if len(parts) > 0 {
+			return truncateRunes(strings.Join(parts, ", "), 500)
+		}
+	}
+	return ""
+}
+
+func extractToolOutput(rawOutput, content json.RawMessage) string {
+	if s := extractContentText(content); s != "" {
+		return truncateStr(strings.TrimSpace(s), 4000)
+	}
+	if len(rawOutput) > 0 && string(rawOutput) != "null" {
+		var s string
+		if json.Unmarshal(rawOutput, &s) == nil && strings.TrimSpace(s) != "" {
+			return truncateStr(strings.TrimSpace(s), 4000)
+		}
+		var m map[string]any
+		if json.Unmarshal(rawOutput, &m) == nil {
+			for _, k := range []string{"output", "stdout", "text", "content", "error", "message"} {
+				if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+					return truncateStr(strings.TrimSpace(v), 4000)
+				}
+			}
+			if pretty, err := json.MarshalIndent(m, "", "  "); err == nil && len(pretty) > 2 {
+				return truncateStr(string(pretty), 4000)
+			}
+		}
+	}
+	return ""
+}
+
+func extractContentText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	if txt := extractTextChunk(raw, "", ""); txt != "" {
+		return txt
+	}
+	// ACP diff/terminal content blocks: [{type:"diff", path, oldText, newText}]
+	var diffs []struct {
+		Type    string `json:"type"`
+		Path    string `json:"path"`
+		OldText string `json:"oldText"`
+		NewText string `json:"newText"`
+	}
+	if json.Unmarshal(raw, &diffs) == nil {
+		var sb strings.Builder
+		for _, d := range diffs {
+			if d.Type == "diff" && d.Path != "" {
+				fmt.Fprintf(&sb, "diff %s (%d -> %d chars)\n", d.Path, len(d.OldText), len(d.NewText))
+			}
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 func (h *Hub) handlePermission(ctx context.Context, req permWireRequest) string {

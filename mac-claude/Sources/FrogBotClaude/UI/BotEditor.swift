@@ -15,7 +15,6 @@ struct BotEditorSheet: View {
     @State private var instructions = ""
     @State private var settings: APISettings?
     @State private var original: APISettings?
-    @State private var cli = ""
     @State private var loadingModels = false
     @State private var busy = false
     @State private var error: String?
@@ -69,13 +68,7 @@ struct BotEditorSheet: View {
                     }
                     GridRow {
                         Text("任务模型")
-                        if cli.isEmpty {
-                            modelPicker(chat: false)
-                        } else {
-                            Text("由 \(cliName) 执行（在设置 › Agent 里修改）")
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(Theme.fg3)
-                        }
+                        modelPicker(chat: false)
                     }
                 }
             }
@@ -125,8 +118,6 @@ struct BotEditorSheet: View {
     private var deviceName: String {
         device == "local" ? server.name : (server.devices.first(where: { $0.id == device })?.name ?? device)
     }
-
-    private var cliName: String { ["codex": "Codex CLI", "claude": "Claude Code"][cli] ?? cli }
 
     private var note: String {
         if profile == nil { return "创建后，可以在聊天窗口顶部给它单独选模型。" }
@@ -190,7 +181,6 @@ struct BotEditorSheet: View {
             settings = s
             original = s
         }
-        cli = (try? await session.loadConnections())?.cli ?? ""
         loadingModels = false
     }
 

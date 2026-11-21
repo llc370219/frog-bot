@@ -137,9 +137,12 @@ func startACPClient(exe string, wrapCmd func(*exec.Cmd) error, onUpdate func(str
 		} `json:"agentInfo"`
 	}
 	if err := c.call(ctx, "initialize", map[string]any{
-		"protocolVersion":    1,
-		"clientCapabilities": map[string]any{},
-		"clientInfo":         map[string]string{"name": "frog-bot", "version": "1.0"},
+		"protocolVersion": 1,
+		"clientCapabilities": map[string]any{
+			"fs":       map[string]bool{"readTextFile": false, "writeTextFile": false},
+			"terminal": false,
+		},
+		"clientInfo": map[string]string{"name": "frog-bot", "version": "1.0"},
 	}, &initRes); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("初始化 agy acp 失败：%w", err)
@@ -410,8 +413,18 @@ func (c *acpClient) alive() bool {
 func (c *acpClient) Close() {
 	c.closeOnce.Do(func() {
 		_ = c.stdin.Close()
+		// 先关闭 stdin 给 agy 留一点优雅落盘会话状态的时间，超时再强制结束进程。
+		select {
+		case <-c.done:
+			return
+		case <-time.After(1500 * time.Millisecond):
+		}
 		if c.cmd != nil && c.cmd.Process != nil {
 			_ = c.cmd.Process.Kill()
+		}
+		select {
+		case <-c.done:
+		case <-time.After(500 * time.Millisecond):
 		}
 	})
 }

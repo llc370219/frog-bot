@@ -61,8 +61,6 @@ func (bs *Bots) PeerHandler() http.Handler {
 var deviceSettingsRoutes = []struct{ method, endpoint string }{
 	{"GET", "/settings"},
 	{"POST", "/settings"},
-	{"GET", "/settings/connections"},
-	{"POST", "/settings/connections"},
 	{"POST", "/settings/models"},
 	{"POST", "/settings/test"},
 	{"GET", "/update"},
@@ -167,7 +165,7 @@ var peerRouteID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,100}$`)
 func peerBotRoute(method, rest string) bool {
 	if method == http.MethodGet {
 		switch rest {
-		case "info", "stream", "files", "schedules", "settings", "settings/connections":
+		case "info", "stream", "files", "schedules", "settings":
 			return true
 		}
 	}
@@ -175,7 +173,7 @@ func peerBotRoute(method, rest string) bool {
 		return false
 	}
 	switch rest {
-	case "messages", "stop", "regenerate", "uploads", "settings", "settings/routes", "settings/connections", "settings/models", "settings/test":
+	case "messages", "stop", "regenerate", "uploads", "settings", "settings/routes", "settings/models", "settings/test":
 		return true
 	}
 	parts := strings.Split(rest, "/")
@@ -350,12 +348,6 @@ func peerChatEvent(e Event) (Event, bool) {
 		if m.Secret != nil {
 			m.Secret.Description = ""
 			return replace(m)
-		}
-	case "task.created":
-		var t TaskRec
-		if json.Unmarshal(e.Data, &t) == nil {
-			t.History, t.PeerRequest = nil, ""
-			return replace(t)
 		}
 	case "secret.card":
 		var s SecretReq

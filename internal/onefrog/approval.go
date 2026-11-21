@@ -232,12 +232,6 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 	if name == RootTool {
 		return Verdict{AskUser, "以 root 身份执行：需要输入登录密码批准", "policy"}, RiskDanger
 	}
-	if name == CLITool {
-		if g.BypassApproval {
-			return Verdict{Allow, "Agent 层免审直接执行", "policy"}, RiskExec
-		}
-		return Verdict{AskUser, "启动外部 CLI 后，文件与命令权限由该 CLI 管理", "policy"}, RiskDanger
-	}
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
 	if p, ok := m["path"].(string); ok {

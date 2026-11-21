@@ -1,7 +1,6 @@
 import SwiftUI
 
 private let sep = "\u{1F}"
-private func cliName(_ id: String) -> String { ["codex": "Codex CLI", "claude": "Claude Code"][id] ?? id }
 
 /// 「渠道 + 模型」二合一选择：按渠道分组列出可选模型
 private struct RoutePicker: View {
@@ -50,7 +49,6 @@ struct BotSettingsView: View {
     @State private var instructions = ""
     @State private var settings: APISettings?
     @State private var original: APISettings?
-    @State private var cli = ""
     @State private var loading = true
     @State private var busy = false
     @State private var error: String?
@@ -95,7 +93,7 @@ struct BotSettingsView: View {
                 if let session {
                     Section {
                         NavigationLink(value: Nav.agents(ref)) {
-                            LabeledContent("Agent", value: cli.isEmpty ? "Frog（内置）" : cliName(cli))
+                            LabeledContent("Agent", value: "Frog（内置）")
                         }
                         NavigationLink(value: Nav.channels(ref)) { Text("API 渠道") }
                         NavigationLink(value: Nav.scheduler(ref)) { Text("自动调度器") }
@@ -145,11 +143,7 @@ struct BotSettingsView: View {
                     Text("还没有可用的 API 渠道，先到「API 渠道」里添加。").foregroundStyle(Theme.fg3)
                 } else {
                     RoutePicker(title: "聊天模型", settings: s, selection: routeBinding($settings, chat: true))
-                    if cli.isEmpty {
-                        RoutePicker(title: "任务模型", settings: s, selection: routeBinding($settings, chat: false))
-                    } else {
-                        LabeledContent("任务模型", value: "由 \(cliName(cli)) 执行")
-                    }
+                    RoutePicker(title: "任务模型", settings: s, selection: routeBinding($settings, chat: false))
                 }
             } else if loading {
                 HStack { ProgressView(); Text("正在读取模型…").foregroundStyle(Theme.fg3) }
@@ -172,7 +166,6 @@ struct BotSettingsView: View {
             settings = s
             original = s
         }
-        cli = (try? await session.loadConnections())?.cli ?? ""
         loading = false
     }
 
@@ -551,176 +544,32 @@ private struct ChannelEditor: View {
 struct AgentsView: View {
     let session: BotSession
 
-    @State private var conn: AgentConnections?
-    @State private var busy = false
-    @State private var message: (String, Bool)?
-    @State private var channels: [APIChannel] = []
-    @State private var piChannel = ""
-    @State private var piModel = ""
-
     var body: some View {
         List {
             Section {
-                if let conn {
-                    row(id: "", name: "Frog（内置）", detail: "用 API 渠道里的任务模型", installed: true, current: conn.cli.isEmpty)
-                    ForEach(conn.clis ?? []) { c in
-                        row(id: c.id, name: c.name, detail: Self.detail(c),
-                            installed: c.installed && c.supported != false, current: conn.cli == c.id, cli: c)
+                HStack(spacing: 12) {
+                    FrogAgentAvatar(size: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Frog（内置 Agent）").foregroundStyle(Theme.fg)
+                        Text("使用「API 渠道」中选择的任务模型执行后台任务")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.fg3)
                     }
-                } else if message == nil {
-                    HStack { ProgressView(); Text("正在检测…").foregroundStyle(Theme.fg3) }
+                    Spacer()
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
                 }
             } header: {
-                Text("「\(session.profile.name)」的后台任务用")
+                Text("「\(session.profile.name)」的后台执行器")
             } footer: {
-                Text("只影响这个 Bot；聊天回复仍用聊天模型。检测的是「\(session.deviceName)」上的安装情况；「安装」会把 Node.js 和 CLI 装进 frog 的数据目录，不需要 root。Claude Code、Codex 等暂不支持；每次启动外部 CLI 前，都要在任务卡片里批准。")
-            }
-            if let pi = conn?.clis?.first(where: { $0.id == "pi" }), pi.installed, pi.supported != false {
-                piSection
-            }
-            if let message {
-                Section { Text(message.0).foregroundStyle(message.1 ? Theme.danger : Theme.ok) }
+                Text("如需直接面向项目文件夹写代码与运行命令，可在首页顶部切换到「Coding」模式。")
             }
             if session.isLocalDevice { PrivilegeSection(session: session) }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle("Agent")
+        .navigationTitle("Agent 与权限")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                if busy { ProgressView() } else {
-                    Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
-                        .accessibilityLabel("重新检测")
-                }
-            }
-        }
-        .task { await load() }
-        // 安装在服务器后台进行：装的时候每 1.5 秒刷新一次，装完自动停。
-        .task(id: installing) {
-            while installing && !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                if let c = try? await session.loadConnections() { conn = c }
-            }
-        }
-    }
-
-    private var installing: Bool { conn?.clis?.contains { $0.installing } ?? false }
-
-    /// Pi 用 frog 的 API 渠道：选渠道和模型。Key 留在 frog 里，Pi 只拿到本机网关的临时令牌。
-    private var piSection: some View {
-        let models = channels.first { $0.id == piChannel }?.visibleModels ?? []
-        return Section {
-            if channels.isEmpty {
-                Text("「\(session.deviceName)」还没有 API 渠道，请先在「API 渠道」里添加。").foregroundStyle(Theme.danger)
-            } else {
-                Picker("渠道", selection: $piChannel) {
-                    Text("选择渠道").tag("")
-                    ForEach(channels.filter { $0.enabled }) { Text($0.name).tag($0.id) }
-                }
-                .onChange(of: piChannel) { _, id in
-                    let m = channels.first { $0.id == id }?.visibleModels ?? []
-                    if !m.contains(piModel) { piModel = m.first ?? "" }
-                }
-                Picker("模型", selection: $piModel) {
-                    Text("选择模型").tag("")
-                    ForEach(models, id: \.self) { Text($0).tag($0) }
-                }
-                Button(conn?.cli == "pi" ? "保存 Pi 设置" : "使用 Pi") { use("pi") }
-                    .disabled(busy || piChannel.isEmpty || piModel.isEmpty)
-            }
-        } header: {
-            Text("Pi 的 API 渠道")
-        } footer: {
-            Text("Pi 通过 frog 的本机网关调用这里选的渠道和模型；渠道的 Key 不会交给 Pi。")
-        }
-    }
-
-    static func detail(_ c: CLIStatus) -> String {
-        if let job = c.install {
-            switch job.state {
-            case "running": return "正在安装：\(job.step ?? "准备")…"
-            case "failed": return "安装失败：\(job.error ?? "未知错误")"
-            default: break
-            }
-        }
-        if c.supported == false { return c.note ?? "暂不支持" }
-        guard c.installed else { return "没有检测到" }
-        return c.managed == true ? "已由 frog 安装" + (c.install?.version.map { " \($0)" } ?? "") : "已安装 · 用 frog 的 API 渠道"
-    }
-
-    private func row(id: String, name: String, detail: String, installed: Bool, current: Bool, cli: CLIStatus? = nil) -> some View {
-        let canInstall = session.isLocalDevice && cli?.installable == true
-        return HStack(spacing: 12) {
-            Button { if installed && !current { use(id) } } label: {
-                HStack(spacing: 12) {
-                    if id.isEmpty { FrogAgentAvatar(size: 32) } else { AgentIcon(id: id, client: session.client, size: 32) }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(name).foregroundStyle(Theme.fg)
-                        Text(detail).font(.footnote).foregroundStyle(cli?.install?.state == "failed" ? Theme.danger : Theme.fg3)
-                    }
-                    Spacer()
-                    if current { Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent) }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!installed || busy)
-            .opacity(installed || canInstall ? 1 : 0.5)
-            if let cli, canInstall {
-                if cli.installing {
-                    ProgressView()
-                } else {
-                    Button(cli.managed == true ? "更新" : "安装") { install(cli.id) }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(busy || installing)
-                }
-            }
-        }
-    }
-
-    private func install(_ id: String) {
-        message = nil
-        Task {
-            do {
-                conn = try await session.installCLI(id)
-            } catch {
-                message = (error.localizedDescription, true)
-            }
-        }
-    }
-
-    private func load() async {
-        busy = true
-        do {
-            conn = try await session.loadConnections()
-            channels = (try? await session.loadSettings())?.channels ?? channels
-            if piChannel.isEmpty {
-                piChannel = conn?.cli_channel ?? channels.first { $0.enabled }?.id ?? ""
-                piModel = conn?.cli_channel != nil ? (conn?.cli_model ?? "") : (channels.first { $0.id == piChannel }?.visibleModels.first ?? "")
-            }
-            if message?.1 == true { message = nil }
-        } catch {
-            message = ("读不到 Agent 设置：\(error.localizedDescription)", true)
-        }
-        busy = false
-    }
-
-    private func use(_ id: String) {
-        busy = true
-        message = nil
-        Task {
-            do {
-                conn = id == "pi" ? try await session.saveConnection(id, channel: piChannel, model: piModel)
-                    : try await session.saveConnection(id)
-                let name = id.isEmpty ? "Frog（内置）" : (conn?.clis?.first { $0.id == id }?.name ?? id)
-                message = ("新任务将使用 \(name)，正在进行的任务不受影响。", false)
-                Haptics.success()
-            } catch {
-                message = (error.localizedDescription, true)
-            }
-            busy = false
-        }
     }
 }
 

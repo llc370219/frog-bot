@@ -49,7 +49,6 @@ type channelUse struct {
 	Name            string `json:"name"`
 	ChatProviderID  string `json:"chat_provider_id,omitempty"`
 	AgentProviderID string `json:"agent_provider_id,omitempty"`
-	AgentCLI        string `json:"agent_cli,omitempty"`
 }
 
 // channelPool 是设备上所有 Bot 共用的 API 渠道。

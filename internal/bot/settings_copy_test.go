@@ -6,11 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-
-	"frogbot/internal/onefrog"
 )
 
 func TestChannelsAreSharedButModelChoicesArePerBot(t *testing.T) {
@@ -136,68 +133,6 @@ func TestPerBotChannelsFromOlderVersionMergeIntoSharedPool(t *testing.T) {
 	}
 	if _, m := bs.main.resolveModel(true); m != "" {
 		t.Fatalf("main had no choice and should stay unset: %q", m)
-	}
-}
-
-func TestAgentConnectionKeepsModelAndAuthPerBot(t *testing.T) {
-	dir, bin := t.TempDir(), t.TempDir()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	image, err := os.ReadFile(exe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := "pi"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	if err := os.WriteFile(filepath.Join(bin, name), image, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
-	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
-	t.Setenv("NVM_DIR", "")
-	cfg := Config{DataDir: filepath.Join(dir, "data"), Workspace: filepath.Join(dir, "ws")}
-	b, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := "sk-test"
-	if _, err := b.SaveSettings(APISettings{BaseURL: "https://relay.example/v1", Model: "m1", APIKey: &key}); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.saveAgentConnection(agentConnection{CLI: "pi", CLIOptions: onefrog.CLIOptions{Channel: "primary", Model: "--yolo"}}); err == nil {
-		t.Fatal("accepted a flag as model")
-	}
-	if err := b.saveAgentConnection(agentConnection{CLI: "pi", CLIOptions: onefrog.CLIOptions{Channel: "primary", Model: "not-in-channel"}}); err == nil {
-		t.Fatal("accepted a model that is not in the channel")
-	}
-	if err := b.saveAgentConnection(agentConnection{CLI: "pi"}); err == nil {
-		t.Fatal("Pi without an API channel must be rejected")
-	}
-	if err := b.saveAgentConnection(agentConnection{CLI: "pi", CLIOptions: onefrog.CLIOptions{Channel: "primary", Model: "m1", Auth: onefrog.CLIAuthEnv}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.saveAgentConnection(agentConnection{CLI: "claude"}); err == nil || !strings.Contains(err.Error(), "暂不支持") {
-		t.Fatalf("unsupported CLI must be rejected: %v", err)
-	}
-	b.Close()
-	b, err = New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer b.Close()
-	// Pi 固定用 API 渠道，不管请求里写了什么认证方式
-	if o := b.cliOptions("pi"); o.Model != "m1" || o.Channel != "primary" || o.Auth != onefrog.CLIAuthChannel {
-		t.Fatalf("options lost on restart: %+v", o)
-	}
-	if o := b.cliOptions("codex"); o.Model != "" || o.Auth != onefrog.CLIAuthSubscription {
-		t.Fatalf("other CLIs must use defaults: %+v", o)
-	}
-	if err := b.saveAgentConnection(agentConnection{CLIOptions: onefrog.CLIOptions{Auth: "bogus"}}); err == nil {
-		t.Fatal("accepted invalid auth")
 	}
 }
 

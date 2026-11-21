@@ -96,12 +96,18 @@ func (h *Hub) Handler() http.Handler {
 		var body struct {
 			ProjectID string `json:"project_id"`
 			Text      string `json:"text"`
+			Behavior  string `json:"behavior"` // "" | "follow_up" | "steer"
 		}
 		if !decodeJSON(w, r, &body, maxBody) {
 			return
 		}
-		m, err := h.SendPrompt(r.Context(), r.PathValue("id"), body.ProjectID, body.Text)
-		writeJSON(w, m, err)
+		res, err := h.SendPrompt(r.Context(), r.PathValue("id"), body.ProjectID, body.Text, body.Behavior)
+		writeJSON(w, res, err)
+	})
+
+	mux.HandleFunc("DELETE /api/agy/sessions/{id}/queue/{queueId}", func(w http.ResponseWriter, r *http.Request) {
+		err := h.CancelQueued(r.PathValue("id"), r.PathValue("queueId"))
+		writeJSON(w, map[string]bool{"ok": true}, err)
 	})
 
 	mux.HandleFunc("POST /api/agy/sessions/{id}/stop", func(w http.ResponseWriter, r *http.Request) {

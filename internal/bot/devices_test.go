@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -119,7 +118,6 @@ func TestDevicePairChatStreamAndCollaboration(t *testing.T) {
 	reqClose("POST", base+"/approvals/id", `{"decision":"once"}`, false, 404)
 	reqClose("POST", base+"/secrets", `{"name":"EXAMPLE","value":"example"}`, false, 404)
 	reqClose("POST", second.URL+peerPrefix+"/bots/main/secrets", `{"name":"EXAMPLE","value":"example"}`, true, 404)
-	reqClose("GET", base+"/settings/connections", "", false, 200)
 	reqClose("POST", base+"/messages", `{"text":"not sent","files":[{"path":"local.txt"}]}`, false, 400)
 	reqClose("GET", base+"/info", "", false, 200)
 	reqClose("GET", base+"/schedules", "", false, 200)
@@ -275,34 +273,7 @@ func TestDevicePairChatStreamAndCollaboration(t *testing.T) {
 	// The host GUI controls the selected device's own persisted settings.
 	settings := ui.URL + "/api/devices/beta/settings"
 	reqClose("GET", second.URL+peerPrefix+"/settings", "", false, 401)
-	reqClose("POST", second.URL+peerPrefix+"/settings/connections", `{"cli":""}`, false, 401)
 	reqClose("POST", ui.URL+"/api/devices/beta/auth/password", `{}`, false, 404)
-	cliPath := t.TempDir()
-	t.Setenv("PATH", cliPath)
-	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
-	t.Setenv("NVM_DIR", "")
-	cliName := "pi"
-	if runtime.GOOS == "windows" {
-		cliName += ".exe"
-	}
-	if err := os.WriteFile(filepath.Join(cliPath, cliName), nil, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	detected := request("GET", settings+"/connections", "", false, 200)
-	var connections connectionsView
-	err = json.NewDecoder(detected.Body).Decode(&connections)
-	detected.Body.Close()
-	piFound := false
-	for _, cli := range connections.CLIs {
-		if cli.ID == "pi" {
-			piFound = cli.Installed
-		}
-	}
-	if err != nil || connections.CLI != "" || !piFound {
-		t.Fatalf("remote CLI detection failed: %+v (%v)", connections, err)
-	}
-	// Pi 要先在目标设备上选 API 渠道和模型（渠道在下面才配置）
-	reqClose("POST", settings+"/connections", `{"cli":"pi"}`, false, 400)
 
 	const key = "test-key-only-for-beta"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -340,11 +311,6 @@ func TestDevicePairChatStreamAndCollaboration(t *testing.T) {
 		bytes.Contains(stored, []byte(key)) || bytes.Contains(savedData, []byte(key)) || bytes.Contains(loadedData, []byte(key)) {
 		t.Fatal("remote API configuration was misrouted or exposed the key")
 	}
-	reqClose("POST", settings+"/connections", `{"cli":"pi","cli_channel":"primary","cli_model":"beta-model"}`, false, 200)
-	if b.main.selectedCLI() != "pi" || a.main.selectedCLI() != "" || b.main.cliOptions("pi").Channel != "primary" {
-		t.Fatal("CLI change was applied to the wrong device")
-	}
-	reqClose("POST", settings+"/connections", `{"cli":""}`, false, 200)
 
 	previous := releaseClient
 	releaseClient = &http.Client{Transport: releaseTransport(func(r *http.Request) (*http.Response, error) {

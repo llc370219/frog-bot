@@ -1,14 +1,15 @@
-import { ArrowUpRight, Check, ChevronDown, CircleAlert, Cpu, KeyRound, LogOut, Monitor, Plug, RefreshCw, X } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronDown, CircleAlert, Cpu, KeyRound, LogOut, Monitor, Plug, RefreshCw, ShieldCheck, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, createDeviceSettingsAPI, type AuthInfo, type DeviceGroup, type DeviceSettingsAPI, type UpdateStatus } from '../api';
 import BotModelSettings from './BotModelSettings';
 import ChannelsPage from './ChannelsPage';
+import RemoteSettings from './RemoteSettings';
 
 const releasesPage = 'https://github.com/llc370219/frog-bot/releases';
 const message = (err: unknown) => err instanceof TypeError ? '无法连接 frog 后端，请确认服务已启动'
   : err instanceof Error ? err.message : '请求失败，请重试';
 
-type Tab = 'models' | 'api' | 'update' | 'account';
+type Tab = 'models' | 'api' | 'remote' | 'update' | 'account';
 type Feedback = { error: boolean; text: string };
 
 export default function SettingsDialog({ onClose, devices, initialDevice, initialBot, onSettingsSaved }: {
@@ -78,6 +79,7 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
         <nav className="settings-nav" aria-label="设置分类">
           {navButton('models', <Cpu size={16} aria-hidden="true" />, '模型与 Agent')}
           {navButton('api', <Plug size={16} aria-hidden="true" />, 'API 渠道')}
+          {device.id === 'local' && navButton('remote', <ShieldCheck size={15} aria-hidden="true" />, '远程连接')}
           {navButton('update', <RefreshCw size={15} aria-hidden="true" />, '版本与互联')}
           {showAccount && navButton('account', <KeyRound size={15} aria-hidden="true" />, '账号与登录')}
         </nav>
@@ -95,6 +97,11 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
           {tab === 'api' && <ChannelsPage key={device.id} target={target} deviceName={device.name} saving={saving} setSaving={setSaving}
             onDirty={setDirty} onSaved={() => onSettingsSaved(device.id)} />}
         </section>
+        {device.id === 'local' && (
+          <section id="settings-remote" className="settings-pane" hidden={tab !== 'remote'} aria-labelledby="settings-remote-title">
+            {tab === 'remote' && <RemoteSettings saving={saving} setSaving={setSaving} />}
+          </section>
+        )}
         <section id="settings-update" className="settings-pane" hidden={tab !== 'update'} aria-labelledby="settings-update-title">
           {tab === 'update' && <UpdatePanel key={device.id} target={target} deviceName={device.name} />}
         </section>

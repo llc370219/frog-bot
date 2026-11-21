@@ -198,7 +198,7 @@ struct TaskCard: View {
 
     @ViewBuilder
     private func quietBanner(quiet: Double, now: Double) -> some View {
-        let stalled = quiet >= session.stallMs && !task.steps.contains { $0.tool == "run_agent_cli" }
+        let stalled = quiet >= session.stallMs
         if stalled {
             VStack(alignment: .leading, spacing: 8) {
                 Label("已经 \(Fmt.ago(quiet).replacingOccurrences(of: "前", with: ""))没有新进展了。可能在等一个很慢的命令，也可能卡住了。",
@@ -301,7 +301,7 @@ struct StepRow: View {
 
     private static let icons: [String: String] = [
         "read_file": "doc.text", "write_file": "square.and.pencil", "edit_file": "square.and.pencil",
-        "list_dir": "folder", "grep": "magnifyingglass", "shell": "terminal", "run_agent_cli": "terminal",
+        "list_dir": "folder", "grep": "magnifyingglass", "shell": "terminal",
     ]
 
     var body: some View {

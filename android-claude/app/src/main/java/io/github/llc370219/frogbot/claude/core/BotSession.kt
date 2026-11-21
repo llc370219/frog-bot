@@ -422,14 +422,6 @@ class BotSession(
         val s = loadSettings()
         saveRoutes(channel, model, s.agentChannel, s.agentModel)
     }
-    suspend fun loadConnections(): AgentConnections = AgentConnections.from(client.getObject("$basePath/settings/connections"))
-    /** 选择 Agent。Pi 要同时给出 API 渠道和模型。 */
-    suspend fun saveConnection(cli: String, channel: String? = null, model: String? = null): AgentConnections {
-        val body = JSONObject().put("cli", cli)
-        if (channel != null) body.put("cli_channel", channel)
-        if (model != null) body.put("cli_model", model)
-        return AgentConnections.from(client.post("$basePath/settings/connections", body))
-    }
     /** 提权状态和开关（整台服务器共用；设备互联不转发，只能管这台服务器本机）。 */
     suspend fun loadPrivilege(): PrivilegeStatus = PrivilegeStatus.from(client.getObject("/api/settings/privilege"))
     suspend fun privilegeAction(action: String, password: String? = null): PrivilegeStatus {
@@ -437,9 +429,6 @@ class BotSession(
         if (password != null) body.put("password", password)
         return PrivilegeStatus.from(client.post("/api/settings/privilege", body))
     }
-    /** 一键安装 / 更新 CLI。只能装在这台服务器本机：设备互联不转发这个接口。 */
-    suspend fun installCli(id: String): AgentConnections =
-        AgentConnections.from(client.post("/api/settings/clis/install", JSONObject().put("id", id)))
     suspend fun fetchModels(channel: ApiChannel): List<String> {
         val body = JSONObject().put("provider_id", channel.id).put("base_url", channel.baseUrl)
         if (!channel.authRequired) body.put("api_key", "") else channel.apiKey?.let { body.put("api_key", it) }

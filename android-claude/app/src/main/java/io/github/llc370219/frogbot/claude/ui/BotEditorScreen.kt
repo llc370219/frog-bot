@@ -46,7 +46,6 @@ fun BotEditorScreen(state: AppState, server: ServerEntry, device: String, ref: B
     var instructions by remember { mutableStateOf(profile?.instructions ?: "") }
     var settings by remember { mutableStateOf<ApiSettings?>(null) }
     var original by remember { mutableStateOf<ApiSettings?>(null) }
-    var cli by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -55,7 +54,6 @@ fun BotEditorScreen(state: AppState, server: ServerEntry, device: String, ref: B
     LaunchedEffect(ref) {
         if (session != null) {
             runCatching { session.loadSettings() }.onSuccess { settings = it; original = it }
-            cli = runCatching { session.loadConnections().cli }.getOrDefault("")
         }
     }
 
@@ -80,11 +78,7 @@ fun BotEditorScreen(state: AppState, server: ServerEntry, device: String, ref: B
                 Note("这个 Bot 还没有可用的 API 渠道。到「设置 › 服务器 › API 渠道」里添加。")
             } else {
                 ModelRow("聊天模型", s, s.chatChannel, s.chatModel) { c, m -> settings = s.copy(chatChannel = c, chatModel = m) }
-                if (cli.isEmpty()) {
-                    ModelRow("任务模型", s, s.agentChannel, s.agentModel) { c, m -> settings = s.copy(agentChannel = c, agentModel = m) }
-                } else {
-                    ListRow("任务模型", "由 ${if (cli == "codex") "Codex CLI" else if (cli == "claude") "Claude Code" else cli} 执行（在 Agent 里修改）")
-                }
+                ModelRow("任务模型", s, s.agentChannel, s.agentModel) { c, m -> settings = s.copy(agentChannel = c, agentModel = m) }
                 Note("聊天模型负责回话和派活，可以选快一点的；任务模型给后台 Agent 干活用。每个 Bot 各选各的模型；API 渠道是整台设备共用的。")
             }
         } else {

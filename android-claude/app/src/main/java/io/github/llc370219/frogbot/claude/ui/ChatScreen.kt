@@ -81,7 +81,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.github.llc370219.frogbot.claude.core.AgentConnections
 import io.github.llc370219.frogbot.claude.core.ApiSettings
 import io.github.llc370219.frogbot.claude.core.AppState
 import io.github.llc370219.frogbot.claude.core.Approval
@@ -489,12 +488,10 @@ private fun TrayRow(session: BotSession, t: BotTask, pos: Int?, now: Double) {
 private fun ModelSheet(session: BotSession, onEdit: () -> Unit, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     var settings by remember { mutableStateOf<ApiSettings?>(null) }
-    var conn by remember { mutableStateOf<AgentConnections?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     LaunchedEffect(session.ref) {
         runCatching { session.loadSettings() }.onSuccess { settings = it }.onFailure { error = ServerClient.describe(it) }
-        conn = runCatching { session.loadConnections() }.getOrNull()
     }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.padding(bottom = 24.dp)) {
@@ -529,9 +526,6 @@ private fun ModelSheet(session: BotSession, onEdit: () -> Unit, onClose: () -> U
                         }
                     }
                 }
-            }
-            conn?.takeIf { it.cli.isNotEmpty() }?.let { c ->
-                Note("后台任务由 ${c.clis.firstOrNull { it.id == c.cli }?.name ?: c.cli} 执行")
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             if (session.isLocalDevice) TextButton(onClick = onEdit, modifier = Modifier.padding(horizontal = 12.dp)) { Text("编辑 Bot 和任务模型") }

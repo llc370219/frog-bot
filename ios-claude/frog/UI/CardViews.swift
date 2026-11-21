@@ -2,7 +2,7 @@ import SwiftUI
 
 private let riskLabel = ["danger": "高风险", "exec": "执行命令", "write": "写入文件", "read": "只读"]
 private let toolLabel = [
-    "run_as_root": "以 root 执行命令", "shell": "执行命令", "run_agent_cli": "启动外部 Agent", "write_file": "写入文件", "edit_file": "修改文件",
+    "run_as_root": "以 root 执行命令", "shell": "执行命令", "write_file": "写入文件", "edit_file": "修改文件",
     "read_file": "读取文件", "list_dir": "查看目录", "grep": "搜索", "delete_secret": "删除密钥",
 ]
 
@@ -49,7 +49,6 @@ struct ApprovalCardView: View {
         switch a.toolName {
         case "run_as_root": return "允许以 root 身份执行这条命令吗？"
         case "shell": return "允许执行这条命令吗？"
-        case "run_agent_cli": return "允许启动外部 Agent 吗？"
         case "write_file": return "允许写入这个文件吗？"
         case "edit_file": return "允许修改这个文件吗？"
         case "delete_secret": return "允许删除这个密钥吗？"
@@ -138,9 +137,6 @@ struct ApprovalDetail: View {
             case "shell":
                 (Text("$ ").foregroundColor(Theme.fg4) + secretText(g["command"].str))
                     .lineLimit(16)
-            case "run_agent_cli":
-                Text(g["cli"].str).foregroundStyle(Theme.fg3)
-                Text(g["task"].str).lineLimit(16)
             case "delete_secret":
                 Text("删除密钥 ") + Text(g["name"].str).foregroundColor(Theme.accent) + Text("（删除后无法恢复）")
             case "edit_file":

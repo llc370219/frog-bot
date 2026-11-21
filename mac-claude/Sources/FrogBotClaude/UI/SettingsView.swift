@@ -403,7 +403,6 @@ private struct ServerPane: View {
 
     @State private var botKey: String = ""
     @State private var settings: APISettings?
-    @State private var cli = ""
     @State private var update: UpdateStatus?
     @State private var checking = false
     @State private var updateError: String?
@@ -487,7 +486,7 @@ private struct ServerPane: View {
                     }
                     RowDivider()
                     FormRow(title: "Agent") {
-                        Text(cli.isEmpty ? "Frog（内置）" : cliName).foregroundStyle(Theme.fg3)
+                        Text("Frog（内置）").foregroundStyle(Theme.fg3)
                         Button("管理…") { if let r = selectedRef { go(.agents(r)) } }
                             .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
                     }
@@ -520,8 +519,6 @@ private struct ServerPane: View {
         .sheet(isPresented: $relogin) { ServerSheet(mode: .login, server: server) }
     }
 
-    private var cliName: String { ["codex": "Codex CLI", "claude": "Claude Code"][cli] ?? cli }
-
     private var chatLabel: String {
         guard let s = settings else { return "—" }
         if s.env_override == true { return "由环境变量指定" }
@@ -530,7 +527,6 @@ private struct ServerPane: View {
     }
 
     private var agentLabel: String {
-        if !cli.isEmpty { return "由 \(cliName) 执行" }
         guard let s = settings else { return "—" }
         let ch = s.channel(s.agentChannelID)?.name
         return s.agentModelID.isEmpty ? "未选择" : [ch, s.agentModelID].compactMap { $0 }.joined(separator: " · ")
@@ -571,10 +567,8 @@ private struct ServerPane: View {
 
     private func loadBot() async {
         settings = nil
-        cli = ""
         guard let r = selectedRef, let session = model.session(r) else { return }
         settings = try? await session.loadSettings()
-        cli = (try? await session.loadConnections())?.cli ?? ""
     }
 
     private func check() {

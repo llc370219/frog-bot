@@ -32,6 +32,7 @@ import (
 	"frogbot/internal/auth"
 	"frogbot/internal/bot"
 	"frogbot/internal/onefrog"
+	"frogbot/internal/remote"
 	"frogbot/internal/rootd"
 	"frogbot/internal/sandbox"
 	"frogbot/web"
@@ -52,6 +53,9 @@ func env(def string, keys ...string) string {
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "bridge":
+			remote.RunBridgeCLI(os.Args[2:])
+			return
 		case "reset-password":
 			resetPassword(os.Args[2:])
 			return

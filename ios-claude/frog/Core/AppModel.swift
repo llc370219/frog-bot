@@ -238,30 +238,72 @@ final class AppModel {
         for (ref, session) in sessions where ref.server == s.id { session.stop() }
     }
 
-    /// 添加服务器，或给已有服务器重新登录 / 修改设置。
-    func connect(existing: ServerEntry?, name: String, address: String, username: String, password: String) async throws {
+    /// 添加服务器，或给已有服务器重新登录 / 修改设置。若地址栏直接粘贴了 frogpair:// 配对码则自动走一键配对。
+    func connect(existing: ServerEntry?, name: String, address: String, username: String, password: String,
+                 proxyMode: ProxyRouteMode? = nil, customProxy: String = "") async throws {
+        if address.range(of: "frogpair://", options: [.caseInsensitive]) != nil {
+            try await connectWithPairCode(address, existing: existing, customName: name, proxyMode: proxyMode, customProxy: customProxy)
+            return
+        }
         guard let url = ServerConfig.normalize(address) else {
-            throw APIError.invalid("地址格式不对，例如 https://bot.example.com 或 http://1.2.3.4:8080")
+            throw APIError.invalid("地址格式不对，例如 https://bot.example.com 或粘贴 frogpair:// 配对码")
         }
         let user = username.trimmingCharacters(in: .whitespaces)
-        var config = ServerConfig(id: existing?.id ?? UUID(), name: name.trimmingCharacters(in: .whitespaces),
-                                  url: url.absoluteString, username: user.isEmpty ? "admin" : user)
+        let trimmedProxy = customProxy.trimmingCharacters(in: .whitespacesAndNewlines)
+        var config = ServerConfig(
+            id: existing?.id ?? UUID(),
+            name: name.trimmingCharacters(in: .whitespaces),
+            url: url.absoluteString,
+            username: user.isEmpty ? "admin" : user,
+            tlsPin: existing?.config.url == url.absoluteString ? existing?.config.tlsPin : nil,
+            proxyMode: proxyMode ?? existing?.config.proxyMode,
+            customProxy: !trimmedProxy.isEmpty ? trimmedProxy : existing?.config.customProxy
+        )
         let client = ServerClient(config: config)
         let me = try await client.me()
         if me.enabled && me.authenticated != true {
             guard !password.isEmpty else { throw APIError.invalid("请输入密码") }
             try await client.login(username: config.username, password: password)
         }
-        // 确认真的能读到 Bot 列表
+        try await finishConnect(existing: existing, config: &config, client: client, authEnabled: me.enabled, fallbackHost: url.host)
+    }
+
+    /// 扫码或粘贴 frogpair:// 配对码一键建立加密连接（支持 TLS 证书指纹锁定）。
+    func connectWithPairCode(_ raw: String, existing: ServerEntry? = nil, customName: String = "",
+                             proxyMode: ProxyRouteMode? = nil, customProxy: String = "") async throws {
+        guard let parsed = ServerConfig.parsePairCode(raw) else {
+            throw APIError.invalid("未识别到有效的 frog 配对码，请在电脑端「设置 › 远程连接」点击生成手机配对码")
+        }
+        let preferredName = customName.trimmingCharacters(in: .whitespaces)
+        let trimmedProxy = customProxy.trimmingCharacters(in: .whitespacesAndNewlines)
+        var config = ServerConfig(
+            id: existing?.id ?? UUID(),
+            name: !preferredName.isEmpty ? preferredName : (parsed.serverName ?? ""),
+            url: parsed.endpointURL,
+            username: "paired-device",
+            tlsPin: parsed.tlsPin,
+            proxyMode: proxyMode ?? existing?.config.proxyMode,
+            customProxy: !trimmedProxy.isEmpty ? trimmedProxy : existing?.config.customProxy
+        )
+        let client = ServerClient(config: config)
+        let devName = UIDevice.current.name
+        if let remoteName = try await client.redeemPair(token: parsed.token, deviceName: devName),
+           config.name.isEmpty, !remoteName.isEmpty {
+            config.name = remoteName
+        }
+        try await finishConnect(existing: existing, config: &config, client: client, authEnabled: true, fallbackHost: URL(string: parsed.endpointURL)?.host)
+    }
+
+    private func finishConnect(existing: ServerEntry?, config: inout ServerConfig, client: ServerClient, authEnabled: Bool, fallbackHost: String?) async throws {
         var groups: [DeviceGroup]
         do {
             groups = try await client.get("/api/devices")
         } catch let e as APIError where e.status == 404 {
             let bots: [BotProfile] = try await client.get("/api/bots")
-            groups = [DeviceGroup(id: "local", name: url.host ?? "本机", online: true, bots: bots)]
+            groups = [DeviceGroup(id: "local", name: fallbackHost ?? "本机", online: true, bots: bots)]
         }
         if config.name.isEmpty {
-            config.name = groups.first?.name ?? url.host ?? "frog"
+            config.name = groups.first?.name ?? fallbackHost ?? "frog"
         }
         client.update(config: config)
 
@@ -270,7 +312,7 @@ final class AppModel {
             for ref in sessions.keys where ref.server == s.id { sessions[ref] = nil }
             s.config = config
             s.client = client
-            s.authEnabled = me.enabled
+            s.authEnabled = authEnabled
             s.devices = groups
             s.status = .online
             persist()
@@ -280,7 +322,7 @@ final class AppModel {
         } else {
             let s = ServerEntry(config: config)
             s.client = client
-            s.authEnabled = me.enabled
+            s.authEnabled = authEnabled
             s.devices = groups
             s.status = .online
             servers.append(s)
@@ -342,6 +384,19 @@ final class AppModel {
         persist()
         syncSessions(s)
         relay.apply()
+    }
+
+    func updateProxyRoute(_ s: ServerEntry, mode: ProxyRouteMode, customProxy: String) {
+        let trimmed = customProxy.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCustom = trimmed.isEmpty ? nil : trimmed
+        guard mode != s.config.effectiveProxyMode || normalizedCustom != s.config.customProxy else { return }
+        s.config.proxyMode = mode
+        s.config.customProxy = normalizedCustom
+        stopSessions(of: s)
+        for ref in sessions.keys where ref.server == s.id { sessions[ref] = nil }
+        s.client = ServerClient(config: s.config)
+        persist()
+        Task { await refresh(s) }
     }
 
     func move(from: IndexSet, to: Int) {

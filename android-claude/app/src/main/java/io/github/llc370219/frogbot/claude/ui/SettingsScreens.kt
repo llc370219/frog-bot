@@ -72,7 +72,6 @@ import androidx.compose.ui.unit.sp
 import io.github.llc370219.frogbot.claude.BuildConfig
 import io.github.llc370219.frogbot.claude.KeepAliveService
 import io.github.llc370219.frogbot.claude.R
-import io.github.llc370219.frogbot.claude.core.AgentConnections
 import io.github.llc370219.frogbot.claude.core.PrivilegeStatus
 import io.github.llc370219.frogbot.claude.core.ApiChannel
 import io.github.llc370219.frogbot.claude.core.ApiSettings
@@ -307,16 +306,14 @@ fun ServerScreen(state: AppState, s: ServerEntry, nav: Nav) {
     val ref = selected?.takeIf { it in refs } ?: refs.firstOrNull()
     val session = ref?.let { state.session(it) }
     var settings by remember { mutableStateOf<ApiSettings?>(null) }
-    var conn by remember { mutableStateOf<AgentConnections?>(null) }
     var picker by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     var update by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(ref) {
-        settings = null; conn = null
+        settings = null
         if (session != null) {
             settings = runCatching { session.loadSettings() }.getOrNull()
-            conn = runCatching { session.loadConnections() }.getOrNull()
         }
     }
 
@@ -350,13 +347,12 @@ fun ServerScreen(state: AppState, s: ServerEntry, nav: Nav) {
             }
             val st = settings
             val chat = st?.let { x -> if (x.envOverride) "由环境变量指定" else listOfNotNull(x.channel(x.chatChannel)?.name, x.chatModel.ifEmpty { null }).joinToString(" · ").ifEmpty { "未选择" } } ?: "—"
-            val agent = if (!conn?.cli.isNullOrEmpty()) "由 ${conn!!.clis.firstOrNull { it.id == conn!!.cli }?.name ?: conn!!.cli} 执行"
-            else st?.let { x -> listOfNotNull(x.channel(x.agentChannel)?.name, x.agentModel.ifEmpty { null }).joinToString(" · ").ifEmpty { "未选择" } } ?: "—"
+            val agent = st?.let { x -> listOfNotNull(x.channel(x.agentChannel)?.name, x.agentModel.ifEmpty { null }).joinToString(" · ").ifEmpty { "未选择" } } ?: "—"
             ListRow("聊天模型", chat, chevron = session.isLocalDevice, onClick = if (session.isLocalDevice) ({ nav.push(Screen.BotEditor(s.id, session.ref.device, session.ref)) }) else null)
             ListRow("任务模型", agent, chevron = session.isLocalDevice, onClick = if (session.isLocalDevice) ({ nav.push(Screen.BotEditor(s.id, session.ref.device, session.ref)) }) else null)
             ListRow("API 渠道", st?.let { "${it.channels.size} 个渠道" } ?: "—", Icons.Outlined.Cable, chevron = true, onClick = { nav.push(Screen.Channels(session.ref)) })
             ListRow(
-                "Agent", if (conn?.cli.isNullOrEmpty()) "执行任务使用 Frog（内置）" else "执行任务使用 ${conn!!.clis.firstOrNull { it.id == conn!!.cli }?.name ?: conn!!.cli}",
+                "Agent 与权限", "执行任务使用 Frog（内置）",
                 Icons.Outlined.SmartToy, chevron = true, onClick = { nav.push(Screen.Agents(session.ref)) },
             )
             Note("API 渠道整台设备共用；聊天模型、任务模型和 Agent 每个 Bot 各自选，互不影响。")
@@ -633,107 +629,10 @@ private fun ChannelEditor(session: BotSession, start: ApiChannel, onDone: (ApiCh
 
 @Composable
 fun AgentsScreen(session: BotSession, nav: Nav) {
-    val scope = rememberCoroutineScope()
-    var conn by remember { mutableStateOf<AgentConnections?>(null) }
-    var msg by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var settings by remember { mutableStateOf<ApiSettings?>(null) }
-    var piChannel by remember { mutableStateOf("") }
-    var piModel by remember { mutableStateOf("") }
-    suspend fun load() {
-        runCatching { session.loadConnections() }.onSuccess { conn = it }.onFailure { msg = ServerClient.describe(it) to true }
-        runCatching { session.loadSettings() }.onSuccess { settings = it }
-        val c = conn
-        if (piChannel.isEmpty() && c != null) {
-            if (c.cliChannel.isNotEmpty()) { piChannel = c.cliChannel; piModel = c.cliModel }
-            else settings?.channels?.firstOrNull { it.enabled }?.let { piChannel = it.id; piModel = it.visibleModels.firstOrNull() ?: "" }
-        }
-    }
-    LaunchedEffect(session.ref) { load() }
-    val installing = conn?.clis?.any { it.installing } == true
-    // 安装在服务器后台进行：装的时候每 1.5 秒刷新一次，装完自动停。
-    LaunchedEffect(installing) {
-        while (installing) {
-            delay(1500)
-            runCatching { session.loadConnections() }.onSuccess { conn = it }
-        }
-    }
-    fun install(id: String) {
-        msg = null
-        scope.launch {
-            runCatching { session.installCli(id) }.onSuccess { conn = it }.onFailure { msg = ServerClient.describe(it) to true }
-        }
-    }
-    fun use(id: String) {
-        busy = true; msg = null
-        scope.launch {
-            runCatching { if (id == "pi") session.saveConnection(id, piChannel, piModel) else session.saveConnection(id) }.onSuccess {
-                conn = it
-                val name = if (id.isEmpty()) "Frog（内置）" else it.clis.firstOrNull { c -> c.id == id }?.name ?: id
-                msg = "新任务将使用 $name，正在进行的任务不受影响。" to false
-            }.onFailure { msg = ServerClient.describe(it) to true }
-            busy = false
-        }
-    }
-    SubPage("Agent", nav, subtitle = "${session.profile.name} · ${session.deviceName}", actions = {
-        TextButton(enabled = !busy, onClick = { scope.launch { busy = true; load(); busy = false } }) { Text("重新检测") }
-    }) {
-        Note("这个 Bot 的后台任务用哪个 Agent 执行，只影响这个 Bot。聊天回复仍用 API 渠道里的聊天模型。")
-        val c = conn
-        if (c == null) {
-            if (msg == null) Busy() else Note(msg!!.first, MaterialTheme.colorScheme.error)
-            return@SubPage
-        }
-        ListRow("Frog", "内置 · 用 API 渠道里的任务模型", leading = { FrogAgentAvatar(40.dp) }, onClick = { if (!busy) use("") }) {
-            RadioButton(selected = c.cli.isEmpty(), onClick = { if (!busy) use("") })
-        }
-        c.clis.forEach { cli ->
-            val job = cli.install
-            val detail = when {
-                job?.state == "running" -> "正在安装：${job?.step ?: "准备"}…"
-                job?.state == "failed" -> "安装失败：${job?.error ?: "未知错误"}"
-                !cli.supported -> cli.note ?: "暂不支持"
-                !cli.installed -> "没有检测到"
-                cli.managed -> "已由 frog 安装" + (job?.version?.let { " $it" } ?: "")
-                else -> "已安装 · 用 frog 的 API 渠道"
-            }
-            val usable = cli.installed && cli.supported
-            val canInstall = session.isLocalDevice && cli.installable
-            ListRow(
-                cli.name, "${cli.id} · $detail",
-                leading = { AgentIcon(cli.id, 40.dp) },
-                titleColor = if (usable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                onClick = if (usable && !busy) ({ use(cli.id) }) else null,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (cli.installing) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    } else if (canInstall) {
-                        OutlinedButton(enabled = !busy && !installing, onClick = { install(cli.id) }) { Text(if (cli.managed) "更新" else "安装") }
-                    }
-                    RadioButton(selected = c.cli == cli.id, enabled = usable, onClick = { if (!busy && usable) use(cli.id) })
-                }
-            }
-        }
-        val pi = c.clis.firstOrNull { it.id == "pi" }
-        val s = settings
-        if (pi != null && pi.installed && pi.supported && s != null) {
-            // Pi 用 frog 的 API 渠道：Key 留在 frog 里，Pi 只拿到本机网关的临时令牌
-            if (s.channels.none { it.enabled }) {
-                Note("「${session.deviceName}」还没有 API 渠道，请先在「API 渠道」里添加。", MaterialTheme.colorScheme.error)
-            } else {
-                RoutePicker("Pi 的 API 渠道", s, piChannel, piModel) { ch, m -> piChannel = ch; piModel = m }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
-                    Button(enabled = !busy && piChannel.isNotEmpty() && piModel.isNotEmpty(), onClick = { use("pi") }) {
-                        Text(if (c.cli == "pi") "保存 Pi 设置" else "使用 Pi")
-                    }
-                }
-                Note("Pi 通过 frog 的本机网关调用这里选的渠道和模型；渠道的 Key 不会交给 Pi。")
-            }
-        }
-        msg?.let { Note(it.first, if (it.second) MaterialTheme.colorScheme.error else Frog.extra.ok) }
+    SubPage("Agent 与权限", nav, subtitle = "${session.profile.name} · ${session.deviceName}") {
+        Note("这个 Bot 的后台任务由 Frog（内置 Agent）使用 API 渠道里的任务模型执行。")
+        ListRow("Frog（内置 Agent）", "用 API 渠道里的任务模型", leading = { FrogAgentAvatar(40.dp) })
         if (session.isLocalDevice) PrivilegeSection(session)
-        Note("检测的是「${session.deviceName}」上的安装情况。「安装」会把 Node.js 和 CLI 装进 frog 的数据目录，不需要 root。Claude Code、Codex 等暂不支持；每次启动外部 CLI 前都要在任务卡片里批准。")
     }
 }
 

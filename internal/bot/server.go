@@ -15,8 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"frogbot/internal/onefrog"
 )
 
 // Handler 返回 HTTP 接口（以及可选的前端静态文件）。
@@ -98,46 +96,6 @@ func (b *Bot) Handler(webDir string) http.Handler {
 			writeJSON(w, map[string]any{"latency_ms": latency}, err)
 		})
 	}
-	mux.HandleFunc("GET /api/settings/connections", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, b.connections(), nil)
-	})
-	mux.HandleFunc("POST /api/settings/connections", func(w http.ResponseWriter, r *http.Request) {
-		var draft struct {
-			CLI        *string `json:"cli"`
-			CLIModel   string  `json:"cli_model"`
-			CLIAuth    string  `json:"cli_auth"`
-			CLIChannel string  `json:"cli_channel"` // Pi：用哪个 API 渠道
-		}
-		if !decodeJSON(w, r, &draft, 1024) {
-			return
-		}
-		if draft.CLI == nil {
-			writeJSON(w, nil, errors.New("请选择一个 Agent"))
-			return
-		}
-		conn := agentConnection{CLI: *draft.CLI, CLIOptions: onefrog.CLIOptions{Model: draft.CLIModel, Auth: draft.CLIAuth, Channel: draft.CLIChannel}}
-		if err := b.saveAgentConnection(conn); err != nil {
-			writeJSON(w, nil, err)
-			return
-		}
-		writeJSON(w, b.connections(), nil)
-	})
-	// 一键安装 / 更新 CLI（整台设备共用，装到 <data>/tools）。进度通过 GET /api/settings/connections 的 clis[].install 查看。
-	// 只开放给登录的用户，设备互联的转发列表里没有它：不能远程给别的设备装软件。
-	mux.HandleFunc("POST /api/settings/clis/install", func(w http.ResponseWriter, r *http.Request) {
-		var draft struct {
-			ID string `json:"id"`
-		}
-		if !decodeJSON(w, r, &draft, 256) {
-			return
-		}
-		if err := onefrog.StartInstall(draft.ID); err != nil {
-			writeJSON(w, nil, err)
-			return
-		}
-		writeJSON(w, b.connections(), nil)
-	})
 	mux.HandleFunc("GET /api/update", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		status, err := checkUpdate(r.Context(), releaseClient, latestReleaseAPI, currentVersion())
@@ -146,9 +104,7 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
 		_, chatModel := b.resolveModel(true)
 		_, agentModel := b.resolveModel(false)
-		conn := b.connections().agentConnection
 		writeJSON(w, map[string]any{"name": b.botProfile().Name, "chat_model": chatModel, "agent_model": agentModel,
-			"agent_cli": conn.CLI, "agent_cli_model": conn.Model, "agent_cli_auth": conn.Auth,
 			"policy": b.cfg.Policy, "demo": b.cfg.Demo, "max_concurrent": b.cfg.MaxConcurrent,
 			"stall_sec": int(b.cfg.StallTimeout.Seconds()), "timezone": "Asia/Shanghai", "version": currentVersion()}, nil)
 	})

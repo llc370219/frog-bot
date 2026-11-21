@@ -14,6 +14,25 @@ struct AgyModelOption: Codable, Hashable, Identifiable {
     var name: String
 }
 
+struct AgyCommandOption: Codable, Hashable, Identifiable {
+    var name: String
+    var description: String?
+    var input_hint: String?
+    var id: String { name }
+}
+
+struct AgyQueuedPrompt: Hashable, Identifiable {
+    var id: String
+    var text: String
+    var behavior: String
+
+    init(_ j: JSON) {
+        id = j["id"].str
+        text = j["text"].str
+        behavior = j["behavior"].str.isEmpty ? "follow_up" : j["behavior"].str
+    }
+}
+
 struct AgyStatus: Codable, Equatable {
     var installed: Bool
     var path: String?
@@ -21,6 +40,7 @@ struct AgyStatus: Codable, Equatable {
     var projects_root: String
     var modes: [AgyModeOption]
     var models: [AgyModelOption]
+    var commands: [AgyCommandOption]?
     var default_mode: String
     var default_model: String?
     var error: String?
@@ -59,6 +79,8 @@ struct AgyToolCall: Hashable, Identifiable {
     var title: String
     var kind: String
     var status: String
+    var detail: String
+    var output: String
 
     init(_ j: JSON) {
         id = j["id"].str
@@ -66,6 +88,8 @@ struct AgyToolCall: Hashable, Identifiable {
         title = j["title"].str
         kind = j["kind"].str
         status = j["status"].str
+        detail = j["detail"].str
+        output = j["output"].str
     }
 }
 
@@ -255,6 +279,7 @@ final class AgyChatSession {
 
     var messages: [AgyMessage] = []
     var permissions: [AgyPermission] = []
+    var queue: [AgyQueuedPrompt] = []
     var streaming = ""
     var thinking = ""
     var thinkStart: Double = 0
@@ -264,6 +289,7 @@ final class AgyChatSession {
     var maxTokens: Int = 0
     var modes: [AgyModeOption] = []
     var models: [AgyModelOption] = []
+    var commands: [AgyCommandOption] = []
     var draft = ""
 
     @ObservationIgnored private var streamTask: Task<Void, Never>?
@@ -344,6 +370,7 @@ final class AgyChatSession {
             busy = s["busy"].bool
             messages = d["messages"].array.map(AgyMessage.init)
             permissions = d["permissions"].array.map(AgyPermission.init)
+            queue = d["queue"].array.map(AgyQueuedPrompt.init)
             streaming = d["streaming"].str
             thinking = d["thinking"].str
             thinkStart = d["think_start"].double ?? 0
@@ -355,6 +382,14 @@ final class AgyChatSession {
             if !mds.isEmpty { modes = mds }
             let mls = d["models"].array.map { AgyModelOption(id: $0["id"].str, name: $0["name"].str) }
             if !mls.isEmpty { models = mls }
+            let cmds = d["commands"].array.map { AgyCommandOption(name: $0["name"].str, description: $0["description"].string, input_hint: $0["input_hint"].string) }
+            if !cmds.isEmpty { commands = cmds }
+
+        case "queue.update":
+            queue = d.array.map(AgyQueuedPrompt.init)
+
+        case "commands":
+            commands = d.array.map { AgyCommandOption(name: $0["name"].str, description: $0["description"].string, input_hint: $0["input_hint"].string) }
 
         case "message":
             let m = AgyMessage(d)
@@ -404,7 +439,7 @@ final class AgyChatSession {
             if let mx = d["max_tokens"].double, mx > 0 { maxTokens = Int(mx) }
 
         case "turn.done":
-            busy = false
+            busy = d["busy"].bool
             streaming = ""; thinking = ""; thinkStart = 0; thinkEnd = 0; liveTools = []
 
         default:
@@ -414,9 +449,17 @@ final class AgyChatSession {
 
     // MARK: 操作
 
-    func send(_ text: String) async throws {
+    func send(_ text: String, behavior: String? = nil) async throws {
         let encoded = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
-        try await client.post("/api/agy/sessions/\(encoded)/messages", body: ["project_id": projectID, "text": text])
+        var body: [String: Any] = ["project_id": projectID, "text": text]
+        if let behavior { body["behavior"] = behavior }
+        try await client.post("/api/agy/sessions/\(encoded)/messages", body: body)
+    }
+
+    func cancelQueued(_ queueID: String) async throws {
+        let sid = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
+        let qid = queueID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? queueID
+        try await client.post("/api/agy/sessions/\(sid)/queue/\(qid)", method: "DELETE")
     }
 
     func stopPrompt() async throws {

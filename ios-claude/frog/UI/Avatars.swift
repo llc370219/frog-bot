@@ -44,7 +44,10 @@ struct BotAvatar: View {
         let file = Self.file(profile)
         Group {
             if let img = BundledImage.named("bot-avatars/" + file) {
-                Image(uiImage: img).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                Image(uiImage: img)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
             } else {
                 RemoteImage(client: client, path: "/assets/bot-avatars/" + file) {
                     Text(String(profile.name.prefix(1)))
@@ -53,10 +56,13 @@ struct BotAvatar: View {
                 }
             }
         }
-        .padding(size * 0.07)
+        .padding(size * 0.08)
         .frame(width: size, height: size)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: size * 0.3, style: .continuous).strokeBorder(Theme.line2, lineWidth: 0.5))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: size * 0.34, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: size * 0.34, style: .continuous)
+                .strokeBorder(Theme.line, lineWidth: 0.75)
+        )
     }
 }
 

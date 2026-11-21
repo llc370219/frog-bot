@@ -279,6 +279,7 @@ func TestApprovalViaAPI(t *testing.T) {
 	// 1) 后台 Agent 层直接完成，不产生审批阻塞
 	id, _ := b.StartTask("清理 junk", "清理")
 	waitFor(t, "agent task completed without approval", func() bool { tk, _ := b.store.Task(id); return tk.Status == "completed" })
+	waitFor(t, "agent task reported", func() bool { return countMsgs(b.store, "assistant", "完成：清理完成") >= 1 })
 	if len(b.store.PendingApprovals()) != 0 {
 		t.Fatal("background agent task should not request approval")
 	}

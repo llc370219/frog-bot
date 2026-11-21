@@ -67,7 +67,6 @@ type Bot struct {
 	envAgent       modelConnection // 环境变量提供的 Agent 连接（AGENT_MODEL，未设时同聊天模型）
 	defaultChannel string // 聊天用的渠道 ID
 	agentChannel   string // Agent 用的渠道 ID
-	connection     agentConnection // 本 Bot 的 Agent 执行方式，由 modelMu 保护
 	modelOwner     *Bot
 	slots          *taskSlots // 所有 Bot 共用的后台任务并发上限
 	coordinator    *Bots
@@ -158,9 +157,6 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	}
 	if err := b.loadSettings(); err != nil {
 		return nil, fmt.Errorf("读取模型设置失败: %w", err)
-	}
-	if err := b.loadAgentConnection(); err != nil {
-		return nil, fmt.Errorf("读取 Agent 连接设置失败: %w", err)
 	}
 
 	reviewer := cfg.Reviewer

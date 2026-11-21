@@ -300,22 +300,6 @@ struct ChannelProbe: Encodable {
 struct ModelList: Decodable { var models: [String]? }
 struct Latency: Decodable { var latency_ms: Int? }
 
-struct CLIStatus: Codable, Hashable, Identifiable {
-    var id: String
-    var name: String
-    var installed: Bool
-    /// 检测到的可执行文件；managed 表示由 frog 一键安装；installable 表示这台设备可以一键安装/更新。
-    var path: String?
-    var managed: Bool?
-    var installable: Bool?
-    var install: CLIInstall?
-    /// 现在能选的只有 Pi；其他 CLI 显示 note（「暂不支持」）
-    var supported: Bool?
-    var note: String?
-
-    var installing: Bool { install?.state == "running" }
-}
-
 /// 提权到 root 的状态（GET /api/settings/privilege）：只在服务器模式、Agent 沙箱可用并装了提权助手时 available。
 struct PrivilegeStatus: Codable, Hashable {
     struct Sandbox: Codable, Hashable { var available: Bool; var reason: String? }
@@ -340,23 +324,6 @@ struct PrivilegeStatus: Codable, Hashable {
         if let s = status?.locked_left_sec, s > 0 { return "密码输错太多次，\((s + 59) / 60) 分钟后再试" }
         return reason ?? error ?? "不可用"
     }
-}
-
-/// 一键安装的进度（frog 把 Node.js 和 CLI 装到服务器的数据目录，不需要 root）。
-struct CLIInstall: Codable, Hashable {
-    var state: String // running / done / failed
-    var step: String?
-    var error: String?
-    var log: String?
-    var version: String?
-}
-
-struct AgentConnections: Codable, Hashable {
-    var cli: String
-    var cli_model: String?
-    /// Pi 用 frog 的哪个 API 渠道（经本机网关转发，Pi 拿不到真实 Key）
-    var cli_channel: String?
-    var clis: [CLIStatus]?
 }
 
 struct UpdateStatus: Codable, Hashable {

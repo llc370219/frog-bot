@@ -35,10 +35,44 @@ enum Fmt {
     private static let dayTime: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "M月d日 HH:mm"; return f
     }()
+    private static let monthDay: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "M月d日"; return f
+    }()
+    private static let yearMonthDay: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy/M/d"; return f
+    }()
+    private static let weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"]
 
     static func localTime(_ ms: Double) -> String {
         let d = Date(timeIntervalSince1970: ms / 1000)
         return Calendar.current.isDateInToday(d) ? timeOnly.string(from: d) : dayTime.string(from: d)
+    }
+
+    /// 首页列表时间（Grok 风格）：今天显示 08:17，昨天显示“昨天”，一周内显示“星期三”，本年显示“11月14日”。
+    static func chatListTime(_ ms: Double) -> String {
+        let d = Date(timeIntervalSince1970: ms / 1000)
+        let cal = Calendar.current
+        if cal.isDateInToday(d) {
+            return timeOnly.string(from: d)
+        }
+        if cal.isDateInYesterday(d) {
+            return "昨天"
+        }
+        let now = Date()
+        if let daysAgo = cal.dateComponents([.day], from: cal.startOfDay(for: d), to: cal.startOfDay(for: now)).day,
+           daysAgo > 1 && daysAgo < 7 {
+            let wd = cal.component(.weekday, from: d)
+            if wd >= 1 && wd <= 7 { return weekdays[wd - 1] }
+        }
+        if cal.component(.year, from: d) == cal.component(.year, from: now) {
+            return monthDay.string(from: d)
+        }
+        return yearMonthDay.string(from: d)
+    }
+
+    static func isoListTime(_ iso: String) -> String {
+        let ms = Stamp.ms(iso)
+        return ms > 0 ? chatListTime(ms) : ""
     }
 
     /// 把一次工具调用翻译成人话，例如“读取 README.md”“运行测试”

@@ -88,20 +88,16 @@ type SecretReq struct {
 }
 
 type TaskRec struct {
-	ID           string            `json:"id"`
-	Title        string            `json:"title"`
-	Input        string            `json:"input"`
-	CLI          string            `json:"cli,omitempty"`
-	DirectChat   bool              `json:"direct_chat,omitempty"`
-	PeerRequest  string            `json:"peer_request,omitempty"`
-	History      []onefrog.Message `json:"history,omitempty"`
-	Status       string            `json:"status"`         // queued | running | paused | completed | failed | cancelled
-	Prio         float64           `json:"prio,omitempty"` // 排队顺序，小的先跑
-	Output       string            `json:"output,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	Steps        int               `json:"steps,omitempty"`
-	StopReason   string            `json:"stop_reason,omitempty"` // 结束：user | stall | restart；暂停：user | chat | restart | held（待办，还没开始过）
-	CreatedAt    time.Time         `json:"created_at"`
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Input        string    `json:"input"`
+	Status       string    `json:"status"`         // queued | running | paused | completed | failed | cancelled
+	Prio         float64   `json:"prio,omitempty"` // 排队顺序，小的先跑
+	Output       string    `json:"output,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	Steps        int       `json:"steps,omitempty"`
+	StopReason   string    `json:"stop_reason,omitempty"` // 结束：user | stall | restart；暂停：user | chat | restart | held（待办，还没开始过）
+	CreatedAt    time.Time `json:"created_at"`
 	createdSeq   int64             // event order breaks ties on clocks with coarse resolution
 	EndedAt      time.Time         `json:"ended_at,omitempty"`
 	LastActivity time.Time         `json:"-"`
@@ -158,7 +154,7 @@ func (t TaskRec) Duration() time.Duration {
 func target(tool string, args json.RawMessage) string {
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
-	for _, k := range []string{"command", "path", "pattern", "task_id", "schedule_id", "query", "name", "title", "cli"} {
+	for _, k := range []string{"command", "path", "pattern", "task_id", "schedule_id", "query", "name", "title"} {
 		if v, ok := m[k].(string); ok && v != "" {
 			return v
 		}

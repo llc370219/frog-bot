@@ -2,7 +2,7 @@ import { Eye, FolderSearch, ListTodo, SquareTerminal, WifiOff } from 'lucide-rea
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, botKey, BotContext, createBotAPI, isImage, isOpen, useActiveBot, useBot, type Attachment, type BotProfile, type DeviceGroup, type Info, type Msg, type State } from './api';
 import ApprovalCard from './components/ApprovalCard';
-import AgyWorkspace from './components/AgyWorkspace';
+import AgyWorkspace, { useCodingWorkspace } from './components/AgyWorkspace';
 import Artifact from './components/Artifact';
 import Composer from './components/Composer';
 import { BotAvatar, botAvatarById } from './components/BotAvatar';
@@ -15,11 +15,12 @@ import TaskDock from './components/TaskDock';
 import Scheduler from './components/Scheduler';
 import ThinkingBlock from './components/ThinkingBlock';
 import WorkingCard from './components/WorkingCard';
-import Sidebar from './components/Sidebar';
+import Sidebar, { type UIMode } from './components/Sidebar';
 import SettingsDialog from './components/SettingsDialog';
 import TopActions from './components/TopActions';
 
 const NOTIFY_KEY = 'frogbot-notify';
+const MODE_KEY = 'frogbot-ui-mode';
 const launchParams = new URLSearchParams(window.location.search);
 const launchAction = launchParams.get('mac_action');
 const launchDevice = launchParams.get('mac_device') || 'local';
@@ -30,8 +31,11 @@ export default function App() {
   const [loadError, setLoadError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [editor, setEditor] = useState<{ device: DeviceGroup; profile?: BotProfile } | null>(null);
+  const [mode, setMode] = useState<UIMode>(() => {
+    if (launchAction === 'agy' || launchAction === 'coding') return 'coding';
+    return localStorage.getItem(MODE_KEY) === 'coding' ? 'coding' : 'bot';
+  });
   const [schedulerOpen, setSchedulerOpen] = useState(launchAction === 'scheduler');
-  const [agyOpen, setAgyOpen] = useState(launchAction === 'agy');
   const [settingsOpen, setSettingsOpen] = useState(launchAction === 'settings');
   const [activeBotId, setActiveBotId] = useState(() => launchBot ? botKey(launchDevice, launchBot) : localStorage.getItem('frogbot-active-bot'));
   const devices = directory.length ? directory : [{ id: 'local', name: '本机', online: true, bots: [] }];
@@ -39,6 +43,8 @@ export default function App() {
   const device = devices.find(d => d.bots.some(b => botKey(d.id, b.id) === activeBotId)) ?? devices[0];
   const activeBot = device.bots.find(b => botKey(device.id, b.id) === activeBotId) ?? device.bots[0];
   const activeKey = activeBot && botKey(device.id, activeBot.id);
+  const coding = useCodingWorkspace(mode === 'coding');
+
   useEffect(() => {
     const request = new AbortController();
     const refresh = () => api.devices(request.signal).then(groups => {
@@ -53,30 +59,50 @@ export default function App() {
     return () => { request.abort(); window.clearInterval(timer); };
   }, [attempt]);
 
+  const handleChangeMode = (next: UIMode) => {
+    setMode(next);
+    if (next === 'coding') setSchedulerOpen(false);
+    try { localStorage.setItem(MODE_KEY, next); } catch { /* ignore */ }
+  };
+
   const handleSelectBot = (id: string) => {
+    handleChangeMode('bot');
     setSchedulerOpen(false);
-    setAgyOpen(false);
     setActiveBotId(id);
     localStorage.setItem('frogbot-active-bot', id);
   };
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-canvas text-fg">
-      <Sidebar devices={devices} activeBotId={activeKey} schedulerActive={schedulerOpen} agyActive={agyOpen}
+      <Sidebar mode={mode} onChangeMode={handleChangeMode}
+        devices={devices} activeBotId={activeKey} schedulerActive={schedulerOpen} coding={coding}
         onSelectBot={handleSelectBot}
-        onOpenScheduler={() => { setAgyOpen(false); setSchedulerOpen(true); }}
-        onOpenAgy={() => { setSchedulerOpen(false); setAgyOpen(true); }}
+        onOpenScheduler={() => { handleChangeMode('bot'); setSchedulerOpen(true); }}
         onOpenSettings={() => setSettingsOpen(true)} onCreateBot={device => setEditor({ device })}
         onEditBot={profile => setEditor({ device: local, profile })} />
-      {activeBot ? (
-        <BotView key={activeKey} bot={activeBot} device={device} devices={devices} settingsInitialDevice={device.id}
-          schedulerOpen={schedulerOpen} agyOpen={agyOpen}
-          settingsOpen={settingsOpen} onCloseSettings={() => setSettingsOpen(false)}
+      {mode === 'coding' ? (
+        <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+          <TopActions />
+          <AgyWorkspace coding={coding} />
+        </div>
+      ) : activeBot ? (
+        <BotView key={activeKey} bot={activeBot} device={device}
+          schedulerOpen={schedulerOpen}
+          settingsOpen={settingsOpen}
           modalOpen={editor !== null} />
       ) : (
         <main className="grid flex-1 place-content-center gap-3 px-4 text-center text-sm text-fg3" role="status">
           {loadError || '正在加载 Bot…'}
           {loadError && <button className="underline" onClick={() => { setLoadError(''); setAttempt((n) => n + 1); }}>重试</button>}
         </main>
+      )}
+      {settingsOpen && (
+        <SettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          devices={devices}
+          initialDevice={device.id}
+          initialBot={activeBot?.id ?? 'main'}
+          onSettingsSaved={() => { setAttempt(n => n + 1); }}
+        />
       )}
       {editor && <BotEditor profile={editor.profile} device={editor.device} onClose={() => setEditor(null)}
         onDeleted={(id) => {
@@ -101,14 +127,14 @@ export default function App() {
 }
 
 function BotView({ bot, device, ...props }: {
-  bot: BotProfile; device: DeviceGroup; devices: DeviceGroup[]; settingsInitialDevice: string; schedulerOpen: boolean; agyOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+  bot: BotProfile; device: DeviceGroup; schedulerOpen: boolean; settingsOpen: boolean; modalOpen: boolean;
 }) {
   const botAPI = useMemo(() => createBotAPI(bot.id, device.id), [bot.id, device.id]);
   return <BotContext.Provider value={{ bot, device, api: botAPI }}><ChatView {...props} /></BotContext.Provider>;
 }
 
-function ChatView({ devices, settingsInitialDevice, schedulerOpen, agyOpen, settingsOpen, onCloseSettings, modalOpen }: {
-  devices: DeviceGroup[]; settingsInitialDevice: string; schedulerOpen: boolean; agyOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+function ChatView({ schedulerOpen, settingsOpen, modalOpen }: {
+  schedulerOpen: boolean; settingsOpen: boolean; modalOpen: boolean;
 }) {
   const { bot, device, api } = useActiveBot();
   const activeBotName = bot.name;
@@ -159,20 +185,20 @@ function ChatView({ devices, settingsInitialDevice, schedulerOpen, agyOpen, sett
   // 快捷键：Esc 停止回复，Ctrl/⌘+K 聚焦输入框
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (settingsOpen || schedulerOpen || agyOpen || modalOpen) return;
+      if (settingsOpen || schedulerOpen || modalOpen) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); document.getElementById('composer')?.focus(); }
       else if (e.key === 'Escape' && s.busy) { e.preventDefault(); api.stopReply().catch(() => {}); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [api, s.busy, settingsOpen, schedulerOpen, agyOpen, modalOpen]);
+  }, [api, s.busy, settingsOpen, schedulerOpen, modalOpen]);
 
   // 新内容出现时，如果用户本来就在底部，就跟着滚到底
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && !schedulerOpen && !agyOpen && stick.current) el.scrollTop = el.scrollHeight;
+    if (el && !schedulerOpen && stick.current) el.scrollTop = el.scrollHeight;
   });
 
   const wrap = async <T,>(p: Promise<T>) => {
@@ -207,8 +233,7 @@ function ChatView({ devices, settingsInitialDevice, schedulerOpen, agyOpen, sett
         )}
 
         {schedulerOpen && <Scheduler revision={s.scheduleRevision} />}
-        {agyOpen && <AgyWorkspace />}
-        <div ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} className={schedulerOpen || agyOpen ? 'hidden' : 'flex-1 overflow-y-auto'}>
+        <div ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} className={schedulerOpen ? 'hidden' : 'flex-1 overflow-y-auto'}>
           <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pb-8 pt-8" aria-live="off">
             {s.ready && s.items.length === 0 && <Welcome name={activeBotName} onPick={(t) => send(t).catch(() => {})} />}
             {!s.ready && <div className="flex justify-center pt-[20vh]"><span className="typing"><i /><i /><i /></span></div>}
@@ -223,7 +248,7 @@ function ChatView({ devices, settingsInitialDevice, schedulerOpen, agyOpen, sett
           </main>
         </div>
 
-        <div className={schedulerOpen || agyOpen ? 'hidden' : 'dock relative'}>
+        <div className={schedulerOpen ? 'hidden' : 'dock relative'}>
           <TaskDock tasks={tasks} pos={pos} />
           {error && <p className="mx-auto mb-1.5 max-w-3xl px-4 text-center text-xs text-danger" role="alert">{error}<button onClick={() => setError('')} className="ml-2 text-fg4 underline">知道了</button></p>}
           <Composer name={activeBotName} connected={s.connected && s.ready} chatBusy={s.busy} working={working}
@@ -231,16 +256,6 @@ function ChatView({ devices, settingsInitialDevice, schedulerOpen, agyOpen, sett
             onSend={send} onEdit={edit} onStopReply={() => api.stopReply().catch(() => {})} onStopAll={stopAll} />
         </div>
       </div>
-
-      {settingsOpen && <SettingsDialog
-        onClose={onCloseSettings}
-        devices={devices}
-        initialDevice={settingsInitialDevice}
-        initialBot={bot.id}
-        onSettingsSaved={id => {
-          if (id === device.id) api.info().then(setInfo).catch(() => {});
-        }}
-      />}
     </>
   );
 }

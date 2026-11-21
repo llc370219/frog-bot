@@ -470,18 +470,6 @@ final class BotSession {
         try await saveRoutes(chatChannel: channel, chatModel: model, agentChannel: s.agentChannelID, agentModel: s.agentModelID)
     }
 
-    func loadConnections() async throws -> AgentConnections {
-        try await client.get(basePath + "/settings/connections")
-    }
-
-    /// 选择 Agent。Pi 要同时给出 API 渠道和模型。
-    func saveConnection(_ cli: String, channel: String? = nil, model: String? = nil) async throws -> AgentConnections {
-        var body = ["cli": cli]
-        if let channel { body["cli_channel"] = channel }
-        if let model { body["cli_model"] = model }
-        return try await client.send("POST", basePath + "/settings/connections", body: body)
-    }
-
     /// 提权状态和开关（整台服务器共用；设备互联不转发，只能管这台服务器本机）。
     func loadPrivilege() async throws -> PrivilegeStatus {
         try await client.get("/api/settings/privilege")
@@ -491,11 +479,6 @@ final class BotSession {
         var body = ["action": action]
         if let password { body["password"] = password }
         return try await client.send("POST", "/api/settings/privilege", body: body)
-    }
-
-    /// 一键安装 / 更新 CLI。只能装在这台服务器本机：设备互联不转发这个接口。
-    func installCLI(_ id: String) async throws -> AgentConnections {
-        try await client.send("POST", "/api/settings/clis/install", body: ["id": id])
     }
 
     func fetchModels(_ probe: ChannelProbe) async throws -> [String] {

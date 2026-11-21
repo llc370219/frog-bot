@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,16 +29,21 @@ func runFakeACPServer() {
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 64*1024), 4<<20)
 	type sess struct {
-		id    string
-		cwd   string
-		mode  string
-		model string
+		id       string
+		cwd      string
+		mode     string
+		model    string
+		cancelMu sync.Mutex
+		cancelCh chan struct{}
 	}
 	sessions := map[string]*sess{}
 	seq := 0
+	var sendMu sync.Mutex
 	send := func(v any) {
 		raw, _ := json.Marshal(v)
+		sendMu.Lock()
 		fmt.Println(string(raw))
+		sendMu.Unlock()
 	}
 	var permRespCh chan string
 
@@ -176,6 +182,19 @@ func runFakeACPServer() {
 			_ = json.Unmarshal(env.Params, &p)
 			delete(sessions, p.SessionID)
 			send(map[string]any{"jsonrpc": "2.0", "id": env.ID, "result": map[string]any{}})
+		case "session/cancel":
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(env.Params, &p)
+			if s := sessions[p.SessionID]; s != nil {
+				s.cancelMu.Lock()
+				if s.cancelCh != nil {
+					close(s.cancelCh)
+					s.cancelCh = nil
+				}
+				s.cancelMu.Unlock()
+			}
 		case "session/prompt":
 			var p struct {
 				SessionID string `json:"sessionId"`
@@ -188,7 +207,29 @@ func runFakeACPServer() {
 			if len(p.Prompt) > 0 {
 				promptText = p.Prompt[0].Text
 			}
-			go func(id json.RawMessage, sid, text string) {
+			s := sessions[p.SessionID]
+			var cancelCh chan struct{}
+			if s != nil {
+				s.cancelMu.Lock()
+				cancelCh = make(chan struct{})
+				s.cancelCh = cancelCh
+				s.cancelMu.Unlock()
+			}
+			go func(id json.RawMessage, sid, text string, abortCh chan struct{}) {
+				send(map[string]any{
+					"jsonrpc": "2.0",
+					"method":  "session/update",
+					"params": map[string]any{
+						"sessionId": sid,
+						"update": map[string]any{
+							"sessionUpdate": "available_commands_update",
+							"availableCommands": []map[string]any{
+								{"name": "compact", "description": "压缩上下文"},
+								{"name": "plan", "description": "规划模式", "input": map[string]string{"hint": "任务目标"}},
+							},
+						},
+					},
+				})
 				send(map[string]any{
 					"jsonrpc": "2.0",
 					"method":  "session/update",
@@ -196,7 +237,7 @@ func runFakeACPServer() {
 						"sessionId": sid,
 						"update": map[string]any{
 							"sessionUpdate": "agent_thought_chunk",
-							"content":       map[string]string{"type": "text", "text": "先分析项目结构…"},
+							"content":       []map[string]string{{"type": "text", "text": "先分析项目结构…"}},
 						},
 					},
 				})
@@ -212,9 +253,22 @@ func runFakeACPServer() {
 							"title":         "go test ./...",
 							"kind":          "execute",
 							"status":        "in_progress",
+							"rawInput":      map[string]string{"command": "go test ./..."},
 						},
 					},
 				})
+				if strings.Contains(text, "慢任务") && abortCh != nil {
+					select {
+					case <-abortCh:
+						send(map[string]any{
+							"jsonrpc": "2.0",
+							"id":      id,
+							"result":  map[string]any{"stopReason": "cancelled"},
+						})
+						return
+					case <-time.After(1200 * time.Millisecond):
+					}
+				}
 				chosen := "auto"
 				if strings.Contains(text, "需要授权") {
 					permRespCh = make(chan string, 1)
@@ -248,6 +302,7 @@ func runFakeACPServer() {
 							"sessionUpdate": "tool_call_update",
 							"toolCallId":    "tc_1",
 							"status":        "completed",
+							"rawOutput":     map[string]string{"output": "ok  frogbot/internal/agy"},
 						},
 					},
 				})
@@ -267,7 +322,7 @@ func runFakeACPServer() {
 					"id":      id,
 					"result":  map[string]any{"stopReason": "end_turn"},
 				})
-			}(env.ID, p.SessionID, promptText)
+			}(env.ID, p.SessionID, promptText, cancelCh)
 		}
 	}
 }
@@ -379,7 +434,7 @@ func TestAgyProjectsSessionsStreamingAndPermissions(t *testing.T) {
 		}
 	}
 
-	// 检查消息、思考与工具调用均已落入会话快照
+	// 检查消息、思考与工具调用（含 Detail/Output/Commands）均已落入会话快照
 	snapNow, _, unsub2, err := hub.Subscribe(context.Background(), sid, created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -389,11 +444,55 @@ func TestAgyProjectsSessionsStreamingAndPermissions(t *testing.T) {
 		t.Fatalf("want 2 messages, got %+v", snapNow.Messages)
 	}
 	asst := snapNow.Messages[1]
-	if !strings.Contains(asst.Text, "(allow_once)") || !strings.Contains(asst.Thinking, "先分析项目结构") || len(asst.Tools) != 1 {
-		t.Fatalf("unexpected assistant message: %+v", asst)
+	if !strings.Contains(asst.Text, "(allow_once)") || !strings.Contains(asst.Thinking, "先分析项目结构") || len(asst.Tools) != 1 ||
+		asst.Tools[0].Detail != "go test ./..." || !strings.Contains(asst.Tools[0].Output, "frogbot/internal/agy") ||
+		len(snapNow.Commands) != 2 {
+		t.Fatalf("unexpected assistant message or commands: msg=%+v cmds=%+v", asst, snapNow.Commands)
 	}
 
-	// 5) 历史会话按 session/load 自动回放
+	// 5) 忙碌时 follow_up 排队、撤回，以及 steer 打断插话
+	callHTTP("POST", "/api/agy/sessions/"+sid+"/messages", `{"text":"慢任务执行中"}`, 200)
+	var qRes1, qRes2 SendResult
+	_ = json.Unmarshal(callHTTP("POST", "/api/agy/sessions/"+sid+"/messages", `{"text":"待撤回的追问","behavior":"follow_up"}`, 200), &qRes1)
+	_ = json.Unmarshal(callHTTP("POST", "/api/agy/sessions/"+sid+"/messages", `{"text":"排队收尾","behavior":"follow_up"}`, 200), &qRes2)
+	if !qRes1.Queued || qRes1.QueueItem == nil || !qRes2.Queued {
+		t.Fatalf("expected follow_up messages to queue: q1=%+v q2=%+v", qRes1, qRes2)
+	}
+	callHTTP("DELETE", "/api/agy/sessions/"+sid+"/queue/"+qRes1.QueueItem.ID, "", 200)
+
+	var steerRes SendResult
+	_ = json.Unmarshal(callHTTP("POST", "/api/agy/sessions/"+sid+"/messages", `{"text":"立即改道","behavior":"steer"}`, 200), &steerRes)
+	if !steerRes.Queued || steerRes.Behavior != "steer" {
+		t.Fatalf("expected steer result: %+v", steerRes)
+	}
+
+	// 等 steer 和 follow_up 两条全部跑完
+	steerDeadline := time.After(5 * time.Second)
+	for {
+		snapQ, _, unsubQ, err := hub.Subscribe(context.Background(), sid, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unsubQ()
+		if !snapQ.Session.Busy && len(snapQ.Queue) == 0 && len(snapQ.Messages) >= 7 {
+			joined, _ := json.Marshal(snapQ.Messages)
+			s := string(joined)
+			if strings.Contains(s, "待撤回的追问") {
+				t.Fatalf("cancelled queued item should not run: %s", s)
+			}
+			if !strings.Contains(s, "立即改道") || !strings.Contains(s, "排队收尾") {
+				t.Fatalf("missing steer or follow_up results: %s", s)
+			}
+			break
+		}
+		select {
+		case <-steerDeadline:
+			t.Fatalf("timed out waiting for steer/follow_up completion: busy=%v msgs=%d", snapQ.Session.Busy, len(snapQ.Messages))
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+
+	// 6) 历史会话按 session/load 自动回放
 	loadedSnap, _, unsub3, err := hub.Subscribe(context.Background(), "sess_historical", created.ID)
 	if err != nil {
 		t.Fatal(err)

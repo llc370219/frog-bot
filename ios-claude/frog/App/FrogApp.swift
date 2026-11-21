@@ -79,7 +79,10 @@ struct RootView: View {
             } else {
                 NavigationStack(path: $path) {
                     HomeView(path: $path)
-                        .navigationDestination(for: Nav.self) { destination($0) }
+                        .navigationDestination(for: Nav.self) {
+                            destination($0)
+                                .toolbar(.visible, for: .navigationBar)
+                        }
                 }
             }
         }
@@ -174,59 +177,105 @@ struct Unavailable: View {
     }
 }
 
-/// 还没有服务器时的欢迎页
+/// 还没有服务器时的欢迎页：主打内置一键扫码/配对码连接，无需配置外置 VPN。
 struct FirstRunView: View {
     @Environment(AppModel.self) private var model
+    @State private var showingScanner = false
+    @State private var busy = false
+    @State private var error: String?
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                FrogMark(size: 96)
-                    .padding(.top, 80)
-                Text("连接你的第一台 frog 服务器")
+                FrogMark(size: 92)
+                    .padding(.top, 76)
+                Text("连接你的 frog 主机")
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(Theme.fg)
                     .multilineTextAlignment(.center)
-                    .padding(.top, 24)
-                Text("在服务器上装好 frog 后，把安装时打印的访问地址、用户名和密码填进来。可以连接任意多台，在这里统一聊天、派任务、批准操作。")
+                    .padding(.top, 22)
+                Text("在电脑端打开「设置 › 远程连接」，一键开启加密通道并生成配对码。无需开公网端口，也无需安装外部 VPN。")
                     .font(.system(size: 15))
                     .foregroundStyle(Theme.fg3)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
                     .padding(.top, 10)
-                Button { model.sheet = .addServer } label: {
-                    Text("添加服务器").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(PillButtonStyle(kind: .primary))
-                .padding(.top, 30)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("还没装？在 Linux 服务器上运行：")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Theme.fg3)
-                    Text(installCommand)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Theme.fg2)
-                        .textSelection(.enabled)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.code, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    Button { copy(installCommand) } label: {
-                        Label("复制命令", systemImage: "doc.on.doc").font(.system(size: 13))
+                VStack(spacing: 12) {
+                    Button {
+                        Haptics.tap()
+                        showingScanner = true
+                    } label: {
+                        Label("扫码一键连接", systemImage: "qrcode.viewfinder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(PillButtonStyle(kind: .primary))
+                    .disabled(busy)
+
+                    Button {
+                        pastePair()
+                    } label: {
+                        Label(busy ? "正在连接…" : "粘贴配对码连接", systemImage: "doc.on.clipboard")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(PillButtonStyle(kind: .secondary))
+                    .disabled(busy)
+
+                    Button { model.sheet = .addServer } label: {
+                        Text("手动输入服务器地址与账号")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Theme.fg3)
+                            .padding(.top, 4)
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(Theme.accent)
+                    .disabled(busy)
                 }
-                .padding(.top, 40)
+                .padding(.top, 28)
+
+                if let error {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.danger)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 14)
+                }
             }
-            .frame(maxWidth: 460)
+            .frame(maxWidth: 440)
             .padding(.horizontal, 24)
             .frame(maxWidth: .infinity)
         }
         .background(Theme.canvas)
+        .sheet(isPresented: $showingScanner) {
+            QRScannerSheet { code in
+                showingScanner = false
+                pair(code)
+            }
+        }
     }
 
-    private let installCommand = "curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo bash"
+    private func pastePair() {
+        Haptics.tap()
+        guard let clip = UIPasteboard.general.string, !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            error = "剪贴板为空，请先在电脑端复制配对码"
+            return
+        }
+        pair(clip)
+    }
+
+    private func pair(_ raw: String) {
+        busy = true
+        error = nil
+        Task {
+            do {
+                try await model.connectWithPairCode(raw)
+                Haptics.success()
+            } catch {
+                self.error = error.localizedDescription
+                Haptics.error()
+            }
+            busy = false
+        }
+    }
 }
 
 @MainActor

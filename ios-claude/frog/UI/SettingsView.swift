@@ -161,6 +161,8 @@ struct ServerSettingsView: View {
     @Binding var path: [Nav]
 
     @State private var name = ""
+    @State private var proxyMode: ProxyRouteMode = .system
+    @State private var customProxy = ""
     @State private var update: UpdateStatus?
     @State private var checking = false
     @State private var updateError: String?
@@ -182,14 +184,44 @@ struct ServerSettingsView: View {
                 LabeledContent("状态") {
                     Text(statusText(server)).foregroundStyle(statusColor(server)).multilineTextAlignment(.trailing)
                 }
-                Button("编辑连接…") { model.sheet = .editServer(server.id) }
+                Button("编辑连接 / 重新配对…") { model.sheet = .editServer(server.id) }
             } header: {
                 Text("连接")
             } footer: {
                 if server.config.isInsecure {
-                    Text("这是明文 HTTP 连接，密码和聊天内容在网络上不加密。建议给服务器配一个域名并开启 HTTPS。")
+                    Text("这是明文 HTTP 连接，密码和聊天内容在网络上不加密。建议在电脑端开启内置「远程连接」使用加密配对。")
                         .foregroundStyle(Theme.warn)
                 }
+            }
+
+            Section {
+                Picker("路由方式", selection: $proxyMode) {
+                    ForEach(ProxyRouteMode.allCases, id: \.self) { m in
+                        Text(m.label).tag(m)
+                    }
+                }
+                .onChange(of: proxyMode) { _, next in
+                    model.updateProxyRoute(server, mode: next, customProxy: customProxy)
+                }
+
+                if proxyMode == .custom {
+                    TextField("例如 socks5://127.0.0.1:7890 或 http://192.168.1.2:7890", text: $customProxy)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.subheadline, design: .monospaced))
+                        .submitLabel(.done)
+                        .onSubmit {
+                            model.updateProxyRoute(server, mode: proxyMode, customProxy: customProxy)
+                        }
+                    Button("应用代理地址") {
+                        Haptics.tap()
+                        model.updateProxyRoute(server, mode: proxyMode, customProxy: customProxy)
+                    }
+                }
+            } header: {
+                Text("网络与代理（不抢占系统 VPN）")
+            } footer: {
+                Text("内置加密通道在 App 应用层工作，绝不会顶掉或中断手机上的 sing-box、Clash、Shadowrocket 等系统 VPN。你也可以在这里单独选择该主机是跟随系统 VPN、绕过系统代理直连，还是走指定代理。")
             }
 
             Section("Bot") {
@@ -260,7 +292,11 @@ struct ServerSettingsView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(server.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { name = server.config.name }
+        .onAppear {
+            name = server.config.name
+            proxyMode = server.config.effectiveProxyMode
+            customProxy = server.config.customProxy ?? ""
+        }
         .onDisappear { if name != server.config.name { model.rename(server, to: name) } }
         .sheet(isPresented: $changingPassword) { PasswordSheet(server: server) }
         .confirmationDialog("退出「\(server.name)」的登录？", isPresented: $confirmLogout, titleVisibility: .visible) {

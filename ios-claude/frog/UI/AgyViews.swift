@@ -1,153 +1,244 @@
 import SwiftUI
 
-/// 服务器上的 Antigravity CLI 工作台首页：切换/新建项目文件夹 + 浏览或新建对话。
-struct AgyHomeView: View {
+/// Coding 工作区主视图：与 Grok Bot 首页统一的无分割线纯白/纯黑画布排版，支持底部搜索栏实时过滤会话。
+struct CodingWorkspaceView: View {
+    @Environment(AppModel.self) private var model
     let server: ServerEntry
     @Binding var path: [Nav]
+    var searchText = ""
+    var createSessionTick = 0
+    var createProjectTick = 0
 
     @State private var store: AgyStore
     @State private var showingNewProject = false
     @State private var showingFiles = false
 
-    init(server: ServerEntry, path: Binding<[Nav]>) {
+    init(server: ServerEntry, path: Binding<[Nav]>, searchText: String = "", createSessionTick: Int = 0, createProjectTick: Int = 0) {
         self.server = server
         self._path = path
+        self.searchText = searchText
+        self.createSessionTick = createSessionTick
+        self.createProjectTick = createProjectTick
         self._store = State(initialValue: AgyStore(server: server))
     }
 
+    private var filteredSessions: [AgySessionSummary] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return store.sessions }
+        return store.sessions.filter { s in
+            s.title.lowercased().contains(q)
+                || s.mode.lowercased().contains(q)
+                || (s.model?.lowercased().contains(q) == true)
+        }
+    }
+
     var body: some View {
-        List {
-            if let st = store.status, (!st.installed || (st.error ?? "").isEmpty == false) {
-                Section {
-                    Label(st.error ?? "未检测到 agy CLI，请在服务器上安装并运行 agy acp --login", systemImage: "exclamationmark.triangle.fill")
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if server.status == .needsLogin {
+                    Button { model.sheet = .login(server.id) } label: {
+                        Label("「\(server.name)」授权已过期，点这里重新连接", systemImage: "person.badge.key.fill")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Theme.warn)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+                            .background(Theme.warnSoft, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .padding(.horizontal, 20).padding(.bottom, 10)
+                    }
+                    .buttonStyle(.plain)
+                } else if case .offline(let why) = server.status {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("连不上「\(server.name)」", systemImage: "wifi.exclamationmark")
+                            .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.danger)
+                        Text(why).font(.system(size: 12.5)).foregroundStyle(Theme.fg3).lineLimit(2)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .background(Theme.dangerSoft, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.horizontal, 20).padding(.bottom, 10)
+                }
+
+                if let st = store.status, (!st.installed || (st.error ?? "").isEmpty == false) {
+                    Label(st.error ?? "当前服务器未配置可用的 ACP 后端（如 agy acp），请检查登录或环境", systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote)
                         .foregroundStyle(Theme.warn)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+                        .background(Theme.warnSoft, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .padding(.horizontal, 20).padding(.bottom, 10)
                 }
-            }
 
-            Section {
-                ForEach(store.projects) { p in
-                    Button {
-                        Haptics.tap()
-                        store.selectProject(p.id)
-                        Task { await store.refreshSessions() }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: p.id == store.activeProject?.id ? "folder.fill" : "folder")
-                                .foregroundStyle(p.id == store.activeProject?.id ? Theme.accent : Theme.fg3)
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text(p.name)
-                                        .font(.system(size: 15.5, weight: p.id == store.activeProject?.id ? .semibold : .regular))
-                                        .foregroundStyle(Theme.fg)
-                                    if !p.managed {
-                                        Text("外部").font(.system(size: 10.5, weight: .medium))
-                                            .foregroundStyle(Theme.fg3)
-                                            .padding(.horizontal, 5).padding(.vertical, 1)
-                                            .background(Theme.s2, in: Capsule())
+                // 顶部项目胶囊条
+                VStack(alignment: .leading, spacing: 8) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(store.projects) { p in
+                                let active = p.id == store.activeProject?.id
+                                Button {
+                                    Haptics.tap()
+                                    store.selectProject(p.id)
+                                    Task { await store.refreshSessions() }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: active ? "folder.fill" : "folder")
+                                            .font(.system(size: 12, weight: .semibold))
+                                        Text(p.name).lineLimit(1)
+                                        if !p.managed {
+                                            Text("外").font(.system(size: 10, weight: .medium))
+                                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                                .background(active ? Theme.onAccent.opacity(0.2) : Theme.s3, in: Capsule())
+                                        }
+                                    }
+                                    .font(.system(size: 14, weight: active ? .semibold : .medium))
+                                    .foregroundStyle(active ? Theme.onAccent : Theme.fg2)
+                                    .padding(.horizontal, 13).padding(.vertical, 8)
+                                    .background(active ? Theme.accent : Theme.s2, in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button {
+                                        store.selectProject(p.id)
+                                        showingFiles = true
+                                    } label: { Label("浏览文件", systemImage: "doc.text.magnifyingglass") }
+                                    if store.projects.count > 1 {
+                                        Button(role: .destructive) {
+                                            Task { try? await store.deleteProject(p, deleteFiles: false) }
+                                        } label: { Label("从列表移除", systemImage: "trash") }
                                     }
                                 }
-                                Text(p.path)
-                                    .font(.system(size: 11.5, design: .monospaced))
-                                    .foregroundStyle(Theme.fg4)
-                                    .lineLimit(1)
                             }
-                            Spacer()
-                            if p.id == store.activeProject?.id {
-                                Image(systemName: "checkmark").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.accent)
+
+                            Button { showingNewProject = true } label: {
+                                Label("项目", systemImage: "folder.badge.plus")
+                                    .font(.system(size: 13.5, weight: .medium))
+                                    .foregroundStyle(Theme.accent)
+                                    .padding(.horizontal, 12).padding(.vertical, 8)
+                                    .background(Theme.accentSoft, in: Capsule())
                             }
+                            .buttonStyle(.plain)
                         }
+                        .padding(.horizontal, 20)
                     }
-                    .swipeActions(edge: .trailing) {
-                        if store.projects.count > 1 {
-                            Button(role: .destructive) {
-                                Task { try? await store.deleteProject(p, deleteFiles: false) }
-                            } label: { Label("移除", systemImage: "trash") }
+
+                    if let proj = store.activeProject {
+                        HStack(spacing: 8) {
+                            Text(proj.path)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(Theme.fg4)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            if let st = store.status, st.installed {
+                                Text("ACP · agy")
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(Theme.fg3)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Theme.s2, in: Capsule())
+                            }
+                            Button { showingFiles = true } label: {
+                                Label("文件", systemImage: "doc.text")
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundStyle(Theme.fg2)
+                            }
+                            .buttonStyle(.plain)
                         }
+                        .padding(.horizontal, 20)
                     }
                 }
-                Button { showingNewProject = true } label: {
-                    Label("新建或关联项目文件夹…", systemImage: "folder.badge.plus")
-                        .foregroundStyle(Theme.accent)
-                }
-                if store.activeProject != nil {
-                    Button { showingFiles = true } label: {
-                        Label("浏览当前项目文件", systemImage: "doc.text.magnifyingglass")
-                            .foregroundStyle(Theme.fg2)
-                    }
-                }
-            } header: {
-                Text("项目文件夹")
-            }
+                .padding(.bottom, 10)
 
-            Section {
-                Button { startNewConversation() } label: {
-                    Label("在「\(store.activeProject?.name ?? "当前项目")」新建对话", systemImage: "plus.message.fill")
-                        .font(.system(size: 15.5, weight: .medium))
-                        .foregroundStyle(Theme.accent)
-                }
-                .disabled(store.activeProject == nil || store.status?.installed == false)
-
-                if store.sessions.isEmpty && !store.loading {
-                    Text("该项目下还没有对话，点上方即可新建。")
+                if let err = store.error {
+                    Text(err)
                         .font(.footnote)
-                        .foregroundStyle(Theme.fg4)
+                        .foregroundStyle(Theme.danger)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 8)
                 }
 
-                ForEach(store.sessions) { s in
-                    NavigationLink(value: Nav.agyChat(server: server.id, sessionID: s.id, projectID: s.project_id, title: s.title)) {
-                        HStack(spacing: 10) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 6) {
+                let list = filteredSessions
+                if list.isEmpty && !store.loading {
+                    VStack(spacing: 14) {
+                        Text(searchText.isEmpty ? "「\(store.activeProject?.name ?? "当前项目")」还没有对话" : "没有匹配的 Coding 对话")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(Theme.fg3)
+                        if searchText.isEmpty {
+                            Button { startNewConversation() } label: {
+                                Label("新建 Coding 对话", systemImage: "plus.message.fill")
+                            }
+                            .buttonStyle(PillButtonStyle(kind: .primary, compact: true))
+                            .disabled(store.activeProject == nil || store.status?.installed == false)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 64)
+                } else {
+                    ForEach(list) { s in
+                        Button {
+                            path.append(.agyChat(server: server.id, sessionID: s.id, projectID: s.project_id, title: s.title))
+                        } label: {
+                            HStack(spacing: 15) {
+                                ZStack(alignment: .bottomTrailing) {
+                                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                        .fill(Theme.accentSoft)
+                                        .frame(width: 52, height: 52)
+                                        .overlay {
+                                            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                                .font(.system(size: 19, weight: .semibold))
+                                                .foregroundStyle(Theme.accent)
+                                        }
+
                                     if s.pending_permissions > 0 {
-                                        Circle().fill(Theme.warnDot).frame(width: 8, height: 8)
+                                        Circle()
+                                            .fill(Theme.warnDot)
+                                            .frame(width: 16, height: 16)
+                                            .overlay(Circle().strokeBorder(Theme.canvas, lineWidth: 2))
+                                            .offset(x: 1, y: 1)
                                     } else if s.busy {
-                                        Circle().fill(Theme.accent).frame(width: 8, height: 8)
+                                        Circle()
+                                            .fill(Theme.accent)
+                                            .frame(width: 15, height: 15)
+                                            .overlay(Circle().strokeBorder(Theme.canvas, lineWidth: 2.5))
+                                            .offset(x: 1, y: 1)
                                     }
-                                    Text(s.title.isEmpty ? "新对话" : s.title)
-                                        .font(.system(size: 15.5, weight: .medium))
-                                        .foregroundStyle(Theme.fg)
-                                        .lineLimit(1)
                                 }
-                                HStack(spacing: 6) {
-                                    Text(s.mode).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.fg3)
-                                    if let m = s.model, !m.isEmpty {
-                                        Text("· \(m)").font(.system(size: 12)).foregroundStyle(Theme.fg4).lineLimit(1)
+
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                        Text(s.title.isEmpty ? "新对话" : s.title)
+                                            .font(.system(size: 17, weight: .semibold))
+                                            .foregroundStyle(Theme.fg)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        Text(Fmt.isoListTime(s.updated_at))
+                                            .font(.system(size: 13.5))
+                                            .foregroundStyle(Theme.fg4)
+                                    }
+                                    HStack(spacing: 6) {
+                                        Text(s.mode + ((s.model?.isEmpty == false) ? " · \(s.model!)" : ""))
+                                            .font(.system(size: 15))
+                                            .foregroundStyle(s.pending_permissions > 0 ? Theme.warn : Theme.fg3)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
                                     }
                                 }
                             }
-                            Spacer()
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 13)
                         }
-                        .padding(.vertical, 2)
-                    }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            Task { try? await store.deleteSession(s.id) }
-                        } label: { Label("删除", systemImage: "trash") }
+                        .buttonStyle(RowPressStyle())
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                Task { try? await store.deleteSession(s.id) }
+                            } label: { Label("删除对话", systemImage: "trash") }
+                        }
                     }
                 }
-            } header: {
-                HStack {
-                    Text("对话列表")
-                    if store.loading { ProgressView().controlSize(.mini) }
-                }
             }
-
-            if let err = store.error {
-                Section { Text(err).font(.footnote).foregroundStyle(Theme.danger) }
-            }
+            .padding(.top, 2)
+            .padding(.bottom, 16)
         }
-        .listStyle(.insetGrouped)
-        .navigationTitle("Antigravity CLI")
-        .navigationBarTitleDisplayMode(.inline)
+        .scrollDismissesKeyboard(.interactively)
         .refreshable { await store.loadAll() }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { startNewConversation() } label: { Image(systemName: "square.and.pencil") }
-                    .disabled(store.activeProject == nil || store.status?.installed == false)
-                    .accessibilityLabel("新建对话")
-            }
-        }
         .sheet(isPresented: $showingNewProject) {
             AgyNewProjectSheet(store: store)
         }
@@ -157,9 +248,19 @@ struct AgyHomeView: View {
             }
         }
         .task { await store.loadAll() }
+        .onChange(of: server.status) { _, st in
+            if st == .online { Task { await store.loadAll() } }
+        }
+        .onChange(of: createSessionTick) { _, _ in
+            startNewConversation()
+        }
+        .onChange(of: createProjectTick) { _, _ in
+            showingNewProject = true
+        }
     }
 
     private func startNewConversation() {
+        guard store.activeProject != nil, store.status?.installed != false else { return }
         Haptics.tap()
         Task {
             do {
@@ -169,6 +270,25 @@ struct AgyHomeView: View {
                 store.error = error.localizedDescription
             }
         }
+    }
+}
+
+/// 兼容历史深链跳转的 Coding 页面容器
+struct AgyHomeView: View {
+    let server: ServerEntry
+    @Binding var path: [Nav]
+    @State private var createSessionTick = 0
+
+    var body: some View {
+        CodingWorkspaceView(server: server, path: $path, createSessionTick: createSessionTick)
+            .navigationTitle("Coding")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { createSessionTick += 1 } label: { Image(systemName: "square.and.pencil") }
+                        .accessibilityLabel("新建对话")
+                }
+            }
     }
 }
 
@@ -254,7 +374,7 @@ struct AgyChatView: View {
                 .foregroundStyle(Theme.accent)
                 .frame(width: 60, height: 60)
                 .background(Theme.s2, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            Text("直连 Antigravity CLI")
+            Text("Coding 工作区")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(Theme.fg)
             if !chat.cwd.isEmpty {
@@ -263,7 +383,7 @@ struct AgyChatView: View {
                     .foregroundStyle(Theme.fg4)
                     .multilineTextAlignment(.center)
             }
-            Text("点击顶部标题可随时切换执行模式（Auto / Accept Edits / Plan）与模型。")
+            Text("在当前项目目录中与 Coding Agent 协同读写代码、运行命令与查看工具输出。点击顶部标题可切换执行模式与模型。")
                 .font(.system(size: 13.5))
                 .foregroundStyle(Theme.fg3)
                 .multilineTextAlignment(.center)
@@ -320,21 +440,12 @@ struct AgyChatView: View {
     }
 
     private func toolChips(_ tools: [AgyToolCall]) -> some View {
-        FlowLayout(spacing: 6) {
-            ForEach(tools) { tc in
-                let running = tc.status == "in_progress" || tc.status == "pending"
-                Chip(
-                    text: tc.title.isEmpty ? tc.name : tc.title,
-                    systemImage: running ? "hourglass" : "checkmark.circle.fill",
-                    tint: running ? Theme.accent : Theme.fg3
-                )
-            }
-        }
+        AgyToolCallGroup(tools: tools)
     }
 
     private func permCard(_ perm: AgyPermission) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("agy 请求确认：\(perm.title)", systemImage: "exclamationmark.shield.fill")
+            Label("请求操作确认：\(perm.title)", systemImage: "exclamationmark.shield.fill")
                 .font(.system(size: 14.5, weight: .semibold))
                 .foregroundStyle(Theme.warn)
             if !perm.detail.isEmpty {
@@ -379,7 +490,7 @@ struct AgyChatView: View {
             } else if chat.thinking.isEmpty || chat.thinkEnd > 0 {
                 HStack(spacing: 8) {
                     TypingDots(size: 5)
-                    Text("agy 正在执行…").font(.system(size: 13)).foregroundStyle(Theme.fg3)
+                    Text("Agent 正在执行…").font(.system(size: 13)).foregroundStyle(Theme.fg3)
                 }
                 .padding(.vertical, 4)
             }
@@ -398,8 +509,59 @@ struct AgyChatView: View {
                 .font(.system(size: 12.5))
                 .foregroundStyle(Theme.danger)
             }
+            if !chat.queue.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(chat.queue) { q in
+                            HStack(spacing: 5) {
+                                Image(systemName: q.behavior == "steer" ? "bolt.fill" : "clock")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(q.behavior == "steer" ? Theme.warn : Theme.accent)
+                                Text(q.text)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.fg2)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: 160, alignment: .leading)
+                                Button {
+                                    Task { try? await chat.cancelQueued(q.id) }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.fg4)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 9).padding(.vertical, 5)
+                            .background(Theme.s2, in: Capsule())
+                        }
+                    }
+                }
+            }
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("直接发指令给 agy…", text: $chat.draft, axis: .vertical)
+                if !chat.commands.isEmpty {
+                    Menu {
+                        ForEach(chat.commands) { cmd in
+                            Button {
+                                chat.draft = "/\(cmd.name)" + (cmd.input_hint == nil ? "" : " ")
+                                focused = true
+                            } label: {
+                                if let desc = cmd.description, !desc.isEmpty {
+                                    Text("/\(cmd.name) — \(desc)")
+                                } else {
+                                    Text("/\(cmd.name)")
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "slash.circle")
+                            .font(.system(size: 20))
+                            .foregroundStyle(Theme.fg3)
+                            .frame(width: 34, height: 38)
+                    }
+                    .accessibilityLabel("斜杠命令")
+                }
+
+                TextField(chat.busy ? "执行中，发送将自动排队…" : "输入 Coding 指令，或点 / 查看命令…", text: $chat.draft, axis: .vertical)
                     .font(.system(size: 16))
                     .lineLimit(1...6)
                     .focused($focused)
@@ -422,9 +584,21 @@ struct AgyChatView: View {
                     }
                     .accessibilityLabel("停止")
                 } else {
-                    Button(action: sendNow) {
+                    if chat.busy && !trimmed.isEmpty {
+                        Button { sendNow(behavior: "steer") } label: {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Theme.warn)
+                                .frame(width: 36, height: 36)
+                                .background(Theme.warnSoft, in: Circle())
+                        }
+                        .disabled(sending)
+                        .accessibilityLabel("打断插话")
+                    }
+                    Button { sendNow(behavior: chat.busy ? "follow_up" : nil) } label: {
                         Group {
                             if sending { ProgressView().tint(Theme.onAccent) }
+                            else if chat.busy { Image(systemName: "clock.arrow.circlepath").font(.system(size: 15, weight: .bold)) }
                             else { Image(systemName: "arrow.up").font(.system(size: 17, weight: .bold)) }
                         }
                         .foregroundStyle(Theme.onAccent)
@@ -432,7 +606,7 @@ struct AgyChatView: View {
                         .background(!trimmed.isEmpty && !sending ? Theme.accent : Theme.fg4.opacity(0.5), in: Circle())
                     }
                     .disabled(trimmed.isEmpty || sending)
-                    .accessibilityLabel("发送")
+                    .accessibilityLabel(chat.busy ? "排队发送" : "发送")
                 }
             }
         }
@@ -499,7 +673,7 @@ struct AgyChatView: View {
         }
     }
 
-    private func sendNow() {
+    private func sendNow(behavior: String? = nil) {
         let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !sending else { return }
         let keep = chat.draft
@@ -509,7 +683,7 @@ struct AgyChatView: View {
         Haptics.tap()
         Task {
             do {
-                try await chat.send(text)
+                try await chat.send(text, behavior: behavior)
             } catch {
                 chat.draft = keep
                 self.error = error.localizedDescription
@@ -677,6 +851,59 @@ private struct AgyFilesSheet: View {
             entries = try await server.client.get("/api/agy/projects/\(project.id)/files", query: q)
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+}
+
+/// 可折叠展开查看入参和执行输出的工具调用组
+private struct AgyToolCallGroup: View {
+    let tools: [AgyToolCall]
+    @State private var expandedIDs: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            FlowLayout(spacing: 6) {
+                ForEach(tools) { tc in
+                    let running = tc.status == "in_progress" || tc.status == "pending"
+                    let failed = tc.status == "failed" || tc.status == "error"
+                    let hasExtra = !tc.detail.isEmpty || !tc.output.isEmpty
+                    Button {
+                        if hasExtra {
+                            if expandedIDs.contains(tc.id) { expandedIDs.remove(tc.id) }
+                            else { expandedIDs.insert(tc.id) }
+                        }
+                    } label: {
+                        Chip(
+                            text: tc.title.isEmpty ? tc.name : tc.title,
+                            systemImage: running ? "hourglass" : failed ? "xmark.circle.fill" : "checkmark.circle.fill",
+                            tint: failed ? Theme.danger : running ? Theme.accent : Theme.fg3
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            ForEach(tools.filter { expandedIDs.contains($0.id) && (!$0.detail.isEmpty || !$0.output.isEmpty) }) { tc in
+                VStack(alignment: .leading, spacing: 4) {
+                    if !tc.detail.isEmpty {
+                        Text(tc.detail)
+                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Theme.fg2)
+                            .lineLimit(3)
+                    }
+                    if !tc.output.isEmpty {
+                        ScrollView(.vertical) {
+                            Text(tc.output)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(Theme.fg3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 140)
+                    }
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.code, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
         }
     }
 }

@@ -217,7 +217,6 @@ struct ModelMenu: View {
     let session: BotSession
 
     @State private var settings: APISettings?
-    @State private var cli = ""
     @State private var saving = false
 
     private var current: String {
@@ -244,10 +243,6 @@ struct ModelMenu: View {
                         }
                     }
                 }
-                if !cli.isEmpty {
-                    Divider()
-                    Text("后台任务由 \(cliName) 执行")
-                }
             } else {
                 Text("正在读取模型…")
             }
@@ -268,11 +263,8 @@ struct ModelMenu: View {
         .onChange(of: session.info?.chat_model) { Task { await load() } }
     }
 
-    private var cliName: String { ["codex": "Codex CLI", "claude": "Claude Code"][cli] ?? cli }
-
     private func load() async {
         settings = try? await session.loadSettings()
-        cli = (try? await session.loadConnections())?.cli ?? ""
     }
 
     private func pick(_ channel: String, _ m: String) {

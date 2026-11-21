@@ -1,5 +1,28 @@
+import CryptoKit
 import Foundation
+import Security
 import UniformTypeIdentifiers
+
+struct ParsedPairCode {
+    var endpointURL: String
+    var token: String
+    var tlsPin: String?
+    var serverName: String?
+}
+
+enum ProxyRouteMode: String, Codable, CaseIterable, Hashable {
+    case system
+    case direct
+    case custom
+
+    var label: String {
+        switch self {
+        case .system: return "跟随系统 VPN / 代理"
+        case .direct: return "直连（绕过系统代理）"
+        case .custom: return "手动指定代理"
+        }
+    }
+}
 
 /// 一台 frog 服务器的连接设置（保存在本机）。不保存密码。
 struct ServerConfig: Codable, Hashable, Identifiable {
@@ -7,6 +30,11 @@ struct ServerConfig: Codable, Hashable, Identifiable {
     var name: String
     var url: String
     var username: String
+    var tlsPin: String? = nil
+    var proxyMode: ProxyRouteMode? = nil
+    var customProxy: String? = nil
+
+    var effectiveProxyMode: ProxyRouteMode { proxyMode ?? .system }
 
     var baseURL: URL? { URL(string: url) }
 
@@ -14,6 +42,31 @@ struct ServerConfig: Codable, Hashable, Identifiable {
     var isInsecure: Bool {
         guard let u = baseURL else { return false }
         return u.scheme?.lowercased() == "http" && !ServerConfig.isLoopback(u.host ?? "")
+    }
+
+    static func parsePairCode(_ raw: String) -> ParsedPairCode? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 支持从一段文字里提取 frogpair://... 链接
+        let candidate: String
+        if let r = trimmed.range(of: "frogpair://", options: [.caseInsensitive]) {
+            let tail = trimmed[r.lowerBound...]
+            candidate = String(tail.prefix { !$0.isWhitespace })
+        } else {
+            return nil
+        }
+        guard let comps = URLComponents(string: candidate),
+              let items = comps.queryItems else { return nil }
+        func val(_ k: String) -> String? {
+            items.first(where: { $0.name == k })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard var endpoint = val("u"), !endpoint.isEmpty,
+              let token = val("t"), !token.isEmpty else { return nil }
+        while endpoint.hasSuffix("/") { endpoint.removeLast() }
+        guard let u = URL(string: endpoint), let scheme = u.scheme?.lowercased(),
+              scheme == "https" || scheme == "http" else { return nil }
+        let fp = val("fp")?.lowercased()
+        let validPin = (fp?.count == 64) ? fp : nil
+        return ParsedPairCode(endpointURL: endpoint, token: token, tlsPin: validPin, serverName: val("n"))
     }
 
     static func isLoopback(_ host: String) -> Bool {
@@ -85,6 +138,34 @@ enum SessionVault {
     static func get(_ id: UUID) -> String? { load()[id.uuidString] }
 }
 
+/// 自签名 TLS 1.3 证书指纹锁定代理（比对叶证书 DER 的 SHA-256 指纹，免域名免装根证书且防中间人攻击）
+final class PinnedTLSDelegate: NSObject, URLSessionDelegate, Sendable {
+    let pinHex: String?
+
+    init(pinHex: String?) {
+        let p = pinHex?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.pinHex = p.isEmpty ? nil : p
+    }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let pin = pinHex else {
+            return (.performDefaultHandling, nil)
+        }
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+              let leaf = chain.first else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
+        let der = SecCertificateCopyData(leaf) as Data
+        let got = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+        guard got == pin else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
+        return (.useCredential, URLCredential(trust: trust))
+    }
+}
+
 /// 和一台服务器说话：普通请求、登录、上传、下载。
 /// 浏览器之外的请求不带 Origin 头，服务器的跨站检查自然放行；登录靠服务器发的会话 Cookie。
 @MainActor
@@ -93,6 +174,7 @@ final class ServerClient {
 
     private(set) var config: ServerConfig
     private(set) var cookie: String?
+    private let tlsDelegate: PinnedTLSDelegate
     let session: URLSession
     /// 每个 Bot 的 SSE 事件流各占一条长连接。URLSession 默认每台主机最多 6 条连接，
     /// 和普通请求共用的话，Bot 一多，发消息、刷新列表就会排队到超时，界面显示「离线」。
@@ -102,6 +184,8 @@ final class ServerClient {
     init(config: ServerConfig) {
         self.config = config
         self.cookie = SessionVault.get(config.id)
+        let delegate = PinnedTLSDelegate(pinHex: config.tlsPin)
+        self.tlsDelegate = delegate
         let c = URLSessionConfiguration.default
         c.httpCookieStorage = nil
         c.httpShouldSetCookies = false
@@ -110,10 +194,45 @@ final class ServerClient {
         c.urlCache = nil
         c.timeoutIntervalForRequest = 30
         c.waitsForConnectivity = false
-        session = URLSession(configuration: c)
+        if let proxyDict = Self.proxyDictionary(mode: config.effectiveProxyMode, raw: config.customProxy) {
+            c.connectionProxyDictionary = proxyDict
+        }
+        session = URLSession(configuration: c, delegate: delegate, delegateQueue: nil)
         let sc = c.copy() as! URLSessionConfiguration
         sc.httpMaximumConnectionsPerHost = 64
-        streamSession = URLSession(configuration: sc)
+        streamSession = URLSession(configuration: sc, delegate: delegate, delegateQueue: nil)
+    }
+
+    private static func proxyDictionary(mode: ProxyRouteMode, raw: String?) -> [AnyHashable: Any]? {
+        switch mode {
+        case .system:
+            return nil // 默认跟随系统 VPN / TUN / 系统代理
+        case .direct:
+            return [:] // 显式清空 HTTP/SOCKS 代理字典，绕过系统应用层代理
+        case .custom:
+            var s = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !s.isEmpty else { return nil }
+            if !s.contains("://") { s = "socks5://" + s }
+            guard let u = URL(string: s), let host = u.host, !host.isEmpty else { return nil }
+            let scheme = (u.scheme ?? "socks5").lowercased()
+            let port = u.port ?? (scheme.hasPrefix("http") ? 8080 : 1080)
+            if scheme.hasPrefix("socks") {
+                return [
+                    "SOCKSEnable": 1,
+                    "SOCKSProxy": host,
+                    "SOCKSPort": port,
+                ]
+            } else {
+                return [
+                    "HTTPEnable": 1,
+                    "HTTPProxy": host,
+                    "HTTPPort": port,
+                    "HTTPSEnable": 1,
+                    "HTTPSProxy": host,
+                    "HTTPSPort": port,
+                ]
+            }
+        }
     }
 
     var hasSession: Bool { cookie != nil }
@@ -123,6 +242,32 @@ final class ServerClient {
     func forgetSession() {
         cookie = nil
         SessionVault.set(nil, for: config.id)
+    }
+
+    /// 兑换一次性配对码，领取独立设备长效会话 Cookie。
+    func redeemPair(token: String, deviceName: String) async throws -> String? {
+        var r = makeRequest("POST", "/api/remote/pair")
+        r.setValue(nil, forHTTPHeaderField: "Cookie")
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["token": token, "device_name": deviceName])
+        let data: Data, resp: URLResponse
+        do {
+            (data, resp) = try await session.data(for: r)
+        } catch let e as URLError {
+            throw APIError.network(Self.describe(e))
+        }
+        guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有正常响应") }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
+        }
+        let json = JSON.parse(data) ?? .null
+        let sessionTok = json["session"].string ?? Self.sessionCookie(from: http, url: r.url!)
+        guard let value = sessionTok, !value.isEmpty else {
+            throw APIError.invalid("配对响应缺少会话令牌")
+        }
+        cookie = value
+        SessionVault.set(value, for: config.id)
+        return json["server_name"].string
     }
 
     // MARK: 请求

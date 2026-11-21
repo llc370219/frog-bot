@@ -61,25 +61,11 @@ export type Approval = {
   status: 'pending' | 'allow' | 'deny' | 'expired'; scope?: string; created: number;
 };
 export type Item = { type: 'msg' | 'task' | 'approval'; id: string };
-export type Info = { name: string; chat_model: string; agent_model: string; agent_cli?: string; agent_cli_model?: string; agent_cli_auth?: CLIAuth; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string; version?: string };
+export type Info = { name: string; chat_model: string; agent_model: string; policy: string; demo: boolean; max_concurrent?: number; stall_sec?: number; timezone?: string; version?: string };
 // 每个 Bot 的聊天 / Agent 各用哪个渠道（API 渠道页标注用途）。
-export type ChannelUse = { bot_id: string; name: string; chat_provider_id?: string; agent_provider_id?: string; agent_cli?: string };
+export type ChannelUse = { bot_id: string; name: string; chat_provider_id?: string; agent_provider_id?: string };
 export type ChannelsView = { providers: APIChannel[]; usage: ChannelUse[] };
 export type BotRoutes = Pick<APISettings, 'default_provider_id' | 'model' | 'agent_provider_id' | 'agent_model'>;
-export type CLIAuth = 'subscription' | 'env' | 'channel';
-export type CLIInstall = { state: 'running' | 'done' | 'failed'; step?: string; error?: string; log?: string; version?: string; started_at: string; finished_at?: string };
-export type AgentCLI = {
-  id: string; name: string; installed: boolean;
-  subscription?: string; login?: string; model_option?: boolean; models?: string[];
-  // path：检测到的可执行文件；managed：由 frog 一键安装；installable：这台设备可以一键安装/更新
-  path?: string; managed?: boolean; installable?: boolean; install?: CLIInstall;
-  // supported：现在能选（只有 Pi）；其他显示 note（「暂不支持」）
-  supported?: boolean; note?: string;
-};
-// cli 为空 = 内置 Agent（用 Agent API 模型）；否则用该 CLI 在设备上登录的账户（官方订阅）。
-// Pi 用 frog 的 API 渠道：cli_channel + cli_model（经本机网关转发，Pi 拿不到真实 Key）。
-export type AgentConnection = { cli: string; cli_model?: string; cli_auth?: CLIAuth; cli_channel?: string };
-export type AgentConnections = AgentConnection & { clis: AgentCLI[] };
 export type Schedule = {
   id: string; title: string; prompt: string; enabled: boolean; kind: string; timezone: string;
   hour?: number; minute?: number; weekdays?: number[]; overlap?: string;
@@ -353,12 +339,8 @@ export function createDeviceSettingsAPI(device: string, bot = 'main') {
   const base = device === 'local' ? `/api/bots/${encodeURIComponent(bot)}` : `/api/devices/${encodeURIComponent(device)}/bots/${encodeURIComponent(bot)}`;
   const settingsBase = device === 'local' ? '/api' : `/api/devices/${encodeURIComponent(device)}`;
   return {
-    connections: (signal?: AbortSignal): Promise<AgentConnections> => get(`${base}/settings/connections`, signal),
-    saveConnection: (c: AgentConnection): Promise<AgentConnections> => post(`${base}/settings/connections`, c),
-    // 只支持同一台设备上的 Bot：复制来源 Bot 的聊天模型、Agent 模型和执行方式。
+    // 只支持同一台设备上的 Bot：复制来源 Bot 的聊天模型和 Agent 模型。
     copySettings: (from: string): Promise<APISettings> => post(`${base}/settings/copy`, { from }),
-    // 一键安装 / 更新 CLI（装到设备的数据目录）。只能装在本机：设备互联不转发这个接口。
-    installCLI: (id: string): Promise<AgentConnections> => post(`/api/settings/clis/install`, { id }),
     privilege: (signal?: AbortSignal): Promise<PrivilegeStatus> => get(`/api/settings/privilege`, signal),
     privilegeAction: (action: 'enable' | 'disable' | 'revoke', password?: string): Promise<PrivilegeStatus> =>
       post(`/api/settings/privilege`, { action, password }),
@@ -418,17 +400,22 @@ export const isImage = (name: string, mime?: string) => (mime ? mime.startsWith(
 
 export type AgyModeOption = { id: string; name: string; description?: string };
 export type AgyModelOption = { id: string; name: string };
+export type AgyCommandOption = { name: string; description?: string; input_hint?: string };
+export type AgyQueuedPrompt = { id: string; text: string; behavior?: 'follow_up' | 'steer'; created_at: string };
 export type AgyStatus = {
   installed: boolean; path?: string; agent_version?: string; projects_root: string;
-  modes: AgyModeOption[]; models: AgyModelOption[]; default_mode: string; default_model?: string; error?: string;
+  modes: AgyModeOption[]; models: AgyModelOption[]; commands?: AgyCommandOption[]; default_mode: string; default_model?: string; error?: string;
 };
 export type AgyProject = { id: string; name: string; path: string; managed: boolean; created_at: string };
 export type AgyFileEntry = { name: string; is_dir: boolean; size?: number };
 export type AgySessionSummary = {
   id: string; project_id: string; cwd: string; title: string; mode: string; model?: string;
-  busy: boolean; pending_permissions: number; updated_at: string;
+  busy: boolean; pending_permissions: number; queued_count?: number; updated_at: string;
 };
-export type AgyToolCall = { id: string; name: string; title?: string; kind?: string; status?: string };
+export type AgyToolCall = {
+  id: string; name: string; title?: string; kind?: string; status?: string;
+  detail?: string; output?: string;
+};
 export type AgyChatMessage = {
   id: string; role: 'user' | 'assistant'; text: string; thinking?: string; thinking_ms?: number;
   tools?: AgyToolCall[]; error?: string; created_at: string;
@@ -440,8 +427,14 @@ export type AgyPermission = {
 };
 export type AgySnapshot = {
   session: AgySessionSummary; messages: AgyChatMessage[]; permissions: AgyPermission[];
+  queue?: AgyQueuedPrompt[];
   streaming: string; thinking: string; think_start?: number; think_end?: number; live_tools?: AgyToolCall[];
   used_tokens?: number; max_tokens?: number; modes: AgyModeOption[]; models: AgyModelOption[];
+  commands?: AgyCommandOption[];
+};
+export type AgySendResult = {
+  queued: boolean; behavior?: 'follow_up' | 'steer';
+  message?: AgyChatMessage; queue_item?: AgyQueuedPrompt;
 };
 
 export const agyAPI = {
@@ -462,11 +455,63 @@ export const agyAPI = {
     post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/config`, patch),
   deleteSession: (sessionID: string): Promise<{ ok: boolean }> =>
     post(`/api/agy/sessions/${encodeURIComponent(sessionID)}`, {}, 'DELETE'),
-  send: (sessionID: string, projectID: string, text: string): Promise<AgyChatMessage> =>
-    post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/messages`, { project_id: projectID, text }),
+  send: (sessionID: string, projectID: string, text: string, behavior?: 'follow_up' | 'steer'): Promise<AgySendResult> =>
+    post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/messages`, { project_id: projectID, text, behavior }),
+  cancelQueued: (sessionID: string, queueID: string): Promise<{ ok: boolean }> =>
+    post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/queue/${encodeURIComponent(queueID)}`, {}, 'DELETE'),
   stop: (sessionID: string): Promise<{ ok: boolean }> =>
     post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/stop`),
   decidePermission: (sessionID: string, permID: string, optionID: string): Promise<{ ok: boolean }> =>
     post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/permissions/${encodeURIComponent(permID)}`, { option_id: optionID }),
 };
+
+// ---------- 内置远程连接与一键配对 ----------
+
+export type RemoteMode = 'off' | 'quick' | 'bridge' | 'direct';
+
+export type RemotePairedDevice = {
+  id: string;
+  name: string;
+  created_at: string;
+  last_seen_at: string;
+};
+
+export type RemoteStatus = {
+  mode: RemoteMode;
+  ready: boolean;
+  status_text: string;
+  error?: string;
+  endpoint_url?: string;
+  tls_pin?: string;
+  direct_listen: string;
+  public_host: string;
+  bridge_uri: string;
+  server_name: string;
+  detected_ip: string;
+  bridge_command: string;
+  devices: RemotePairedDevice[];
+};
+
+export type RemoteSaveInput = {
+  mode: RemoteMode;
+  direct_listen: string;
+  public_host: string;
+  bridge_uri: string;
+  server_name: string;
+};
+
+export type RemotePairResponse = {
+  pair_code: string;
+  qr_svg: string;
+  expires_at: string;
+};
+
+export const remoteAPI = {
+  get: (signal?: AbortSignal): Promise<RemoteStatus> => get('/api/settings/remote', signal),
+  save: (input: RemoteSaveInput): Promise<RemoteStatus> => post('/api/settings/remote', input),
+  createPair: (): Promise<RemotePairResponse> => post('/api/settings/remote/pair', {}),
+  rotateSecret: (clearDevices = false): Promise<RemoteStatus> => post('/api/settings/remote/rotate', { clear_devices: clearDevices }),
+  revokeDevice: (id: string): Promise<RemoteStatus> => post(`/api/settings/remote/devices/${encodeURIComponent(id)}`, {}, 'DELETE'),
+};
+
 

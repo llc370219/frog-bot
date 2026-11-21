@@ -13,11 +13,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"frogbot/internal/agy"
 	"frogbot/internal/onefrog"
+	"frogbot/internal/remote"
 )
 
 const defaultBotID = "main"
@@ -58,8 +60,9 @@ type Bots struct {
 	network    *peerNetwork
 	relay      relayHub
 	closed     bool
-	gateway    *cliGateway // 给 Pi 等外部 CLI 用的本机模型网关
-	agy        *agy.Hub    // 跨过 Bot 直连 Antigravity CLI (agy acp)
+	agy        *agy.Hub // 跨过 Bot 直连 Antigravity CLI (agy acp)
+	remote     *remote.Manager
+	remoteApp  atomic.Pointer[http.Handler]
 }
 
 type botEndpoint struct {
@@ -79,7 +82,6 @@ func OpenBots(cfg Config) (*Bots, error) {
 	if err != nil {
 		return nil, err
 	}
-	onefrog.SetToolsDir(filepath.Join(cfg.DataDir, "tools"))
 	main, err := New(cfg)
 	if err != nil {
 		return nil, err
@@ -87,11 +89,6 @@ func OpenBots(cfg Config) (*Bots, error) {
 	bs := &Bots{main: main, workRoot: workspace + "-bots", profiles: []BotProfile{main.botProfile()}, network: network,
 		runtimes: map[string]*Bot{defaultBotID: main}, handlers: map[string]*botEndpoint{defaultBotID: {Handler: main.Handler("")}}}
 	main.coordinator = bs
-	if bs.gateway, err = startCLIGateway(main.pool); err != nil {
-		bs.Close()
-		return nil, err
-	}
-	onefrog.SetCLIGateway(bs.gateway)
 	if bs.agy, err = agy.NewHub(agy.Config{
 		DataDir:      cfg.DataDir,
 		ProjectsRoot: workspace + "-agy",
@@ -99,6 +96,16 @@ func OpenBots(cfg Config) (*Bots, error) {
 	}); err != nil {
 		bs.Close()
 		return nil, fmt.Errorf("初始化 agy 工作台: %w", err)
+	}
+	if bs.remote, err = remote.NewManager(cfg.DataDir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := bs.remoteApp.Load(); p != nil {
+			(*p).ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})); err != nil {
+		bs.Close()
+		return nil, fmt.Errorf("初始化远程访问网关: %w", err)
 	}
 	raw, err := os.ReadFile(bs.path())
 	if err == nil {
@@ -129,6 +136,8 @@ func OpenBots(cfg Config) (*Bots, error) {
 	for _, b := range bs.runtimes {
 		b.Start()
 	}
+	apiOnly := bs.buildHandler(nil)
+	bs.remoteApp.Store(&apiOnly)
 	return bs, nil
 }
 
@@ -299,11 +308,11 @@ func (bs *Bots) Close() {
 	}
 	bs.closed = true
 	bs.mu.Unlock()
+	if bs.remote != nil {
+		bs.remote.Close()
+	}
 	if bs.agy != nil {
 		bs.agy.Close()
-	}
-	if bs.gateway != nil {
-		bs.gateway.Close()
 	}
 	if bs.network != nil {
 		bs.network.client.CloseIdleConnections()
@@ -437,10 +446,21 @@ func (bs *Bots) setProfile(id string, p BotProfile) (BotProfile, error) {
 // Handler 是整个程序的 HTTP 入口：/api/bots/{id}/… 转给对应 Bot，/api/settings 等是全局设置，
 // 其余路径提供前端页面（ui 为 nil 时只提供 API）。访问控制（本机限制或登录）由调用方在外面包一层。
 func (bs *Bots) Handler(ui fs.FS) http.Handler {
+	h := bs.buildHandler(ui)
+	bs.remoteApp.Store(&h)
+	return h
+}
+
+func (bs *Bots) buildHandler(ui fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mainAPI := bs.main.Handler("")
 	if ui != nil {
 		mux.Handle("/", spa(ui))
+	}
+	if bs.remote != nil {
+		admin := bs.remote.AdminHandler()
+		mux.Handle("/api/settings/remote", admin)
+		mux.Handle("/api/settings/remote/", admin)
 	}
 	// 全局接口（设置、更新检查）挂在默认 Bot 上；其他 /api/… 只能通过 /api/bots/{id}/… 访问。
 	for _, p := range []string{"/api/settings", "/api/settings/", "/api/channels/", "POST /api/channels", "GET /api/update"} {
@@ -578,7 +598,6 @@ func (bs *Bots) copySettings(fromID, toID string) (APISettings, error) {
 	src.modelMu.RLock()
 	draft := APISettings{DefaultProviderID: src.defaultChannel, Model: src.chatModel,
 		AgentProviderID: src.agentChannel, AgentModel: src.agentModelName}
-	conn := src.connection
 	src.modelMu.RUnlock()
 	if !validRoute(dst.pool.public(), draft.DefaultProviderID, draft.Model) {
 		draft.DefaultProviderID, draft.Model = "", ""
@@ -588,9 +607,6 @@ func (bs *Bots) copySettings(fromID, toID string) (APISettings, error) {
 	}
 	if _, err := dst.saveRoutes(draft); err != nil {
 		return APISettings{}, fmt.Errorf("复制模型选择失败: %w", err)
-	}
-	if err := dst.saveAgentConnection(conn); err != nil {
-		return APISettings{}, fmt.Errorf("模型已复制，但 Agent 执行方式没有复制成功: %w", err)
 	}
 	return dst.GetSettings(), nil
 }
@@ -610,10 +626,7 @@ func (bs *Bots) channelsView() channelsView {
 			continue
 		}
 		b.modelMu.RLock()
-		use := channelUse{BotID: profiles[i].ID, Name: profiles[i].Name, ChatProviderID: b.defaultChannel, AgentCLI: b.connection.CLI}
-		if b.connection.CLI == "" {
-			use.AgentProviderID = b.agentChannel
-		}
+		use := channelUse{BotID: profiles[i].ID, Name: profiles[i].Name, ChatProviderID: b.defaultChannel, AgentProviderID: b.agentChannel}
 		b.modelMu.RUnlock()
 		view.Usage = append(view.Usage, use)
 	}
