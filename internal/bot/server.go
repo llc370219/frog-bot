@@ -98,8 +98,26 @@ func (b *Bot) Handler(webDir string) http.Handler {
 	}
 	mux.HandleFunc("GET /api/update", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		status, err := checkUpdate(r.Context(), releaseClient, latestReleaseAPI, currentVersion())
+		qch := strings.TrimSpace(r.URL.Query().Get("channel"))
+		ch := b.savedUpdateChannel()
+		if qch != "" {
+			ch = b.saveUpdateChannel(qch)
+		}
+		endpoint := latestReleaseAPI
+		if ch == "beta" {
+			endpoint = listReleasesAPI
+		}
+		status, err := checkUpdateForChannel(r.Context(), releaseClient, endpoint, currentVersion(), ch)
 		writeJSON(w, status, err)
+	})
+	mux.HandleFunc("POST /api/update/apply", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Channel  string `json:"channel"`
+			Password string `json:"password"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body)
+		res, err := b.applyUpdate(r.Context(), body.Channel, body.Password)
+		writeJSON(w, res, err)
 	})
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
 		_, chatModel := b.resolveModel(true)

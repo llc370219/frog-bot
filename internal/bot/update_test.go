@@ -40,3 +40,37 @@ func TestCheckUpdate(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckUpdateBetaAndChannelSwitch(t *testing.T) {
+	listPayload := `[
+		{"tag_name":"clients-v0.2.0-beta.1","draft":false},
+		{"tag_name":"v1.11.0-beta","draft":false},
+		{"tag_name":"v1.10.0","draft":false}
+	]`
+	client := &http.Client{Transport: releaseTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(listPayload))}, nil
+	})}
+
+	// 稳定版切到 beta 通道应检测到 v1.11.0-beta
+	st, err := checkUpdateForChannel(context.Background(), client, listReleasesAPI, "v1.10.0", "beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Latest != "v1.11.0-beta" || st.State != "available" || st.Channel != "beta" {
+		t.Fatalf("unexpected beta status: %+v", st)
+	}
+
+	// 已在最新 beta 上时显示 current
+	stSame, err := checkUpdateForChannel(context.Background(), client, listReleasesAPI, "v1.11.0-beta", "beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stSame.State != "current" {
+		t.Fatalf("expected current on same beta, got %+v", stSame)
+	}
+
+	// 从 beta 切回 stable 通道允许切回 v1.10.0
+	if got := compareChannelState("v1.11.0-beta", "v1.10.0", "stable"); got != "available" {
+		t.Fatalf("expected available when switching from beta back to stable, got %q", got)
+	}
+}

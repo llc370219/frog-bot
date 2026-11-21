@@ -17,9 +17,9 @@ enum ProxyRouteMode: String, Codable, CaseIterable, Hashable {
 
     var label: String {
         switch self {
-        case .system: return "跟随系统 VPN / 代理"
-        case .direct: return "直连（绕过系统代理）"
-        case .custom: return "手动指定代理"
+        case .system: return "系统默认"
+        case .direct: return "直连"
+        case .custom: return "自定义"
         }
     }
 }

@@ -435,15 +435,8 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
         <div className="flex min-w-0 items-center gap-2.5">
           <SquareTerminal size={17} className="shrink-0 text-accent" />
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="truncate text-[14.5px] font-semibold text-fg">
-                {live.session?.title || activeProject?.name || 'Coding 工作区'}
-              </span>
-              {status?.installed && (
-                <span className="hidden rounded-full bg-s2 px-2 py-0.5 font-mono text-[10.5px] text-fg3 sm:inline-block">
-                  ACP · agy
-                </span>
-              )}
+            <div className="truncate text-[14.5px] font-semibold text-fg">
+              {live.session?.title || activeProject?.name || 'Coding'}
             </div>
             {activeProject && (
               <div className="truncate font-mono text-[11px] text-fg4">{activeProject.path}</div>
@@ -495,16 +488,13 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
         className="flex-1 overflow-y-auto">
         <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pb-8 pt-6">
           {(!sessionId || (live.ready && live.messages.length === 0 && !busy)) && (
-            <div className="flex flex-col items-center px-2 pt-[10vh] text-center">
+            <div className="flex flex-col items-center px-2 pt-[12vh] text-center">
               <div className="grid size-14 place-items-center rounded-2xl bg-s2 text-accent">
                 <SquareTerminal size={28} />
               </div>
-              <h2 className="mt-4 font-serif text-2xl font-semibold">Coding 工作区</h2>
-              <p className="mt-2 max-w-md text-sm leading-relaxed text-fg3">
-                在项目目录「{activeProject?.name || '默认项目'}」中协同读写代码、执行命令并查看工具调用详情，权限由上方执行模式控制。
-              </p>
+              <h2 className="mt-4 font-serif text-2xl font-semibold">{activeProject?.name || 'Coding'}</h2>
               <div className="mt-6 flex flex-wrap justify-center gap-2">
-                {['看看当前项目结构并总结主要模块', '运行测试并排查报错', '帮我规划一个新功能的改动方案'].map((q) => (
+                {['梳理当前项目结构', '运行测试并排查问题', '规划新功能改动方案'].map((q) => (
                   <button key={q} type="button" onClick={() => void handleSend(q)}
                     className="rounded-full border border-line bg-s1 px-3.5 py-1.5 text-xs text-fg2 transition hover:border-line2 hover:bg-s2">
                     {q}

@@ -177,7 +177,7 @@ struct Unavailable: View {
     }
 }
 
-/// 还没有服务器时的欢迎页：主打内置一键扫码/配对码连接，无需配置外置 VPN。
+/// 首次打开欢迎页：无冗余文案，仅保留品牌标志与直接操作入口。
 struct FirstRunView: View {
     @Environment(AppModel.self) private var model
     @State private var showingScanner = false
@@ -185,65 +185,59 @@ struct FirstRunView: View {
     @State private var error: String?
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                FrogMark(size: 92)
-                    .padding(.top, 76)
-                Text("连接你的 frog 主机")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(Theme.fg)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 22)
-                Text("在电脑端打开「设置 › 远程连接」，一键开启加密通道并生成配对码。无需开公网端口，也无需安装外部 VPN。")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Theme.fg3)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .padding(.top, 10)
+        VStack(spacing: 0) {
+            Spacer()
 
-                VStack(spacing: 12) {
-                    Button {
-                        Haptics.tap()
-                        showingScanner = true
-                    } label: {
-                        Label("扫码一键连接", systemImage: "qrcode.viewfinder")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(PillButtonStyle(kind: .primary))
-                    .disabled(busy)
+            FrogMark(size: 88)
+            Text("frog")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundStyle(Theme.fg)
+                .padding(.top, 18)
 
-                    Button {
-                        pastePair()
-                    } label: {
-                        Label(busy ? "正在连接…" : "粘贴配对码连接", systemImage: "doc.on.clipboard")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(PillButtonStyle(kind: .secondary))
-                    .disabled(busy)
-
-                    Button { model.sheet = .addServer } label: {
-                        Text("手动输入服务器地址与账号")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(Theme.fg3)
-                            .padding(.top, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(busy)
+            VStack(spacing: 12) {
+                Button {
+                    Haptics.tap()
+                    showingScanner = true
+                } label: {
+                    Label("扫码连接", systemImage: "qrcode.viewfinder")
+                        .frame(maxWidth: .infinity)
                 }
-                .padding(.top, 28)
+                .buttonStyle(PillButtonStyle(kind: .primary))
+                .disabled(busy)
 
-                if let error {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(Theme.danger)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 14)
+                Button {
+                    pastePair()
+                } label: {
+                    Label(busy ? "正在连接…" : "粘贴配对码", systemImage: "doc.on.clipboard")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(PillButtonStyle(kind: .secondary))
+                .disabled(busy)
+
+                Button { model.sheet = .addServer } label: {
+                    Text("手动连接")
+                        .font(.system(size: 14.5, weight: .medium))
+                        .foregroundStyle(Theme.fg3)
+                        .padding(.top, 6)
+                }
+                .buttonStyle(.plain)
+                .disabled(busy)
             }
-            .frame(maxWidth: 440)
-            .padding(.horizontal, 24)
-            .frame(maxWidth: .infinity)
+            .padding(.top, 36)
+
+            if let error {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.danger)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 14)
+            }
+
+            Spacer()
         }
+        .frame(maxWidth: 360)
+        .padding(.horizontal, 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
         .sheet(isPresented: $showingScanner) {
             QRScannerSheet { code in

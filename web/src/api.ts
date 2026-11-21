@@ -29,11 +29,23 @@ export type APISettings = {
 // enabled = 服务器模式（需要登录）；本机模式没有登录。
 export type AuthInfo = { enabled: boolean; authenticated?: boolean; username?: string };
 
+export type UpdateChannel = 'stable' | 'beta';
+
 export type UpdateStatus = {
   current: string;
   latest?: string;
+  channel?: UpdateChannel;
   release_url: string;
   state: 'no_release' | 'unversioned' | 'current' | 'available';
+  can_apply?: boolean;
+  need_password?: boolean;
+};
+
+export type ApplyUpdateResult = {
+  ok?: boolean;
+  version?: string;
+  restarting?: boolean;
+  need_password?: boolean;
 };
 
 // ---------- 类型（与 Go 后端的事件一一对应） ----------
@@ -364,7 +376,10 @@ export function createDeviceSettingsAPI(device: string, bot = 'main') {
     saveChannels: (providers: APIChannel[]): Promise<ChannelsView> => post(`${settingsBase}/channels`, { providers }),
     providerModels: (s: APISettings): Promise<{ models: string[] }> => post(`${settingsBase}/channels/models`, s),
     testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post(`${settingsBase}/channels/test`, s),
-    checkUpdate: (signal?: AbortSignal): Promise<UpdateStatus> => get(`${settingsBase}/update`, signal),
+    checkUpdate: (channel?: UpdateChannel, signal?: AbortSignal): Promise<UpdateStatus> =>
+      get(`${settingsBase}/update${channel ? `?channel=${channel}` : ''}`, signal),
+    applyUpdate: (channel: UpdateChannel, password = ''): Promise<ApplyUpdateResult> =>
+      post('/api/update/apply', { channel, password }),
     version: async (signal?: AbortSignal) => (await get<Info>(`${botPath('main', device)}/info`, signal)).version,
   };
 }

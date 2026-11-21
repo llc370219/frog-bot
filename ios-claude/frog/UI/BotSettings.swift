@@ -90,15 +90,13 @@ struct BotSettingsView: View {
                     if !editable { Text("这个 Bot 在互联设备上，名字和职责请在那台设备上修改；模型可以在这里改。") }
                 }
                 modelSection
-                if let session {
+                if session != nil {
                     Section {
                         NavigationLink(value: Nav.agents(ref)) {
-                            LabeledContent("Agent", value: "Frog（内置）")
+                            LabeledContent("Agent", value: "Frog")
                         }
                         NavigationLink(value: Nav.channels(ref)) { Text("API 渠道") }
                         NavigationLink(value: Nav.scheduler(ref)) { Text("自动调度器") }
-                    } footer: {
-                        Text("API 渠道是「\(session.deviceName)」上所有 Bot 共用的；Agent 和模型只影响这个 Bot。")
                     }
                 }
                 if let error {
@@ -549,21 +547,14 @@ struct AgentsView: View {
             Section {
                 HStack(spacing: 12) {
                     FrogAgentAvatar(size: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Frog（内置 Agent）").foregroundStyle(Theme.fg)
-                        Text("使用「API 渠道」中选择的任务模型执行后台任务")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.fg3)
-                    }
+                    Text("Frog").foregroundStyle(Theme.fg)
                     Spacer()
                     Image(systemName: "checkmark")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.accent)
                 }
             } header: {
-                Text("「\(session.profile.name)」的后台执行器")
-            } footer: {
-                Text("如需直接面向项目文件夹写代码与运行命令，可在首页顶部切换到「Coding」模式。")
+                Text("执行器")
             }
             if session.isLocalDevice { PrivilegeSection(session: session) }
         }
@@ -573,7 +564,7 @@ struct AgentsView: View {
     }
 }
 
-/// 提权到 root：Agent 需要 root 时弹卡片，输入登录密码授权。这里看状态、开关提权、结束免密窗口。
+/// root 提权开关与状态
 struct PrivilegeSection: View {
     let session: BotSession
 
@@ -583,10 +574,10 @@ struct PrivilegeSection: View {
     @State private var error: String?
 
     var body: some View {
-        Section {
+        Section("Root 提权") {
             if let st {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(st.sandbox.available ? "Agent 沙箱已启用" : "Agent 沙箱不可用").foregroundStyle(Theme.fg)
+                    Text(st.sandbox.available ? "沙箱已启用" : "沙箱不可用").foregroundStyle(Theme.fg)
                     Text(st.summary).font(.footnote).foregroundStyle(st.available ? Theme.fg3 : Theme.danger)
                 }
                 if st.available, (st.status?.grant_left_sec ?? 0) > 0 {
@@ -596,17 +587,13 @@ struct PrivilegeSection: View {
                     Button("关闭提权", role: .destructive) { act("disable") }.disabled(busy)
                 }
                 if !st.available, st.status?.configured == true, st.status?.enabled == false {
-                    SecureField("登录密码", text: $password).textContentType(.password)
+                    SecureField("管理员密码", text: $password).textContentType(.password)
                     Button("开启提权") { act("enable") }.disabled(busy || password.isEmpty)
                 }
             } else {
-                HStack { ProgressView(); Text("正在读取…").foregroundStyle(Theme.fg3) }
+                HStack { ProgressView(); Text("读取中…").foregroundStyle(Theme.fg3) }
             }
             if let error { Text(error).foregroundStyle(Theme.danger) }
-        } header: {
-            Text("提权到 root")
-        } footer: {
-            Text("Agent 需要 root 时（例如装系统软件）会弹出卡片，你输入登录密码后由「\(session.deviceName)」上的提权助手执行，并记入审计日志。")
         }
         .task { st = try? await session.loadPrivilege() }
     }

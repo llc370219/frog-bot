@@ -102,7 +102,13 @@ func (bs *Bots) proxyDeviceSettings(w http.ResponseWriter, r *http.Request, endp
 		body = http.MaxBytesReader(w, r.Body, 1<<20)
 		headers.Set("Content-Type", "application/json")
 	}
-	resp, err := n.doRequest(r.Context(), n.settingsClient, peer, r.Method, endpoint, body, headers)
+	targetEndpoint := endpoint
+	if endpoint == "/update" {
+		if ch := r.URL.Query().Get("channel"); ch == "stable" || ch == "beta" {
+			targetEndpoint += "?channel=" + ch
+		}
+	}
+	resp, err := n.doRequest(r.Context(), n.settingsClient, peer, r.Method, targetEndpoint, body, headers)
 	if err != nil {
 		peerProxyError(w, err.Error())
 		return

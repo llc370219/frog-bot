@@ -463,7 +463,7 @@ func (bs *Bots) buildHandler(ui fs.FS) http.Handler {
 		mux.Handle("/api/settings/remote/", admin)
 	}
 	// 全局接口（设置、更新检查）挂在默认 Bot 上；其他 /api/… 只能通过 /api/bots/{id}/… 访问。
-	for _, p := range []string{"/api/settings", "/api/settings/", "/api/channels/", "POST /api/channels", "GET /api/update"} {
+	for _, p := range []string{"/api/settings", "/api/settings/", "/api/channels/", "POST /api/channels", "GET /api/update", "POST /api/update/apply"} {
 		mux.Handle(p, mainAPI)
 	}
 	if bs.agy != nil {
@@ -557,7 +557,7 @@ func (bs *Bots) buildHandler(ui fs.FS) http.Handler {
 	})
 	mux.HandleFunc("/api/bots/{id}/{rest...}", func(w http.ResponseWriter, r *http.Request) {
 		rest := r.PathValue("rest")
-		if rest == "update" {
+		if rest == "update" || strings.HasPrefix(rest, "update/") {
 			http.NotFound(w, r)
 			return
 		}

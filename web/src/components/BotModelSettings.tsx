@@ -141,8 +141,7 @@ export default function BotModelSettings({ target, bot, bots, deviceName, saving
   const manage = !noChannels && <button type="button" className="settings-link model-manage" onClick={onOpenChannels}><Plug size={12} />管理 API 渠道</button>;
 
   return <div className="settings-channel-page">
-    <div className="settings-channel-title"><div><h3 id="settings-models-title">模型与 Agent</h3>
-      <p className="settings-description">API 渠道在整台设备共用，这里为每个 Bot 单独选择聊天模型和后台 Agent 模型，互不影响。如需直接面向项目文件夹写代码与运行命令，可在侧边栏顶部切换到「Coding」模式。</p></div></div>
+    <div className="settings-channel-title"><div><h3 id="settings-models-title">模型与 Agent</h3></div></div>
     {scope}
     {state.env_override && <p className="settings-env-note">「{deviceName}」启动时设置了环境变量 BASE_URL / CHAT_MODEL，所有 Bot 的 API 模型暂时固定为：聊天 <code>{state.env_model}</code>、Agent <code>{state.env_agent_model}</code>。这里保存的内容要去掉环境变量并重启后才生效。</p>}
     {feedback}

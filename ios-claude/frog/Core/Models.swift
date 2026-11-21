@@ -329,8 +329,11 @@ struct PrivilegeStatus: Codable, Hashable {
 struct UpdateStatus: Codable, Hashable {
     var current: String?
     var latest: String?
+    var channel: String?
     var release_url: String?
     var state: String?
+    var can_apply: Bool?
+    var need_password: Bool?
 }
 
 struct Schedule: Codable, Hashable, Identifiable {

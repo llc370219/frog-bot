@@ -2,15 +2,22 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-/// 设置首页：服务器、Bot 互联、通知、外观、关于
+/// 设置首页：主机、Bot 互联、通知、外观、版本
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Binding var path: [Nav]
     @AppStorage(Prefs.appearance) private var appearance = "system"
+    @AppStorage("client.update.channel") private var clientChannel = "stable"
+
+    @State private var checking = false
+    @State private var latestTag: String?
+    @State private var updateAvailable = false
+    @State private var updateURL: URL?
+    @State private var checkError: String?
 
     var body: some View {
         List {
-            Section("服务器") {
+            Section("主机") {
                 ForEach(model.servers) { s in
                     NavigationLink(value: Nav.server(s.id)) {
                         HStack(spacing: 12) {
@@ -27,12 +34,13 @@ struct SettingsView: View {
                     }
                 }
                 .onMove { model.move(from: $0, to: $1) }
-                Button { model.sheet = .addServer } label: { Label("添加服务器", systemImage: "plus") }
+                Button { model.sheet = .addServer } label: { Label("连接新主机", systemImage: "plus") }
             }
+
             Section {
                 NavigationLink(value: Nav.relay) {
                     LabeledContent {
-                        Text(model.relay.enabled ? "已打开" : "已关闭")
+                        Text(model.relay.enabled ? "已开启" : "已关闭")
                     } label: {
                         Label("Bot 互联", systemImage: "point.3.connected.trianglepath.dotted")
                     }
@@ -48,85 +56,96 @@ struct SettingsView: View {
                     Label("外观", systemImage: "circle.lefthalf.filled")
                 }
             }
-            Section {
+
+            Section("关于") {
                 HStack(spacing: 14) {
-                    FrogMark(size: 52)
+                    FrogMark(size: 46)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("frog").font(.headline)
-                        Text("版本 \(version)").font(.subheadline).monospacedDigit().foregroundStyle(Theme.fg3)
+                        Text("v\(version)").font(.subheadline).monospacedDigit().foregroundStyle(Theme.fg3)
                     }
                     Spacer()
-                    updateButton
+                    Picker("通道", selection: $clientChannel) {
+                        Text("正式版").tag("stable")
+                        Text("Beta").tag("beta")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 132)
+                    .onChange(of: clientChannel) { _, _ in checkClientUpdate() }
                 }
-                .padding(.vertical, 4)
-                if let note = updateNote {
-                    Text(note.0).font(.footnote).foregroundStyle(note.1)
+                .padding(.vertical, 2)
+
+                HStack {
+                    Text(clientChannel == "beta" ? "最新 Beta" : "最新正式版")
+                    Spacer()
+                    if checking {
+                        ProgressView().controlSize(.small)
+                    } else if let latestTag {
+                        Text(latestTag)
+                            .monospacedDigit()
+                            .foregroundStyle(updateAvailable ? Theme.accent : Theme.fg3)
+                    } else {
+                        Button("检查") { checkClientUpdate() }
+                            .font(.subheadline)
+                    }
                 }
-                if let url = updateURL {
-                    Link(destination: url) { Label("查看新版本", systemImage: "arrow.down.circle") }
+
+                if updateAvailable, let url = updateURL {
+                    Link(destination: url) {
+                        Label("查看 \(latestTag ?? "新版本")", systemImage: "arrow.up.right.circle")
+                    }
+                }
+                if let checkError {
+                    Text(checkError).font(.footnote).foregroundStyle(Theme.danger)
                 }
                 Link(destination: URL(string: "https://github.com/llc370219/frog-bot")!) {
-                    Label("项目主页", systemImage: "arrow.up.right.square")
+                    Label("GitHub", systemImage: "arrow.up.right.square")
                 }
-            } header: {
-                Text("客户端")
-            } footer: {
-                Text("iOS 版用 Xcode 安装，不能在 App 里自动更新；有新版本时用 Xcode 重新安装一次即可，数据会保留。")
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("设置")
         .toolbar { EditButton() }
+        .task { checkClientUpdate() }
     }
-
-    @State private var checking = false
-    @State private var updateNote: (String, Color)?
-    @State private var updateURL: URL?
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
     }
 
-    private var updateButton: some View {
-        Button(action: checkUpdate) {
-            HStack(spacing: 5) {
-                if checking {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                }
-                Text("检查更新")
-            }
-        }
-        .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
-        .disabled(checking)
-    }
-
-    /// 对比 GitHub 上最新正式版的版本号
-    private func checkUpdate() {
+    private func checkClientUpdate() {
         checking = true
-        updateNote = nil
-        updateURL = nil
+        checkError = nil
+        let isBeta = clientChannel == "beta"
         Task {
             defer { checking = false }
             do {
-                var req = URLRequest(url: URL(string: "https://api.github.com/repos/llc370219/frog-bot/releases/latest")!)
+                let endpoint = isBeta
+                    ? "https://api.github.com/repos/llc370219/frog-bot/releases?per_page=20"
+                    : "https://api.github.com/repos/llc370219/frog-bot/releases/latest"
+                var req = URLRequest(url: URL(string: endpoint)!)
                 req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                req.timeoutInterval = 15
+                req.timeoutInterval = 12
                 let (data, _) = try await URLSession.shared.data(for: req)
-                let j = JSON.parse(data) ?? .null
-                let tag = j["tag_name"].str
-                let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-                guard !latest.isEmpty else { throw APIError.invalid("没读到最新版本号") }
-                if latest.compare(version, options: .numeric) == .orderedDescending {
-                    updateNote = ("有新版本 \(latest)，用 Xcode 重新安装即可更新。", Theme.accent)
-                    updateURL = URL(string: j["html_url"].str)
+                let parsed = JSON.parse(data) ?? .null
+                let chosen: JSON
+                if isBeta {
+                    chosen = parsed.array.first(where: { !$0["draft"].bool && $0["tag_name"].str.hasPrefix("v") }) ?? .null
                 } else {
-                    updateNote = ("已是最新版本", Theme.ok)
+                    chosen = parsed
                 }
-                Haptics.tap()
+                let tag = chosen["tag_name"].str
+                guard !tag.isEmpty else {
+                    latestTag = "—"
+                    updateAvailable = false
+                    return
+                }
+                latestTag = tag
+                updateURL = URL(string: chosen["html_url"].str)
+                let cleanLatest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+                updateAvailable = cleanLatest != version && cleanLatest.compare(version, options: .numeric) == .orderedDescending
             } catch {
-                updateNote = ("检查失败：\(error.localizedDescription)", Theme.danger)
+                checkError = error.localizedDescription
             }
         }
     }
@@ -135,10 +154,10 @@ struct SettingsView: View {
 @MainActor
 func statusText(_ s: ServerEntry) -> String {
     switch s.status {
-    case .online: return (s.config.isInsecure ? "在线 · HTTP 未加密 · " : "在线 · ") + (s.config.baseURL?.host ?? s.config.url)
-    case .connecting: return "正在连接…"
-    case .needsLogin: return "需要重新登录"
-    case .offline(let e): return "离线：\(e)"
+    case .online: return s.config.baseURL?.host ?? s.config.url
+    case .connecting: return "连接中…"
+    case .needsLogin: return "需要验证"
+    case .offline: return "离线"
     }
 }
 
@@ -152,20 +171,24 @@ func statusColor(_ s: ServerEntry) -> Color {
     }
 }
 
-// MARK: - 一台服务器
+// MARK: - 单台主机设置
 
 struct ServerSettingsView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     let server: ServerEntry
     @Binding var path: [Nav]
 
     @State private var name = ""
     @State private var proxyMode: ProxyRouteMode = .system
     @State private var customProxy = ""
+    @State private var channel = "stable"
     @State private var update: UpdateStatus?
     @State private var checking = false
+    @State private var upgrading = false
+    @State private var upgradeNote: String?
     @State private var updateError: String?
+    @State private var askUpgradePassword = false
+    @State private var upgradePassword = ""
     @State private var changingPassword = false
     @State private var confirmLogout = false
     @State private var confirmRemove = false
@@ -177,25 +200,25 @@ struct ServerSettingsView: View {
 
     var body: some View {
         List {
-            Section {
+            Section("连接") {
                 TextField("名称", text: $name)
                     .onSubmit { model.rename(server, to: name) }
-                LabeledContent("地址", value: server.config.url)
+                LabeledContent("地址") {
+                    HStack(spacing: 5) {
+                        if server.config.isInsecure {
+                            Image(systemName: "lock.open.fill")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.warn)
+                        }
+                        Text(server.config.baseURL?.host ?? server.config.url)
+                            .foregroundStyle(Theme.fg3)
+                            .lineLimit(1)
+                    }
+                }
                 LabeledContent("状态") {
-                    Text(statusText(server)).foregroundStyle(statusColor(server)).multilineTextAlignment(.trailing)
+                    Text(statusText(server)).foregroundStyle(statusColor(server))
                 }
-                Button("编辑连接 / 重新配对…") { model.sheet = .editServer(server.id) }
-            } header: {
-                Text("连接")
-            } footer: {
-                if server.config.isInsecure {
-                    Text("这是明文 HTTP 连接，密码和聊天内容在网络上不加密。建议在电脑端开启内置「远程连接」使用加密配对。")
-                        .foregroundStyle(Theme.warn)
-                }
-            }
-
-            Section {
-                Picker("路由方式", selection: $proxyMode) {
+                Picker("代理", selection: $proxyMode) {
                     ForEach(ProxyRouteMode.allCases, id: \.self) { m in
                         Text(m.label).tag(m)
                     }
@@ -203,25 +226,22 @@ struct ServerSettingsView: View {
                 .onChange(of: proxyMode) { _, next in
                     model.updateProxyRoute(server, mode: next, customProxy: customProxy)
                 }
-
                 if proxyMode == .custom {
-                    TextField("例如 socks5://127.0.0.1:7890 或 http://192.168.1.2:7890", text: $customProxy)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.subheadline, design: .monospaced))
-                        .submitLabel(.done)
-                        .onSubmit {
+                    HStack {
+                        TextField("socks5://127.0.0.1:7890", text: $customProxy)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.system(.subheadline, design: .monospaced))
+                            .submitLabel(.done)
+                            .onSubmit { model.updateProxyRoute(server, mode: proxyMode, customProxy: customProxy) }
+                        Button("应用") {
+                            Haptics.tap()
                             model.updateProxyRoute(server, mode: proxyMode, customProxy: customProxy)
                         }
-                    Button("应用代理地址") {
-                        Haptics.tap()
-                        model.updateProxyRoute(server, mode: proxyMode, customProxy: customProxy)
+                        .font(.subheadline.weight(.medium))
                     }
                 }
-            } header: {
-                Text("网络与代理（不抢占系统 VPN）")
-            } footer: {
-                Text("内置加密通道在 App 应用层工作，绝不会顶掉或中断手机上的 sing-box、Clash、Shadowrocket 等系统 VPN。你也可以在这里单独选择该主机是跟随系统 VPN、绕过系统代理直连，还是走指定代理。")
+                Button("编辑连接…") { model.sheet = .editServer(server.id) }
             }
 
             Section("Bot") {
@@ -238,55 +258,79 @@ struct ServerSettingsView: View {
                         Label("新建 Bot", systemImage: "plus")
                     }
                 }
+                if let mainRef, server.isOnline {
+                    NavigationLink(value: Nav.channels(mainRef)) { Label("API 渠道", systemImage: "powerplug") }
+                }
             }
 
-            if let mainRef, server.isOnline {
-                Section {
-                    NavigationLink(value: Nav.channels(mainRef)) { Label("API 渠道", systemImage: "powerplug") }
-                } footer: {
-                    Text("这台服务器上的所有 Bot 共用这些渠道；每个 Bot 用哪个模型、哪个 Agent，在 Bot 设置里各自选。")
+            Section("版本") {
+                HStack {
+                    Text("更新通道")
+                    Spacer()
+                    Picker("更新通道", selection: $channel) {
+                        Text("正式版").tag("stable")
+                        Text("Beta").tag("beta")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 140)
+                    .disabled(!server.isOnline || checking || upgrading)
+                    .onChange(of: channel) { _, next in
+                        if update?.channel != next {
+                            checkServerUpdate(targetChannel: next)
+                        }
+                    }
+                }
+
+                LabeledContent("当前版本", value: update?.current ?? "—")
+                LabeledContent(channel == "beta" ? "最新 Beta" : "最新正式版") {
+                    if checking {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text(update?.latest ?? "—").foregroundStyle(Theme.fg3)
+                    }
+                }
+
+                if update?.state == "available", let latest = update?.latest, !latest.isEmpty {
+                    if update?.can_apply == true {
+                        Button {
+                            triggerUpgrade(password: "")
+                        } label: {
+                            HStack {
+                                Label(upgrading ? "正在升级…" : "升级至 \(latest)", systemImage: "arrow.down.circle.fill")
+                                    .fontWeight(.medium)
+                                if upgrading { Spacer(); ProgressView() }
+                            }
+                        }
+                        .disabled(upgrading || !server.isOnline)
+                    } else if let s = update?.release_url, let url = URL(string: s) {
+                        Link("查看 \(latest)", destination: url)
+                    }
+                } else {
+                    Button("刷新版本信息") { checkServerUpdate(targetChannel: channel) }
+                        .disabled(checking || upgrading || !server.isOnline)
+                }
+
+                if let upgradeNote {
+                    Text(upgradeNote).font(.footnote).foregroundStyle(Theme.ok)
+                }
+                if let updateError {
+                    Text(updateError).font(.footnote).foregroundStyle(Theme.danger)
                 }
             }
 
             if server.authEnabled {
                 Section("账号") {
-                    LabeledContent("用户名", value: server.config.username)
-                    Button("修改密码…") { changingPassword = true }
-                        .disabled(!server.isOnline)
+                    LabeledContent("用户", value: server.config.username)
+                    if server.config.username != "paired-device" {
+                        Button("修改密码…") { changingPassword = true }
+                            .disabled(!server.isOnline)
+                    }
                     Button("退出登录", role: .destructive) { confirmLogout = true }
                 }
             }
 
             Section {
-                if let update {
-                    LabeledContent("当前版本", value: update.current ?? "?")
-                    if let latest = update.latest, !latest.isEmpty {
-                        LabeledContent("最新版本", value: latest)
-                    }
-                    if update.state == "available", let s = update.release_url, let url = URL(string: s) {
-                        Link("查看新版本", destination: url)
-                    }
-                }
-                Button {
-                    checkUpdate()
-                } label: {
-                    HStack {
-                        Text("检查服务器更新")
-                        if checking { Spacer(); ProgressView() }
-                    }
-                }
-                .disabled(checking || !server.isOnline)
-                if let updateError { Text(updateError).font(.footnote).foregroundStyle(Theme.danger) }
-            } header: {
-                Text("服务器版本")
-            } footer: {
-                Text("升级：在服务器上重新运行安装命令，数据会保留。")
-            }
-
-            Section {
-                Button("从 App 中移除这台服务器", role: .destructive) { confirmRemove = true }
-            } footer: {
-                Text("只是从这台手机上移除，服务器上的 Bot、对话和任务都不受影响。")
+                Button("移除主机", role: .destructive) { confirmRemove = true }
             }
         }
         .listStyle(.insetGrouped)
@@ -296,28 +340,72 @@ struct ServerSettingsView: View {
             name = server.config.name
             proxyMode = server.config.effectiveProxyMode
             customProxy = server.config.customProxy ?? ""
+            if server.isOnline && update == nil {
+                checkServerUpdate(targetChannel: nil)
+            }
         }
         .onDisappear { if name != server.config.name { model.rename(server, to: name) } }
         .sheet(isPresented: $changingPassword) { PasswordSheet(server: server) }
-        .confirmationDialog("退出「\(server.name)」的登录？", isPresented: $confirmLogout, titleVisibility: .visible) {
+        .alert("输入管理员密码升级", isPresented: $askUpgradePassword) {
+            SecureField("密码", text: $upgradePassword)
+            Button("取消", role: .cancel) { upgradePassword = "" }
+            Button("升级") {
+                let pw = upgradePassword
+                upgradePassword = ""
+                triggerUpgrade(password: pw)
+            }
+        }
+        .confirmationDialog("退出「\(server.name)」？", isPresented: $confirmLogout, titleVisibility: .visible) {
             Button("退出登录", role: .destructive) { Task { await model.logout(server) } }
         }
-        .confirmationDialog("从 App 中移除「\(server.name)」？", isPresented: $confirmRemove, titleVisibility: .visible) {
+        .confirmationDialog("移除「\(server.name)」？", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("移除", role: .destructive) {
                 path.removeAll()
                 model.remove(server)
             }
-        } message: {
-            Text("服务器上的数据不受影响，之后可以重新添加。")
         }
     }
 
-    private func checkUpdate() {
+    private func checkServerUpdate(targetChannel: String?) {
         checking = true
         updateError = nil
+        upgradeNote = nil
         Task {
-            do { update = try await model.checkUpdate(server) } catch { updateError = error.localizedDescription }
+            do {
+                let res = try await model.checkUpdate(server, channel: targetChannel)
+                update = res
+                if let ch = res.channel, !ch.isEmpty {
+                    channel = ch
+                }
+            } catch {
+                updateError = error.localizedDescription
+            }
             checking = false
+        }
+    }
+
+    private func triggerUpgrade(password: String) {
+        upgrading = true
+        updateError = nil
+        upgradeNote = nil
+        Task {
+            do {
+                let out = try await model.applyUpdate(server, channel: channel, password: password)
+                if out["need_password"].bool {
+                    upgrading = false
+                    askUpgradePassword = true
+                    return
+                }
+                Haptics.success()
+                upgradeNote = "正在重启更新，几秒后自动重连…"
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                await model.refresh(server)
+                checkServerUpdate(targetChannel: channel)
+            } catch {
+                updateError = error.localizedDescription
+                Haptics.error()
+            }
+            upgrading = false
         }
     }
 }
@@ -339,9 +427,7 @@ private struct PasswordSheet: View {
                 Section {
                     SecureField("当前密码", text: $old).textContentType(.password)
                     SecureField("新密码（至少 8 位）", text: $new).textContentType(.newPassword)
-                    SecureField("再输一次新密码", text: $again).textContentType(.newPassword)
-                } footer: {
-                    Text("修改后，其他设备上的登录都会失效，需要用新密码重新登录。")
+                    SecureField("确认新密码", text: $again).textContentType(.newPassword)
                 }
                 if let error {
                     Section { Label(error, systemImage: "exclamationmark.circle.fill").foregroundStyle(Theme.danger) }
@@ -382,18 +468,16 @@ struct RelaySettingsView: View {
         let relay = model.relay
         List {
             Section {
-                Toggle("允许这些服务器上的 Bot 互相发消息", isOn: Binding(get: { relay.enabled }, set: { relay.enabled = $0 }))
-            } footer: {
-                Text("聊天 Bot 之间只能互相发文字：问问对方记得什么，或者托付一件事让对方在它自己的机器上做。只在这个 App 开着、在前台时有效，消息由 App 转交，不排队；切到后台或关掉开关，对方马上联系不上。")
+                Toggle("开启跨主机 Bot 互联", isOn: Binding(get: { relay.enabled }, set: { relay.enabled = $0 }))
             }
             if model.servers.count < 2 {
-                Section { Text("至少要添加两台服务器才能互联。").foregroundStyle(Theme.fg3) }
+                Section { Text("需连接两台及以上主机").foregroundStyle(Theme.fg3) }
             }
             ForEach(model.servers) { s in
                 Section {
                     Toggle(isOn: Binding(get: { relay.isOn(s) }, set: { relay.set(s, on: $0) })) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("这台服务器参与互联")
+                            Text("接入此主机")
                             if let st = stateText(s) {
                                 Text(st.0).font(.footnote).foregroundStyle(st.1)
                             }
@@ -423,11 +507,11 @@ struct RelaySettingsView: View {
         let relay = model.relay
         guard relay.enabled, relay.isOn(s) else { return nil }
         switch relay.states[s.id] ?? .off {
-        case .off: return s.isOnline ? nil : ("服务器不在线", Theme.fg4)
-        case .connecting: return ("正在连接", Theme.fg4)
-        case .waiting: return ("没有可联系的对象", Theme.fg4)
+        case .off: return s.isOnline ? nil : ("离线", Theme.fg4)
+        case .connecting: return ("连接中", Theme.fg4)
+        case .waiting: return ("待机", Theme.fg4)
         case .active: return ("已接入", Theme.ok)
-        case .unsupported: return ("服务器版本太旧，请先更新", Theme.warn)
+        case .unsupported: return ("需更新服务端", Theme.warn)
         case .failed(let e): return (e, Theme.danger)
         }
     }
@@ -447,22 +531,18 @@ struct NotificationSettingsView: View {
         List {
             if status == .denied {
                 Section {
-                    Button("到系统设置里打开通知") {
+                    Button("前往系统设置开启通知") {
                         if let url = URL(string: UIApplication.openNotificationSettingsURLString) { UIApplication.shared.open(url) }
                     }
-                } footer: {
-                    Text("系统设置里关掉了 frog 的通知，下面的选项暂时不起作用。")
                 }
             }
             Section {
-                Toggle("有操作等你确认", isOn: $approval)
-                Toggle("后台任务结束", isOn: $task)
-                Toggle("新回复", isOn: $reply)
-            } footer: {
-                Text("App 开着（包括刚切到后台的一小会儿）时提醒；正看着的那个对话不会重复提醒。iOS 会挂起后台的 App，所以完全退到后台后收不到提醒，回到 App 会自动补齐消息。")
+                Toggle("操作确认", isOn: $approval)
+                Toggle("任务完成", isOn: $task)
+                Toggle("新消息", isOn: $reply)
             }
             Section {
-                Toggle("App 图标上显示未读数", isOn: $badge)
+                Toggle("图标未读角标", isOn: $badge)
                     .onChange(of: badge) { model.updateBadge() }
             }
         }

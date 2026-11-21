@@ -1,13 +1,13 @@
-import { ArrowUpRight, Check, ChevronDown, CircleAlert, Cpu, KeyRound, LogOut, Monitor, Plug, RefreshCw, ShieldCheck, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, createDeviceSettingsAPI, type AuthInfo, type DeviceGroup, type DeviceSettingsAPI, type UpdateStatus } from '../api';
+import { ArrowUpRight, Check, ChevronDown, CircleAlert, Cpu, Download, KeyRound, Loader2, LogOut, Monitor, Plug, RefreshCw, ShieldCheck, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, createDeviceSettingsAPI, type AuthInfo, type DeviceGroup, type DeviceSettingsAPI, type UpdateChannel, type UpdateStatus } from '../api';
 import BotModelSettings from './BotModelSettings';
 import ChannelsPage from './ChannelsPage';
 import RemoteSettings from './RemoteSettings';
 
 const releasesPage = 'https://github.com/llc370219/frog-bot/releases';
-const message = (err: unknown) => err instanceof TypeError ? '无法连接 frog 后端，请确认服务已启动'
-  : err instanceof Error ? err.message : '请求失败，请重试';
+const message = (err: unknown) => err instanceof TypeError ? '无法连接后端服务'
+  : err instanceof Error ? err.message : '请求失败';
 
 type Tab = 'models' | 'api' | 'remote' | 'update' | 'account';
 type Feedback = { error: boolean; text: string };
@@ -43,13 +43,13 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
 
   function go(next: Tab) {
     if (next === tab || saving) return;
-    if (dirty && !window.confirm('当前页有未保存的修改，确定离开吗？')) return;
+    if (dirty && !window.confirm('放弃未保存的修改？')) return;
     setDirty(false); setTab(next);
   }
 
   function close() {
     if (saving) return;
-    if (dirty && !window.confirm('有未保存的修改，确定关闭设置吗？')) return;
+    if (dirty && !window.confirm('放弃未保存的修改？')) return;
     onClose();
   }
 
@@ -66,12 +66,12 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
         <div className="settings-sidebar-heading">
           <h2 ref={title} id="settings-title" tabIndex={-1}>设置</h2>
           {devices.length > 1 && (
-            <label className="sidebar-device-picker" title={dirty ? '先保存或放弃修改，再切换设备' : `管理设备：${device.name}`}>
+            <label className="sidebar-device-picker" title={device.name}>
               <Monitor className="sidebar-device-icon" size={13} aria-hidden="true" />
               <span className="sidebar-device-name">{device.name}</span>
               <ChevronDown className="sidebar-device-chevron" size={12} aria-hidden="true" />
               <select aria-label="管理设备" value={device.id} disabled={saving || dirty} onChange={e => { const next = devices.find(d => d.id === e.target.value); setSelectedDevice(e.target.value); setSelectedBot(next?.bots[0]?.id ?? 'main'); }}>
-                {devices.map(d => <option key={d.id} value={d.id}>{d.name}{d.id === 'local' ? '（本机）' : d.online ? '' : '（离线）'}</option>)}
+                {devices.map(d => <option key={d.id} value={d.id}>{d.name}{d.online ? '' : ' · 离线'}</option>)}
               </select>
             </label>
           )}
@@ -80,8 +80,8 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
           {navButton('models', <Cpu size={16} aria-hidden="true" />, '模型与 Agent')}
           {navButton('api', <Plug size={16} aria-hidden="true" />, 'API 渠道')}
           {device.id === 'local' && navButton('remote', <ShieldCheck size={15} aria-hidden="true" />, '远程连接')}
-          {navButton('update', <RefreshCw size={15} aria-hidden="true" />, '版本与互联')}
-          {showAccount && navButton('account', <KeyRound size={15} aria-hidden="true" />, '账号与登录')}
+          {navButton('update', <RefreshCw size={15} aria-hidden="true" />, '软件版本')}
+          {showAccount && navButton('account', <KeyRound size={15} aria-hidden="true" />, '账号')}
         </nav>
       </aside>
       <button type="button" className="settings-close" aria-label="关闭设置" disabled={saving} onClick={close}>
@@ -103,7 +103,7 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
           </section>
         )}
         <section id="settings-update" className="settings-pane" hidden={tab !== 'update'} aria-labelledby="settings-update-title">
-          {tab === 'update' && <UpdatePanel key={device.id} target={target} deviceName={device.name} />}
+          {tab === 'update' && <UpdatePanel key={device.id} target={target} />}
         </section>
         {showAccount && <section id="settings-account" className="settings-pane" hidden={tab !== 'account'} aria-labelledby="settings-account-title">
           <AccountPanel username={auth?.username ?? ''} />
@@ -113,61 +113,145 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
   );
 }
 
-function UpdatePanel({ target, deviceName }: { target: DeviceSettingsAPI; deviceName: string }) {
-  const [version, setVersion] = useState<string>();
+function UpdatePanel({ target }: { target: DeviceSettingsAPI }) {
+  const [channel, setChannel] = useState<UpdateChannel>('stable');
   const [status, setStatus] = useState<UpdateStatus>();
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(false);
+  const [upgrading, setUpgrading] = useState(false);
+  const [askPassword, setAskPassword] = useState(false);
+  const [password, setPassword] = useState('');
+  const [restarting, setRestarting] = useState(false);
 
-  useEffect(() => {
-    const request = new AbortController();
-    target.version(request.signal).then(v => { if (!request.signal.aborted) setVersion(v); }).catch(() => {});
-    return () => request.abort();
-  }, [target]);
-
-  async function check() {
+  const check = useCallback(async (ch?: UpdateChannel) => {
     setChecking(true);
     setError('');
     try {
-      setStatus(await target.checkUpdate());
+      const st = await target.checkUpdate(ch);
+      setStatus(st);
+      if (st.channel) setChannel(st.channel);
     } catch (err) {
-      setStatus(undefined);
       setError(message(err));
     } finally {
       setChecking(false);
     }
-  }
+  }, [target]);
+
+  useEffect(() => { void check(); }, [check]);
+
+  const switchChannel = (next: UpdateChannel) => {
+    if (next === channel || checking || upgrading) return;
+    setChannel(next);
+    setAskPassword(false);
+    void check(next);
+  };
+
+  const applyUpgrade = async () => {
+    setUpgrading(true);
+    setError('');
+    try {
+      const res = await target.applyUpdate(channel, password);
+      if (res.need_password) {
+        setAskPassword(true);
+        setUpgrading(false);
+        return;
+      }
+      setRestarting(true);
+      setPassword('');
+      window.setTimeout(() => {
+        const timer = window.setInterval(() => {
+          fetch('/api/health').then((r) => {
+            if (r.ok) {
+              window.clearInterval(timer);
+              window.location.reload();
+            }
+          }).catch(() => {});
+        }, 1500);
+      }, 1500);
+    } catch (err) {
+      setError(message(err));
+      setUpgrading(false);
+    }
+  };
 
   return (
-    <>
-      <h3 id="settings-update-title">版本更新</h3>
-      <p className="settings-description">查看「{deviceName}」正在运行的版本，并检查 GitHub 上的最新发布。</p>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 id="settings-update-title">软件版本</h3>
+        <div className="grid grid-cols-2 gap-1 rounded-xl bg-s2 p-1 text-xs" role="tablist" aria-label="更新通道">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={channel === 'stable'}
+            onClick={() => switchChannel('stable')}
+            className={`rounded-lg px-3.5 py-1.5 font-medium transition ${channel === 'stable' ? 'bg-canvas text-fg shadow-2xs' : 'text-fg3 hover:text-fg'}`}
+          >
+            正式版
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={channel === 'beta'}
+            onClick={() => switchChannel('beta')}
+            className={`rounded-lg px-3.5 py-1.5 font-medium transition ${channel === 'beta' ? 'bg-canvas text-fg shadow-2xs' : 'text-fg3 hover:text-fg'}`}
+          >
+            Beta
+          </button>
+        </div>
+      </div>
+
       <dl className="settings-versions">
-        <div><dt>当前版本</dt><dd>{status?.current ?? version ?? '—'}</dd></div>
-        {status?.latest && <div><dt>最新发布</dt><dd>{status.latest}</dd></div>}
+        <div><dt>当前版本</dt><dd>{status?.current ?? '—'}</dd></div>
+        <div><dt>{channel === 'beta' ? '最新 Beta' : '最新正式版'}</dt><dd>{checking ? '…' : (status?.latest ?? '—')}</dd></div>
       </dl>
+
       {error && <FeedbackLine feedback={{ error: true, text: error }} />}
-      {status && !checking && <p role="status" className="settings-update-note">{{
-        current: '当前版本无需更新。',
-        available: '有新版本可用。请在目标设备安装新版并重启。',
-        no_release: 'GitHub 上暂无可用的正式发布。',
-        unversioned: '可以前往发布页查看最新版本。',
-      }[status.state]}</p>}
+      {restarting && <FeedbackLine feedback={{ error: false, text: '正在升级并重启，完成后自动刷新…' }} />}
+
+      {askPassword && !restarting && (
+        <div className="flex items-center gap-2 rounded-2xl border border-line bg-s1 p-3">
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="输入管理员密码确认升级"
+            className="min-w-0 flex-1 rounded-xl border border-line2 bg-canvas px-3 py-1.5 text-sm text-fg focus:outline-none"
+          />
+          <button
+            type="button"
+            className="settings-button settings-primary"
+            disabled={!password || upgrading}
+            onClick={() => void applyUpgrade()}
+          >
+            {upgrading ? <Loader2 size={14} className="animate-spin" /> : null}
+            确认升级
+          </button>
+        </div>
+      )}
+
       <div className="settings-actions settings-update-actions">
         <a className="settings-link" href={status?.release_url?.startsWith(releasesPage + '/tag/') ? status.release_url : releasesPage} target="_blank" rel="noreferrer">
-          查看发布记录 <ArrowUpRight size={14} aria-hidden="true" />
+          发布记录 <ArrowUpRight size={14} aria-hidden="true" />
         </a>
-        <button type="button" className="settings-button settings-primary" onClick={check} disabled={checking}>
-          <RefreshCw size={14} className={checking ? 'animate-spin' : undefined} aria-hidden="true" />
-          {checking ? '检查中…' : '检查更新'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button type="button" className="settings-button" onClick={() => void check(channel)} disabled={checking || upgrading || restarting}>
+            <RefreshCw size={14} className={checking ? 'animate-spin' : undefined} aria-hidden="true" />
+            刷新
+          </button>
+          {target.local && status?.state === 'available' && status.can_apply && status.latest && (
+            <button
+              type="button"
+              className="settings-button settings-primary"
+              disabled={upgrading || restarting}
+              onClick={() => void applyUpgrade()}
+            >
+              {upgrading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+              升级至 {status.latest}
+            </button>
+          )}
+        </div>
       </div>
-      <p className="settings-update-note">这里可以检查版本。安装新版和重启仍在「{deviceName}」上完成。</p>
-      <div className="settings-devices-note">
-        <h4>设备互联</h4>
-        <p>在各台设备的数据目录配置 <code>devices.json</code> 并重启 frog。连通后，侧栏会按设备显示 Bot，也可以在这里切换设备，分别设置每台设备上每个 Bot 的模型。</p>
-      </div>
-    </>
+    </div>
   );
 }
 
@@ -180,13 +264,13 @@ function AccountPanel({ username }: { username: string }) {
 
   async function change(e: React.FormEvent) {
     e.preventDefault();
-    if (newPw !== again) { setFeedback({ error: true, text: '两次输入的新密码不一样' }); return; }
+    if (newPw !== again) { setFeedback({ error: true, text: '两次输入的新密码不一致' }); return; }
     setBusy(true);
     setFeedback(undefined);
     try {
       await api.changePassword(oldPw, newPw);
       setOldPw(''); setNewPw(''); setAgain('');
-      setFeedback({ error: false, text: '密码已修改。其他设备上的登录已失效，需要用新密码重新登录。' });
+      setFeedback({ error: false, text: '密码已更新' });
     } catch (err) {
       setFeedback({ error: true, text: message(err) });
     } finally {
@@ -201,20 +285,24 @@ function AccountPanel({ username }: { username: string }) {
 
   return (
     <>
-      <h3 id="settings-account-title">账号与登录</h3>
-      <p className="settings-description">服务器模式下，打开管理页面需要登录。当前用户：<b>{username}</b></p>
-      <form className="settings-account-form" onSubmit={change}>
+      <div className="flex items-center justify-between">
+        <h3 id="settings-account-title">账号 · {username}</h3>
+        <button type="button" className="settings-button" onClick={logout}>
+          <LogOut size={14} aria-hidden="true" />退出登录
+        </button>
+      </div>
+      <form className="settings-account-form mt-4" onSubmit={change}>
         <div className="settings-field"><label htmlFor="pw-old">当前密码</label>
           <input id="pw-old" type="password" autoComplete="current-password" required value={oldPw} onChange={(e) => setOldPw(e.target.value)} /></div>
         <div className="settings-field"><label htmlFor="pw-new">新密码</label>
-          <input id="pw-new" type="password" autoComplete="new-password" required minLength={8} value={newPw} onChange={(e) => setNewPw(e.target.value)} />
-          <p className="settings-field-hint">至少 8 位。忘记密码时可以在服务器上运行 sudo frogbot reset-password。</p></div>
-        <div className="settings-field"><label htmlFor="pw-again">再输一次新密码</label>
+          <input id="pw-new" type="password" autoComplete="new-password" required minLength={8} value={newPw} onChange={(e) => setNewPw(e.target.value)} /></div>
+        <div className="settings-field"><label htmlFor="pw-again">确认新密码</label>
           <input id="pw-again" type="password" autoComplete="new-password" required minLength={8} value={again} onChange={(e) => setAgain(e.target.value)} /></div>
         {feedback && <FeedbackLine feedback={feedback} />}
         <div className="settings-actions">
-          <button type="button" className="settings-button" onClick={logout}><LogOut size={14} aria-hidden="true" />退出登录</button>
-          <button type="submit" className="settings-button settings-primary" disabled={busy || !oldPw || !newPw}>{busy ? '正在修改…' : '修改密码'}</button>
+          <button type="submit" className="settings-button settings-primary" disabled={busy || !oldPw || !newPw}>
+            {busy ? '保存中…' : '更新密码'}
+          </button>
         </div>
       </form>
     </>

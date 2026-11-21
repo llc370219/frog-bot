@@ -128,13 +128,6 @@ struct CodingWorkspaceView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer(minLength: 4)
-                            if let st = store.status, st.installed {
-                                Text("ACP · agy")
-                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(Theme.fg3)
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(Theme.s2, in: Capsule())
-                            }
                             Button { showingFiles = true } label: {
                                 Label("文件", systemImage: "doc.text")
                                     .font(.system(size: 12.5, weight: .medium))
@@ -158,12 +151,12 @@ struct CodingWorkspaceView: View {
                 let list = filteredSessions
                 if list.isEmpty && !store.loading {
                     VStack(spacing: 14) {
-                        Text(searchText.isEmpty ? "「\(store.activeProject?.name ?? "当前项目")」还没有对话" : "没有匹配的 Coding 对话")
+                        Text(searchText.isEmpty ? "暂无对话" : "无匹配对话")
                             .font(.system(size: 16, weight: .medium))
                             .foregroundStyle(Theme.fg3)
                         if searchText.isEmpty {
                             Button { startNewConversation() } label: {
-                                Label("新建 Coding 对话", systemImage: "plus.message.fill")
+                                Label("新建对话", systemImage: "plus")
                             }
                             .buttonStyle(PillButtonStyle(kind: .primary, compact: true))
                             .disabled(store.activeProject == nil || store.status?.installed == false)
@@ -368,29 +361,24 @@ struct AgyChatView: View {
     }
 
     private var emptyPromptView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "terminal.fill")
-                .font(.system(size: 32))
+        VStack(spacing: 10) {
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(Theme.accent)
-                .frame(width: 60, height: 60)
+                .frame(width: 56, height: 56)
                 .background(Theme.s2, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            Text("Coding 工作区")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Theme.fg)
             if !chat.cwd.isEmpty {
+                Text(Fmt.base(chat.cwd))
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Theme.fg)
                 Text(chat.cwd)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Theme.fg4)
                     .multilineTextAlignment(.center)
             }
-            Text("在当前项目目录中与 Coding Agent 协同读写代码、运行命令与查看工具输出。点击顶部标题可切换执行模式与模型。")
-                .font(.system(size: 13.5))
-                .foregroundStyle(Theme.fg3)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 20)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 60)
+        .padding(.top, 80)
     }
 
     @ViewBuilder
