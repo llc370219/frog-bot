@@ -77,6 +77,27 @@ private struct ServerSection: View {
 
     @ViewBuilder
     private var botRows: some View {
+        if server.isOnline {
+            NavigationLink(value: Nav.agy(server.id)) {
+                HStack(spacing: 12) {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 44, height: 44)
+                        .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Antigravity CLI")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Theme.fg)
+                        Text("跨过 Bot 直连服务器 agy · 项目与对话")
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(Theme.fg3)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+        }
         ForEach(server.devices) { g in
             if g.id != "local" {
                 HStack(spacing: 6) {

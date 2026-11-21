@@ -61,7 +61,7 @@ go vet ./... && go test -race ./...
 | `FROGBOT_MASTER_KEY` | 空 | 密钥库主密钥（32 字节 hex / base64）；未设置时自动生成 `master.key`（0600） |
 | `MAX_CONCURRENT` | `4` | 所有 Bot 合计的后台任务并发上限 |
 | `TASK_MAX_MINUTES` | `30` | 单个任务最长时间 |
-| `CONTEXT_TOKENS` | `60000` | 长任务压缩阈值 |
+| `CONTEXT_TOKENS` | `32000` | 长任务压缩阈值 |
 | `FROGBOT_ROOTD_SOCKET` | `/run/frogbot-rootd/rootd.sock` | 提权助手的 socket |
 | `FROGBOT_NODE_MIRROR` | `https://nodejs.org/dist` | 一键安装 CLI 时下载 Node.js 的地址（国内可用 `https://npmmirror.com/mirrors/node`）；npm 包地址用 npm 自己的 `npm_config_registry` |
 

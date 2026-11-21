@@ -15,19 +15,28 @@ var (
 	ErrNotRunning = errors.New("任务不在运行中")
 )
 
+// ToolOutcome 记录单次工具调用的结果，供 StopAfterTools 判断本轮是否可以直接结束。
+type ToolOutcome struct {
+	Call   ToolCall
+	Output string
+	Err    bool
+	Denied bool
+}
+
 // Agent 是 agent 内核。一个 Agent 可以同时跑很多任务（每个任务各自一份对话）。
 type Agent struct {
-	Provider      Provider
-	Model         string
-	ResolveModel  func() (Provider, string) // 可选；每次任务启动时读取一次配置
-	Tools         *Registry
-	Guard         *Guard
-	Memory        MemoryProvider // 可选
-	Compactor     Compactor      // 可选
-	Sink          EventSink      // 可选
-	SystemPrompt  string         // 为空用默认提示词
-	MaxToolOutput int            // 工具输出截断长度，默认 16000 字节
-	Heartbeat     time.Duration  // 心跳间隔，默认 15 秒
+	Provider       Provider
+	Model          string
+	ResolveModel   func() (Provider, string) // 可选；每次任务启动时读取一次配置
+	Tools          *Registry
+	Guard          *Guard
+	Memory         MemoryProvider // 可选
+	Compactor      Compactor      // 可选
+	Sink           EventSink      // 可选
+	SystemPrompt   string         // 为空用默认提示词
+	MaxToolOutput  int            // 工具输出截断长度，默认 12000 字节
+	Heartbeat      time.Duration  // 心跳间隔，默认 15 秒
+	StopAfterTools func(reply Message, outcomes []ToolOutcome) bool
 
 	mu    sync.Mutex
 	steer map[string]chan string
@@ -257,14 +266,19 @@ func (a *Agent) Run(ctx context.Context, t Task) (Result, error) {
 			}
 			return finish(StatusCompleted, reply.Content, nil)
 		}
+		outcomes := make([]ToolOutcome, 0, len(reply.ToolCalls))
 		for _, call := range reply.ToolCalls {
 			if ctx.Err() != nil {
 				return fail(ctx.Err())
 			}
-			out := a.runTool(ctx, t, tools, em, call)
-			msgs = append(msgs, Message{Role: "tool", ToolCallID: call.ID, Content: out})
+			oc := a.runTool(ctx, t, tools, em, call)
+			outcomes = append(outcomes, oc)
+			msgs = append(msgs, Message{Role: "tool", ToolCallID: call.ID, Content: oc.Output})
 		}
 		checkpoint() // 一步完整结束（工具结果都齐了）才存快照
+		if len(steerCh) == 0 && a.StopAfterTools != nil && a.StopAfterTools(reply, outcomes) {
+			return finish(StatusCompleted, reply.Content, nil)
+		}
 	}
 	return finish(StatusFailed, "", fmt.Errorf("超过最大步数 %d", t.MaxSteps))
 }
@@ -317,16 +331,16 @@ func drainSteer(ch chan string, msgs []Message, em *emitter) []Message {
 	}
 }
 
-func (a *Agent) runTool(ctx context.Context, t Task, tools *Registry, em *emitter, call ToolCall) string {
+func (a *Agent) runTool(ctx context.Context, t Task, tools *Registry, em *emitter, call ToolCall) ToolOutcome {
 	if ctx.Err() != nil {
-		return "error: " + ctx.Err().Error()
+		return ToolOutcome{Call: call, Output: "error: " + ctx.Err().Error(), Err: true}
 	}
 	em.emit(EvToolCall, map[string]any{"call_id": call.ID, "tool": call.Name, "args": call.Args})
-	result := func(out string, isErr, denied bool) string {
+	result := func(out string, isErr, denied bool) ToolOutcome {
 		out = Truncate(out, a.MaxToolOutput)
 		em.emit(EvToolResult, map[string]any{"call_id": call.ID, "tool": call.Name,
 			"output": Truncate(out, 4000), "error": isErr, "denied": denied})
-		return out
+		return ToolOutcome{Call: call, Output: out, Err: isErr, Denied: denied}
 	}
 	tool := tools.Get(call.Name)
 	if tool == nil {
@@ -352,7 +366,7 @@ func (a *Agent) runTool(ctx context.Context, t Task, tools *Registry, em *emitte
 // Truncate 把过长的文本截成「开头 + 提示 + 结尾」，避免撑爆上下文。
 func Truncate(s string, n int) string {
 	if n <= 0 {
-		n = 16000
+		n = 12000
 	}
 	if len(s) <= n {
 		return s

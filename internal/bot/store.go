@@ -780,6 +780,12 @@ func (s *Store) Inbox(includeCompleted bool) []Message {
 
 // History 返回已处理过的最近 n 条消息，作为聊天层的上下文。
 func (s *Store) History(n int) []Message {
+	return s.HistoryWindow(n, n)
+}
+
+// HistoryWindow 返回最近 [minKeep, maxKeep] 条已处理消息。
+// 超出 maxKeep 时按 stride = maxKeep-minKeep 分块裁剪头部，避免每轮滑动 1 条导致前缀缓存（Prompt Cache）全量失效。
+func (s *Store) HistoryWindow(minKeep, maxKeep int) []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []Message
@@ -788,10 +794,15 @@ func (s *Store) History(n int) []Message {
 			out = append(out, *m)
 		}
 	}
-	if len(out) > n {
-		out = out[len(out)-n:]
+	if maxKeep <= 0 || len(out) <= maxKeep {
+		return out
 	}
-	return out
+	stride := maxKeep - minKeep
+	if stride <= 1 {
+		return out[len(out)-maxKeep:]
+	}
+	start := ((len(out) - minKeep - 1) / stride) * stride
+	return out[start:]
 }
 
 func (s *Store) Messages() []Message {

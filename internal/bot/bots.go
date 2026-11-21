@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"frogbot/internal/agy"
 	"frogbot/internal/onefrog"
 )
 
@@ -58,6 +59,7 @@ type Bots struct {
 	relay      relayHub
 	closed     bool
 	gateway    *cliGateway // 给 Pi 等外部 CLI 用的本机模型网关
+	agy        *agy.Hub    // 跨过 Bot 直连 Antigravity CLI (agy acp)
 }
 
 type botEndpoint struct {
@@ -90,6 +92,14 @@ func OpenBots(cfg Config) (*Bots, error) {
 		return nil, err
 	}
 	onefrog.SetCLIGateway(bs.gateway)
+	if bs.agy, err = agy.NewHub(agy.Config{
+		DataDir:      cfg.DataDir,
+		ProjectsRoot: workspace + "-agy",
+		WrapCmd:      onefrog.WrapSandboxCmd,
+	}); err != nil {
+		bs.Close()
+		return nil, fmt.Errorf("初始化 agy 工作台: %w", err)
+	}
 	raw, err := os.ReadFile(bs.path())
 	if err == nil {
 		err = json.Unmarshal(raw, &bs.profiles)
@@ -289,6 +299,9 @@ func (bs *Bots) Close() {
 	}
 	bs.closed = true
 	bs.mu.Unlock()
+	if bs.agy != nil {
+		bs.agy.Close()
+	}
 	if bs.gateway != nil {
 		bs.gateway.Close()
 	}
@@ -432,6 +445,9 @@ func (bs *Bots) Handler(ui fs.FS) http.Handler {
 	// 全局接口（设置、更新检查）挂在默认 Bot 上；其他 /api/… 只能通过 /api/bots/{id}/… 访问。
 	for _, p := range []string{"/api/settings", "/api/settings/", "/api/channels/", "POST /api/channels", "GET /api/update"} {
 		mux.Handle(p, mainAPI)
+	}
+	if bs.agy != nil {
+		mux.Handle("/api/agy/", bs.agy.Handler())
 	}
 	mux.HandleFunc("GET /api/channels", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, History, PanelLeft, Pencil, Plus, Settings as SettingsIcon } from 'lucide-react';
+import { ChevronDown, ChevronRight, History, PanelLeft, Pencil, Plus, Settings as SettingsIcon, SquareTerminal } from 'lucide-react';
 import { useState } from 'react';
 import { botKey, type BotProfile, type DeviceGroup } from '../api';
 import { BotAvatar } from './BotAvatar';
@@ -9,8 +9,10 @@ export default function Sidebar({
   devices,
   activeBotId,
   schedulerActive,
+  agyActive,
   onSelectBot,
   onOpenScheduler,
+  onOpenAgy,
   onOpenSettings,
   onCreateBot,
   onEditBot,
@@ -18,8 +20,10 @@ export default function Sidebar({
   devices: DeviceGroup[];
   activeBotId?: string;
   schedulerActive: boolean;
+  agyActive: boolean;
   onSelectBot: (id: string) => void;
   onOpenScheduler: () => void;
+  onOpenAgy: () => void;
   onOpenSettings: () => void;
   onCreateBot: (device: DeviceGroup) => void;
   onEditBot: (bot: BotProfile) => void;
@@ -80,7 +84,7 @@ export default function Sidebar({
             {!collapsed && device.id !== 'local' && !device.bots.length && <p className="px-2 py-1 text-xs text-fg4">{device.online ? '没有 Bot' : '暂时无法连接'}</p>}
             {device.bots.map((b) => {
           const id = botKey(device.id, b.id);
-          const active = !schedulerActive && activeBotId === id;
+          const active = !schedulerActive && !agyActive && activeBotId === id;
           return (
             <div key={id} className={`group flex items-center gap-0.5 rounded-2xl transition ${collapsed ? '' : 'pr-2'} ${
               active ? 'bg-sidebar-selected text-fg shadow-2xs' : 'text-fg2 hover:bg-sidebar-hover hover:text-fg'
@@ -110,6 +114,17 @@ export default function Sidebar({
       </div>
 
       <nav className="space-y-0.5 px-2 pb-3 pt-1" aria-label="应用导航">
+        <button
+          type="button"
+          onClick={onOpenAgy}
+          title="Antigravity CLI 直连工作台"
+          aria-label="Antigravity CLI 直连工作台"
+          aria-current={agyActive ? 'page' : undefined}
+          className={`group flex w-full items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left text-[12.5px] tracking-tight transition hover:text-fg ${collapsed ? 'h-10 justify-center' : ''} ${agyActive ? 'bg-sidebar-selected font-medium text-fg' : 'text-fg3 hover:bg-sidebar-hover'}`}
+        >
+          <SquareTerminal size={15} strokeWidth={1.7} aria-hidden="true" className="shrink-0 text-fg4 transition-colors group-hover:text-fg" />
+          {!collapsed && <span>Antigravity</span>}
+        </button>
         <button
           type="button"
           onClick={onOpenScheduler}

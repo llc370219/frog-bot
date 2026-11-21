@@ -34,7 +34,7 @@ type Config struct {
 	Rules          onefrog.Rules
 	MaxConcurrent  int           // 所有 Bot 合计同时运行的后台任务上限（MAX_CONCURRENT），默认 4
 	TaskMaxTime    time.Duration // 单个任务最长运行时间，默认 30 分钟
-	ContextTokens  int           // 后台任务对话超过多少 token（估算）就压缩旧内容，默认 60000（CONTEXT_TOKENS）
+	ContextTokens  int           // 后台任务对话超过多少 token（估算）就压缩旧内容，默认 32000（CONTEXT_TOKENS）
 	StallTimeout   time.Duration // 多久没有进展算卡住，默认 12 分钟
 	TurnTimeout    time.Duration // 聊天层每轮上限，默认 90 秒
 	MasterKey      string        // FROGBOT_MASTER_KEY；为空时用 data/master.key（自动生成）
@@ -167,6 +167,7 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	if reviewer == nil && cfg.ReviewerModel != "" {
 		reviewer = settingsReviewer{bot: b, model: cfg.ReviewerModel}
 	}
+	// 聊天层写文件、改定时计划、删密钥走完整审批（规则 -> 可选审核模型 -> 用户点按钮）。
 	guard, err := onefrog.NewGuard(cfg.Rules, reviewer, b.approver)
 	if err != nil {
 		return nil, err
@@ -174,10 +175,21 @@ func newRuntime(cfg Config, modelOwner *Bot, profile *BotProfile) (*Bot, error) 
 	guard.Store = approvalStore{store}
 	guard.Secrets = vlt
 	b.guard = guard
+
+	// 后台 Agent 层不做二次人工审批或模型审核（仅保留工作区边界、禁用/拒绝规则、密钥替换脱敏和 root 输密码）。
+	agentGuard, err := onefrog.NewGuard(cfg.Rules, nil, b.approver)
+	if err != nil {
+		return nil, err
+	}
+	agentGuard.BypassApproval = true
+	agentGuard.Store = approvalStore{store}
+	agentGuard.Secrets = vlt
+
 	resolveAgent := func() (onefrog.Provider, string) { return b.resolveModel(false) }
-	agent := &onefrog.Agent{ResolveModel: resolveAgent, Guard: guard, Memory: b, Sink: onefrog.SinkFunc(b.onAgentEvent),
-		// 长任务的对话超过上限时，把旧的步骤压缩成摘要（先让模型写，失败就用机械摘要）。
-		Compactor: &onefrog.AutoCompactor{MaxTokens: cfg.ContextTokens, Summarize: onefrog.SummarizeWith(resolveAgent)}}
+	resolveFast := func() (onefrog.Provider, string) { return b.resolveModel(true) }
+	agent := &onefrog.Agent{ResolveModel: resolveAgent, Guard: agentGuard, Memory: b, Sink: onefrog.SinkFunc(b.onAgentEvent),
+		// 长任务的对话超过上限时，优先用轻量的聊天模型把旧步骤压缩成摘要（失败就退回机械摘要）。
+		Compactor: &onefrog.AutoCompactor{MaxTokens: cfg.ContextTokens, Summarize: onefrog.SummarizeWith(resolveFast)}}
 	b.mgr = onefrog.NewManager(agent, cfg.MaxConcurrent)
 	b.chatG, _ = onefrog.NewGuard(onefrog.Rules{}, nil, nil)
 	b.chatG.Secrets = vlt // 聊天层工具的输出同样脱敏；直接引用密钥的只读调用会被拒绝

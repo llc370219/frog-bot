@@ -32,6 +32,11 @@ func SandboxEnabled() bool {
 	return sandboxCfg.on
 }
 
+// WrapSandboxCmd 将外部子进程包装进当前启用的 Landlock 沙箱（保护 frog 自身数据目录）。
+func WrapSandboxCmd(cmd *exec.Cmd) error {
+	return sandboxed(cmd)
+}
+
 // sandboxed 把 cmd 改写成在沙箱里运行；extra 是这次额外开放的路径（例如安装时可写的 tools 目录）。
 func sandboxed(cmd *exec.Cmd, extra ...sandbox.Rule) error {
 	sandboxCfg.RLock()

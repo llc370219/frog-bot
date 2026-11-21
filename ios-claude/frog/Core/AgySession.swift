@@ -1,0 +1,442 @@
+import Foundation
+import Observation
+
+// MARK: - 直连 Antigravity CLI (agy) 数据模型
+
+struct AgyModeOption: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var description: String?
+}
+
+struct AgyModelOption: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+}
+
+struct AgyStatus: Codable, Equatable {
+    var installed: Bool
+    var path: String?
+    var agent_version: String?
+    var projects_root: String
+    var modes: [AgyModeOption]
+    var models: [AgyModelOption]
+    var default_mode: String
+    var default_model: String?
+    var error: String?
+}
+
+struct AgyProject: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var path: String
+    var managed: Bool
+    var created_at: String?
+}
+
+struct AgyFileEntry: Codable, Hashable, Identifiable {
+    var name: String
+    var is_dir: Bool
+    var size: Int?
+    var id: String { name }
+}
+
+struct AgySessionSummary: Codable, Hashable, Identifiable {
+    var id: String
+    var project_id: String
+    var cwd: String
+    var title: String
+    var mode: String
+    var model: String?
+    var busy: Bool
+    var pending_permissions: Int
+    var updated_at: String
+}
+
+struct AgyToolCall: Hashable, Identifiable {
+    var id: String
+    var name: String
+    var title: String
+    var kind: String
+    var status: String
+
+    init(_ j: JSON) {
+        id = j["id"].str
+        name = j["name"].str
+        title = j["title"].str
+        kind = j["kind"].str
+        status = j["status"].str
+    }
+}
+
+struct AgyMessage: Hashable, Identifiable {
+    var id: String
+    var role: String
+    var text: String
+    var thinking: String?
+    var thinkingMs: Double?
+    var tools: [AgyToolCall]
+    var error: String?
+    var created: Double
+
+    init(_ j: JSON) {
+        id = j["id"].str
+        role = j["role"].str
+        text = j["text"].str
+        thinking = j["thinking"].string
+        thinkingMs = j["thinking_ms"].double
+        tools = j["tools"].array.map(AgyToolCall.init)
+        error = j["error"].string
+        created = Stamp.ms(j["created_at"].string)
+    }
+}
+
+struct AgyPermOption: Hashable, Identifiable {
+    var optionId: String
+    var name: String
+    var kind: String
+
+    var id: String { optionId }
+
+    init(_ j: JSON) {
+        optionId = j["optionId"].str
+        name = j["name"].str
+        kind = j["kind"].str
+    }
+}
+
+struct AgyPermission: Hashable, Identifiable {
+    var id: String
+    var sessionID: String
+    var toolName: String
+    var title: String
+    var detail: String
+    var options: [AgyPermOption]
+    var status: String
+    var chosenID: String?
+
+    init(_ j: JSON) {
+        id = j["id"].str
+        sessionID = j["session_id"].str
+        toolName = j["tool_name"].str
+        title = j["title"].str
+        detail = j["detail"].str
+        options = j["options"].array.map(AgyPermOption.init)
+        status = j["status"].str
+        chosenID = j["chosen_id"].string
+    }
+}
+
+// MARK: - 单台服务器的 agy 项目与会话目录管理
+
+@MainActor
+@Observable
+final class AgyStore {
+    let server: ServerEntry
+    var status: AgyStatus?
+    var projects: [AgyProject] = []
+    var selectedProjectID: String = ""
+    var sessions: [AgySessionSummary] = []
+    var loading = false
+    var error: String?
+
+    init(server: ServerEntry) {
+        self.server = server
+        let saved = UserDefaults.standard.string(forKey: "agy.project.\(server.id)") ?? ""
+        self.selectedProjectID = saved
+    }
+
+    var client: ServerClient { server.client }
+
+    var activeProject: AgyProject? {
+        projects.first(where: { $0.id == selectedProjectID }) ?? projects.first
+    }
+
+    func loadAll() async {
+        loading = true
+        error = nil
+        do {
+            async let stReq: AgyStatus = client.get("/api/agy/status")
+            async let prReq: [AgyProject] = client.get("/api/agy/projects")
+            let (st, projs) = try await (stReq, prReq)
+            status = st
+            projects = projs
+            if let first = projs.first, !projs.contains(where: { $0.id == selectedProjectID }) {
+                selectProject(first.id)
+            }
+            if let pid = activeProject?.id {
+                sessions = (try? await client.get("/api/agy/sessions", query: [URLQueryItem(name: "project_id", value: pid)])) ?? []
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+
+    func selectProject(_ id: String) {
+        selectedProjectID = id
+        UserDefaults.standard.set(id, forKey: "agy.project.\(server.id)")
+    }
+
+    func refreshSessions() async {
+        guard let pid = activeProject?.id else { return }
+        do {
+            sessions = try await client.get("/api/agy/sessions", query: [URLQueryItem(name: "project_id", value: pid)])
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func createProject(name: String, path: String) async throws -> AgyProject {
+        let p: AgyProject = try await client.send("POST", "/api/agy/projects", body: ["name": name, "path": path])
+        if !projects.contains(where: { $0.id == p.id }) {
+            projects.append(p)
+        }
+        selectProject(p.id)
+        await refreshSessions()
+        return p
+    }
+
+    func deleteProject(_ p: AgyProject, deleteFiles: Bool) async throws {
+        var q: [URLQueryItem] = []
+        if deleteFiles { q.append(URLQueryItem(name: "delete_files", value: "1")) }
+        try await client.post("/api/agy/projects/\(p.id)", method: "DELETE", query: q)
+        projects.removeAll { $0.id == p.id }
+        if selectedProjectID == p.id, let first = projects.first {
+            selectProject(first.id)
+        }
+        await refreshSessions()
+    }
+
+    func createSession(mode: String = "", model: String = "") async throws -> AgySessionSummary {
+        guard let pid = activeProject?.id else {
+            throw APIError.invalid("请先创建或选择一个项目文件夹")
+        }
+        let res = try await client.post("/api/agy/sessions", body: ["project_id": pid, "mode": mode, "model": model])
+        let s = res["session"]
+        let summary = AgySessionSummary(
+            id: s["id"].str,
+            project_id: s["project_id"].str,
+            cwd: s["cwd"].str,
+            title: s["title"].str.isEmpty ? "新对话" : s["title"].str,
+            mode: s["mode"].str.isEmpty ? "auto" : s["mode"].str,
+            model: s["model"].string,
+            busy: s["busy"].bool,
+            pending_permissions: Int(s["pending_permissions"].double ?? 0),
+            updated_at: s["updated_at"].str
+        )
+        sessions.removeAll { $0.id == summary.id }
+        sessions.insert(summary, at: 0)
+        return summary
+    }
+
+    func deleteSession(_ id: String) async throws {
+        try await client.post("/api/agy/sessions/\(id)", method: "DELETE")
+        sessions.removeAll { $0.id == id }
+    }
+}
+
+// MARK: - 单个 agy 对话的实时 SSE 会话
+
+@MainActor
+@Observable
+final class AgyChatSession {
+    let server: ServerEntry
+    let sessionID: String
+    let projectID: String
+
+    var title: String
+    var cwd = ""
+    var mode = "auto"
+    var model = ""
+    var busy = false
+    var ready = false
+    var connected = false
+
+    var messages: [AgyMessage] = []
+    var permissions: [AgyPermission] = []
+    var streaming = ""
+    var thinking = ""
+    var thinkStart: Double = 0
+    var thinkEnd: Double = 0
+    var liveTools: [AgyToolCall] = []
+    var usedTokens: Int = 0
+    var maxTokens: Int = 0
+    var modes: [AgyModeOption] = []
+    var models: [AgyModelOption] = []
+    var draft = ""
+
+    @ObservationIgnored private var streamTask: Task<Void, Never>?
+
+    init(server: ServerEntry, sessionID: String, projectID: String, initialTitle: String) {
+        self.server = server
+        self.sessionID = sessionID
+        self.projectID = projectID
+        self.title = initialTitle
+    }
+
+    var client: ServerClient { server.client }
+
+    var pendingPermissions: [AgyPermission] {
+        permissions.filter { $0.status == "pending" }
+    }
+
+    func start() {
+        guard streamTask == nil else { return }
+        streamTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let unauth = await self.streamOnce()
+                if Task.isCancelled { return }
+                self.connected = false
+                if unauth {
+                    self.streamTask = nil
+                    self.server.markNeedsLogin()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    func stop() {
+        streamTask?.cancel()
+        streamTask = nil
+        connected = false
+    }
+
+    private func streamOnce() async -> Bool {
+        let encoded = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
+        var req = client.makeRequest("GET", "/api/agy/sessions/\(encoded)/stream",
+                                     query: [URLQueryItem(name: "project_id", value: projectID)])
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 90
+        do {
+            let (bytes, resp) = try await client.streamSession.bytes(for: req)
+            guard let http = resp as? HTTPURLResponse else { return false }
+            if http.statusCode == 401 { return true }
+            guard http.statusCode == 200 else { return false }
+            connected = true
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data:") else { continue }
+                var payload = line.dropFirst(5)
+                if payload.first == " " { payload = payload.dropFirst() }
+                guard let ev = JSON.parse(Data(payload.utf8)) else { continue }
+                apply(ev)
+            }
+        } catch {
+            // 外层自动重连
+        }
+        return false
+    }
+
+    private func apply(_ ev: JSON) {
+        let d = ev["data"]
+        switch ev["kind"].str {
+        case "snapshot":
+            ready = true
+            connected = true
+            let s = d["session"]
+            if !s["title"].str.isEmpty { title = s["title"].str }
+            cwd = s["cwd"].str
+            if !s["mode"].str.isEmpty { mode = s["mode"].str }
+            model = s["model"].str
+            busy = s["busy"].bool
+            messages = d["messages"].array.map(AgyMessage.init)
+            permissions = d["permissions"].array.map(AgyPermission.init)
+            streaming = d["streaming"].str
+            thinking = d["thinking"].str
+            thinkStart = d["think_start"].double ?? 0
+            thinkEnd = d["think_end"].double ?? 0
+            liveTools = d["live_tools"].array.map(AgyToolCall.init)
+            usedTokens = Int(d["used_tokens"].double ?? 0)
+            maxTokens = Int(d["max_tokens"].double ?? 0)
+            let mds = d["modes"].array.map { AgyModeOption(id: $0["id"].str, name: $0["name"].str, description: $0["description"].string) }
+            if !mds.isEmpty { modes = mds }
+            let mls = d["models"].array.map { AgyModelOption(id: $0["id"].str, name: $0["name"].str) }
+            if !mls.isEmpty { models = mls }
+
+        case "message":
+            let m = AgyMessage(d)
+            if !messages.contains(where: { $0.id == m.id }) {
+                messages.append(m)
+            }
+            if m.role == "assistant" {
+                streaming = ""; thinking = ""; thinkStart = 0; thinkEnd = 0; liveTools = []
+            }
+
+        case "thinking.delta":
+            if thinkStart == 0 { thinkStart = Stamp.now }
+            thinkEnd = 0
+            thinking += d["text"].str
+
+        case "text.delta":
+            if thinkStart > 0 && thinkEnd == 0 { thinkEnd = Stamp.now }
+            streaming += d["text"].str
+
+        case "tool.upsert":
+            if thinkStart > 0 && thinkEnd == 0 { thinkEnd = Stamp.now }
+            let tc = AgyToolCall(d)
+            if let i = liveTools.firstIndex(where: { $0.id == tc.id }) {
+                liveTools[i] = tc
+            } else {
+                liveTools.append(tc)
+            }
+
+        case "permission.upsert":
+            let pr = AgyPermission(d)
+            if let i = permissions.firstIndex(where: { $0.id == pr.id }) {
+                permissions[i] = pr
+            } else {
+                permissions.append(pr)
+            }
+
+        case "status":
+            busy = d["busy"].bool
+            if let t = d["title"].string, !t.isEmpty { title = t }
+
+        case "session.meta":
+            let s = d["session"]
+            if !s["title"].str.isEmpty { title = s["title"].str }
+            if !s["mode"].str.isEmpty { mode = s["mode"].str }
+            if !s["model"].str.isEmpty { model = s["model"].str }
+            if let u = d["used_tokens"].double, u > 0 { usedTokens = Int(u) }
+            if let mx = d["max_tokens"].double, mx > 0 { maxTokens = Int(mx) }
+
+        case "turn.done":
+            busy = false
+            streaming = ""; thinking = ""; thinkStart = 0; thinkEnd = 0; liveTools = []
+
+        default:
+            break
+        }
+    }
+
+    // MARK: 操作
+
+    func send(_ text: String) async throws {
+        let encoded = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
+        try await client.post("/api/agy/sessions/\(encoded)/messages", body: ["project_id": projectID, "text": text])
+    }
+
+    func stopPrompt() async throws {
+        let encoded = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
+        try await client.post("/api/agy/sessions/\(encoded)/stop")
+    }
+
+    func decide(permID: String, optionID: String) async throws {
+        let sid = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
+        let pid = permID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? permID
+        try await client.post("/api/agy/sessions/\(sid)/permissions/\(pid)", body: ["option_id": optionID])
+    }
+
+    func setConfig(mode: String? = nil, model: String? = nil) async throws {
+        let sid = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
+        var body: [String: Any] = [:]
+        if let mode { body["mode"] = mode }
+        if let model { body["model"] = model }
+        let out = try await client.post("/api/agy/sessions/\(sid)/config", body: body)
+        if !out["mode"].str.isEmpty { self.mode = out["mode"].str }
+        if !out["model"].str.isEmpty { self.model = out["model"].str }
+    }
+}

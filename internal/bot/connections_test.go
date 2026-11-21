@@ -187,46 +187,31 @@ func TestAgentConnectionsExecuteOnApprovalAndSurviveRestart(t *testing.T) {
 	request("POST", settings, `{"cli":"pi","cli_channel":"relay","cli_model":"pi-model"}`, http.StatusOK)
 
 	const botPath = "/api/bots/main"
-	run := func(cli, decision, status string) {
+	run := func(cli, status string) {
 		t.Helper()
+		before := len(bs.main.store.Tasks())
 		payload, _ := json.Marshal(map[string]string{"text": cliTestPrompt})
 		request("POST", botPath+"/messages", string(payload), http.StatusOK)
 		var task TaskRec
-		var approval string
-		waitFor(t, "CLI approval", func() bool {
+		waitFor(t, "CLI to finish", func() bool {
 			tasks := bs.main.store.Tasks()
-			if len(tasks) == 0 {
+			if len(tasks) <= before {
 				return false
 			}
 			task = tasks[len(tasks)-1]
-			for _, req := range bs.main.approver.Pending() {
-				if req.TaskID == task.ID {
-					approval = req.ID
-					return true
-				}
-			}
-			return false
-		})
-		if task.CLI != cli || task.Output != "" || task.Status != "running" {
-			t.Fatalf("wrong route or ran before approval: %+v", task)
-		}
-		request("POST", botPath+"/approvals/"+approval, fmt.Sprintf(`{"decision":%q}`, decision), http.StatusOK)
-		waitFor(t, "CLI to finish", func() bool {
-			task, _ = bs.main.store.Task(task.ID)
 			return terminal(task.Status)
 		})
-		if task.Status != status || status == "completed" && task.Output != cliTestReply {
+		if task.CLI != cli || task.Status != status || status == "completed" && task.Output != cliTestReply {
 			t.Fatalf("unexpected CLI result: %+v", task)
 		}
 	}
-	run("pi", "deny", "failed")
-	run("pi", "once", "completed")
+	run("pi", "completed")
 	bs.Close()
 	bs = open()
 	if bs.main.selectedCLI() != "pi" || bs.main.cliOptions("pi").Channel != "relay" {
 		t.Fatal("selection lost on restart")
 	}
-	run("pi", "once", "completed") // 重启后网关重新启动，照样能用
+	run("pi", "completed") // 重启后网关重新启动，照样能用
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("HOME", t.TempDir()) // CLI 也会在家目录里找，测试不能看到本机真实装的 CLI
 	t.Setenv("NVM_DIR", "")

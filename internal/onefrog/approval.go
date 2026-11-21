@@ -167,6 +167,8 @@ type Guard struct {
 	GrantTTL        time.Duration    // 批准记录有效期，默认 30 分钟
 	Now             func() time.Time
 	Secrets         Secrets // 可选：密钥库，负责 {{secret:NAME}} 替换和输出脱敏
+	// BypassApproval 为 true 时跳过人工审批卡片与审核模型（仅用于后台 Agent 层；保留禁用工具、工作区边界、拒绝名单、密钥范围校验和 root 密码授权）。
+	BypassApproval bool
 
 	denyTools           map[string]bool
 	allow, deny, danger []*regexp.Regexp
@@ -226,12 +228,15 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 	if g.denyTools[name] {
 		return Verdict{Deny, "该工具已被禁用", "rule"}, RiskDanger
 	}
-	if name == CLITool {
-		return Verdict{AskUser, "启动外部 CLI 后，文件与命令权限由该 CLI 管理", "policy"}, RiskDanger
-	}
 	// root 命令：任何审批模式、规则或审核模型都不能自动放行，只能由用户本人批准。
 	if name == RootTool {
 		return Verdict{AskUser, "以 root 身份执行：需要输入登录密码批准", "policy"}, RiskDanger
+	}
+	if name == CLITool {
+		if g.BypassApproval {
+			return Verdict{Allow, "Agent 层免审直接执行", "policy"}, RiskExec
+		}
+		return Verdict{AskUser, "启动外部 CLI 后，文件与命令权限由该 CLI 管理", "policy"}, RiskDanger
 	}
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
@@ -246,17 +251,22 @@ func (g *Guard) Classify(t Task, tool Tool, args json.RawMessage) (Verdict, Risk
 		return Verdict{Deny, "命令命中拒绝名单", "rule"}, RiskDanger
 	}
 	if refs := SecretRefs(args); len(refs) > 0 && !handlesSecrets(tool) {
-		// 用到密钥的调用一律要用户确认（哪怕是 auto 策略）；policy=never 时 askUser 会直接拒绝。
+		// 用到密钥的调用先检查密钥是否存在、作用域是否允许；聊天层仍需用户确认，后台 Agent 免审放行并在执行时注入/脱敏。
 		if g.Secrets == nil {
 			return Verdict{Deny, "没有配置密钥库，不能引用 {{secret:…}}", "rule"}, risk
 		}
 		if err := g.Secrets.Allowed(tool.Name(), args, refs); err != nil {
 			return Verdict{Deny, err.Error(), "rule"}, risk
 		}
-		if isCmd && anyMatch(g.danger, cmd) {
-			risk = RiskDanger
+		if !g.BypassApproval {
+			if isCmd && anyMatch(g.danger, cmd) {
+				risk = RiskDanger
+			}
+			return Verdict{AskUser, "要使用密钥 " + strings.Join(refs, "、") + "（真实值只在执行时替换，不会给模型看）", "rule"}, max(risk, RiskExec)
 		}
-		return Verdict{AskUser, "要使用密钥 " + strings.Join(refs, "、") + "（真实值只在执行时替换，不会给模型看）", "rule"}, max(risk, RiskExec)
+	}
+	if g.BypassApproval {
+		return Verdict{Allow, "Agent 层免审直接执行", "policy"}, risk
 	}
 	if isCmd {
 		switch {

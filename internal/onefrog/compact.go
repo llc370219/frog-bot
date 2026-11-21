@@ -15,7 +15,7 @@ import (
 // 不调模型的机械摘要（列出调用过的工具和每条结果的开头），保证压缩一定能完成。
 // 切分点不会把一次工具调用和它的结果拆开。
 type AutoCompactor struct {
-	MaxTokens  int // 默认 60000
+	MaxTokens  int // 默认 32000
 	KeepRecent int // 默认 12
 	// Summarize 把要丢弃的旧消息总结成一段文字（可选）。
 	Summarize func(ctx context.Context, old []Message) (string, error)
@@ -50,7 +50,7 @@ func textTokens(s string) int {
 func (c *AutoCompactor) limits() (max, keep int) {
 	max, keep = c.MaxTokens, c.KeepRecent
 	if max <= 0 {
-		max = 60000
+		max = 32000
 	}
 	if keep <= 0 {
 		keep = 12
@@ -147,7 +147,7 @@ func SummarizeWith(resolve func() (Provider, string)) func(ctx context.Context, 
 		if p == nil || model == "" {
 			return "", fmt.Errorf("没有可用的模型")
 		}
-		transcript := Truncate(MechanicalSummary(old), 60000)
+		transcript := Truncate(MechanicalSummary(old), 24000)
 		reply, err := p.Chat(ctx, ChatRequest{Model: model, Messages: []Message{
 			{Role: "system", Content: "你在帮一个执行任务的 agent 压缩它自己的工作记录。用中文写一段简洁的进度摘要（不超过 600 字）：" +
 				"已经做了什么、得到了哪些关键事实（文件路径、命令结果、数字）、遇到的错误、还剩什么没做。只写事实，不要编造，不要给出新指令。" +

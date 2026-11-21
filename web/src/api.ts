@@ -413,3 +413,60 @@ export const api = {
 export const isActive = (t: Task) => t.status === 'queued' || t.status === 'running';
 export const isOpen = (t: Task) => !terminal(t.status);
 export const isImage = (name: string, mime?: string) => (mime ? mime.startsWith('image/') && !mime.includes('svg') : /\.(png|jpe?g|gif|webp)$/i.test(name));
+
+// ---------- 直连 Antigravity CLI (agy) ----------
+
+export type AgyModeOption = { id: string; name: string; description?: string };
+export type AgyModelOption = { id: string; name: string };
+export type AgyStatus = {
+  installed: boolean; path?: string; agent_version?: string; projects_root: string;
+  modes: AgyModeOption[]; models: AgyModelOption[]; default_mode: string; default_model?: string; error?: string;
+};
+export type AgyProject = { id: string; name: string; path: string; managed: boolean; created_at: string };
+export type AgyFileEntry = { name: string; is_dir: boolean; size?: number };
+export type AgySessionSummary = {
+  id: string; project_id: string; cwd: string; title: string; mode: string; model?: string;
+  busy: boolean; pending_permissions: number; updated_at: string;
+};
+export type AgyToolCall = { id: string; name: string; title?: string; kind?: string; status?: string };
+export type AgyChatMessage = {
+  id: string; role: 'user' | 'assistant'; text: string; thinking?: string; thinking_ms?: number;
+  tools?: AgyToolCall[]; error?: string; created_at: string;
+};
+export type AgyPermOption = { optionId: string; name: string; kind?: string };
+export type AgyPermission = {
+  id: string; session_id: string; tool_name?: string; title: string; kind?: string; detail?: string;
+  options: AgyPermOption[]; status: 'pending' | 'decided' | 'cancelled'; chosen_id?: string; created_at: string;
+};
+export type AgySnapshot = {
+  session: AgySessionSummary; messages: AgyChatMessage[]; permissions: AgyPermission[];
+  streaming: string; thinking: string; think_start?: number; think_end?: number; live_tools?: AgyToolCall[];
+  used_tokens?: number; max_tokens?: number; modes: AgyModeOption[]; models: AgyModelOption[];
+};
+
+export const agyAPI = {
+  status: (signal?: AbortSignal): Promise<AgyStatus> => get('/api/agy/status', signal),
+  projects: (signal?: AbortSignal): Promise<AgyProject[]> => get('/api/agy/projects', signal),
+  createProject: (name: string, path = ''): Promise<AgyProject> => post('/api/agy/projects', { name, path }),
+  deleteProject: (id: string, deleteFiles = false): Promise<{ ok: boolean }> =>
+    post(`/api/agy/projects/${encodeURIComponent(id)}${deleteFiles ? '?delete_files=1' : ''}`, {}, 'DELETE'),
+  listFiles: (projectID: string, dir = ''): Promise<AgyFileEntry[]> =>
+    get(`/api/agy/projects/${encodeURIComponent(projectID)}/files${dir ? `?dir=${encodeURIComponent(dir)}` : ''}`),
+  fileURL: (projectID: string, path: string, download = false) =>
+    `/api/agy/projects/${encodeURIComponent(projectID)}/files?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`,
+  sessions: (projectID: string, signal?: AbortSignal): Promise<AgySessionSummary[]> =>
+    get(`/api/agy/sessions?project_id=${encodeURIComponent(projectID)}`, signal),
+  createSession: (projectID: string, mode = '', model = ''): Promise<AgySnapshot> =>
+    post('/api/agy/sessions', { project_id: projectID, mode, model }),
+  updateConfig: (sessionID: string, patch: { mode?: string; model?: string; title?: string }): Promise<AgySessionSummary> =>
+    post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/config`, patch),
+  deleteSession: (sessionID: string): Promise<{ ok: boolean }> =>
+    post(`/api/agy/sessions/${encodeURIComponent(sessionID)}`, {}, 'DELETE'),
+  send: (sessionID: string, projectID: string, text: string): Promise<AgyChatMessage> =>
+    post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/messages`, { project_id: projectID, text }),
+  stop: (sessionID: string): Promise<{ ok: boolean }> =>
+    post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/stop`),
+  decidePermission: (sessionID: string, permID: string, optionID: string): Promise<{ ok: boolean }> =>
+    post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/permissions/${encodeURIComponent(permID)}`, { option_id: optionID }),
+};
+

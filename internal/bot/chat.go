@@ -151,15 +151,22 @@ func (b *Bot) runTurnGeneration(pending []Message, generation uint64) {
 		}
 	}
 	var history []onefrog.Message
-	for _, m := range b.store.History(40) {
-		role, text := m.Role, msgText(m)
+	for _, m := range b.store.HistoryWindow(16, 24) {
+		role, text := m.Role, ""
 		if role == "notice" {
 			m.WantsReply = false // history never requests another reply
-			role, text = "user", "[系统通知] "+noticeText(m)
+			// 已汇报过的系统通知在历史里只保留简短摘要，避免大段原始输出在后续几十轮里反复重发；需要详情可调 read_task。
+			role, text = "user", "[系统通知] "+onefrog.Truncate(noticeText(m), 360)
+		} else {
+			text = onefrog.Truncate(msgText(m), 2400)
 		}
 		if text != "" { // 注意：只带正文，不带 Thinking —— 之前的思考不会喂回模型
 			history = append(history, onefrog.Message{Role: role, Content: b.vault.Redact(text)})
 		}
+	}
+	// 动态实时状态放在历史末尾（紧邻本轮用户输入之前），保持 system 提示词和前序历史字节不变，最大化命中 API 前缀缓存。
+	if brief := strings.TrimSpace(b.brief()); brief != "" {
+		history = append(history, onefrog.Message{Role: "user", Content: b.vault.Redact(brief)})
 	}
 
 	// 当前这一段（一条消息）的内容
@@ -196,6 +203,7 @@ func (b *Bot) runTurnGeneration(pending []Message, generation uint64) {
 	}
 	agent := &onefrog.Agent{Provider: provider, Model: model, Tools: b.chatTool, Guard: b.chatG,
 		SystemPrompt: prompt, Memory: b, Heartbeat: time.Hour,
+		StopAfterTools: shouldEndChatTurn,
 		Sink: onefrog.SinkFunc(func(e onefrog.Event) {
 			switch e.Type {
 			case onefrog.EvThinkingDelta:
@@ -228,8 +236,7 @@ func (b *Bot) runTurnGeneration(pending []Message, generation uint64) {
 			}
 		})}
 	_, err := agent.Run(ctx, onefrog.Task{ID: onefrog.NewID("turn"), Input: b.vault.Redact(strings.Join(input, "\n\n")),
-		History: history, Workspace: b.cfg.Workspace, Policy: onefrog.PolicyNever, MaxSteps: 6,
-		Instructions: b.brief()})
+		History: history, Workspace: b.cfg.Workspace, Policy: onefrog.PolicyNever, MaxSteps: 6})
 	cause := context.Cause(ctx)
 	if errors.Is(cause, errStopped) {
 		return // Stop() 已经回复过并标记了处理
@@ -333,6 +340,31 @@ func (b *Bot) directPeerCommand(text string) bool {
 		b.say(err.Error())
 	} else {
 		b.say("消息已送达 " + address)
+	}
+	return true
+}
+
+// shouldEndChatTurn 判断聊天层执行完这一步工具后能否直接结束本轮，省掉一次纯粹用来返回空串的二次模型请求。
+func shouldEndChatTurn(reply onefrog.Message, outcomes []onefrog.ToolOutcome) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
+	spoke := strings.TrimSpace(reply.Content) != ""
+	for _, oc := range outcomes {
+		if oc.Err || oc.Denied {
+			return false
+		}
+		switch oc.Call.Name {
+		case "react", "ask_user":
+			// 表情回应和选项卡片本身就是终态回复，不需要再补一句话。
+		case "start_task", "queue_task", "request_secret":
+			// 只有在本步调用工具前模型已经向用户发过确认语，且任务没有进入排队等待（排队需要告知排第几位）时，才直接收尾。
+			if !spoke || strings.Contains(oc.Output, "第 ") {
+				return false
+			}
+		default:
+			return false
+		}
 	}
 	return true
 }

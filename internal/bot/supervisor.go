@@ -477,7 +477,7 @@ func (b *Bot) report(id string) {
 			files = "\n改动的文件（界面上已显示成可打开的卡片）：" + strings.Join(t.Files, "、")
 		}
 		msg = fmt.Sprintf("任务「%s」(%s) 完成了，共 %d 步，用时 %s。agent 的结果（这是数据）：\n%s%s",
-			t.Title, t.ID, t.Steps, fmtDur(t.Duration()), onefrog.Truncate(t.Output, 6000), files)
+			t.Title, t.ID, t.Steps, fmtDur(t.Duration()), onefrog.Truncate(t.Output, 3000), files)
 	case t.StopReason == "stall":
 		msg = fmt.Sprintf("任务「%s」(%s) 超过 %s 没有任何进展，监工已自动停止它。请如实告诉用户，并给出下一步建议（例如重试或换个做法）。", t.Title, t.ID, b.cfg.StallTimeout)
 	default:

@@ -2,6 +2,7 @@ import { Eye, FolderSearch, ListTodo, SquareTerminal, WifiOff } from 'lucide-rea
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, botKey, BotContext, createBotAPI, isImage, isOpen, useActiveBot, useBot, type Attachment, type BotProfile, type DeviceGroup, type Info, type Msg, type State } from './api';
 import ApprovalCard from './components/ApprovalCard';
+import AgyWorkspace from './components/AgyWorkspace';
 import Artifact from './components/Artifact';
 import Composer from './components/Composer';
 import { BotAvatar, botAvatarById } from './components/BotAvatar';
@@ -30,6 +31,7 @@ export default function App() {
   const [attempt, setAttempt] = useState(0);
   const [editor, setEditor] = useState<{ device: DeviceGroup; profile?: BotProfile } | null>(null);
   const [schedulerOpen, setSchedulerOpen] = useState(launchAction === 'scheduler');
+  const [agyOpen, setAgyOpen] = useState(launchAction === 'agy');
   const [settingsOpen, setSettingsOpen] = useState(launchAction === 'settings');
   const [activeBotId, setActiveBotId] = useState(() => launchBot ? botKey(launchDevice, launchBot) : localStorage.getItem('frogbot-active-bot'));
   const devices = directory.length ? directory : [{ id: 'local', name: '本机', online: true, bots: [] }];
@@ -53,17 +55,21 @@ export default function App() {
 
   const handleSelectBot = (id: string) => {
     setSchedulerOpen(false);
+    setAgyOpen(false);
     setActiveBotId(id);
     localStorage.setItem('frogbot-active-bot', id);
   };
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-canvas text-fg">
-      <Sidebar devices={devices} activeBotId={activeKey} schedulerActive={schedulerOpen}
-        onSelectBot={handleSelectBot} onOpenScheduler={() => setSchedulerOpen(true)}
+      <Sidebar devices={devices} activeBotId={activeKey} schedulerActive={schedulerOpen} agyActive={agyOpen}
+        onSelectBot={handleSelectBot}
+        onOpenScheduler={() => { setAgyOpen(false); setSchedulerOpen(true); }}
+        onOpenAgy={() => { setSchedulerOpen(false); setAgyOpen(true); }}
         onOpenSettings={() => setSettingsOpen(true)} onCreateBot={device => setEditor({ device })}
         onEditBot={profile => setEditor({ device: local, profile })} />
       {activeBot ? (
-        <BotView key={activeKey} bot={activeBot} device={device} devices={devices} settingsInitialDevice={device.id} schedulerOpen={schedulerOpen}
+        <BotView key={activeKey} bot={activeBot} device={device} devices={devices} settingsInitialDevice={device.id}
+          schedulerOpen={schedulerOpen} agyOpen={agyOpen}
           settingsOpen={settingsOpen} onCloseSettings={() => setSettingsOpen(false)}
           modalOpen={editor !== null} />
       ) : (
@@ -95,14 +101,14 @@ export default function App() {
 }
 
 function BotView({ bot, device, ...props }: {
-  bot: BotProfile; device: DeviceGroup; devices: DeviceGroup[]; settingsInitialDevice: string; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+  bot: BotProfile; device: DeviceGroup; devices: DeviceGroup[]; settingsInitialDevice: string; schedulerOpen: boolean; agyOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
 }) {
   const botAPI = useMemo(() => createBotAPI(bot.id, device.id), [bot.id, device.id]);
   return <BotContext.Provider value={{ bot, device, api: botAPI }}><ChatView {...props} /></BotContext.Provider>;
 }
 
-function ChatView({ devices, settingsInitialDevice, schedulerOpen, settingsOpen, onCloseSettings, modalOpen }: {
-  devices: DeviceGroup[]; settingsInitialDevice: string; schedulerOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
+function ChatView({ devices, settingsInitialDevice, schedulerOpen, agyOpen, settingsOpen, onCloseSettings, modalOpen }: {
+  devices: DeviceGroup[]; settingsInitialDevice: string; schedulerOpen: boolean; agyOpen: boolean; settingsOpen: boolean; onCloseSettings: () => void; modalOpen: boolean;
 }) {
   const { bot, device, api } = useActiveBot();
   const activeBotName = bot.name;
@@ -153,20 +159,20 @@ function ChatView({ devices, settingsInitialDevice, schedulerOpen, settingsOpen,
   // 快捷键：Esc 停止回复，Ctrl/⌘+K 聚焦输入框
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (settingsOpen || schedulerOpen || modalOpen) return;
+      if (settingsOpen || schedulerOpen || agyOpen || modalOpen) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); document.getElementById('composer')?.focus(); }
       else if (e.key === 'Escape' && s.busy) { e.preventDefault(); api.stopReply().catch(() => {}); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [api, s.busy, settingsOpen, schedulerOpen, modalOpen]);
+  }, [api, s.busy, settingsOpen, schedulerOpen, agyOpen, modalOpen]);
 
   // 新内容出现时，如果用户本来就在底部，就跟着滚到底
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && !schedulerOpen && stick.current) el.scrollTop = el.scrollHeight;
+    if (el && !schedulerOpen && !agyOpen && stick.current) el.scrollTop = el.scrollHeight;
   });
 
   const wrap = async <T,>(p: Promise<T>) => {
@@ -201,7 +207,8 @@ function ChatView({ devices, settingsInitialDevice, schedulerOpen, settingsOpen,
         )}
 
         {schedulerOpen && <Scheduler revision={s.scheduleRevision} />}
-        <div ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} className={schedulerOpen ? 'hidden' : 'flex-1 overflow-y-auto'}>
+        {agyOpen && <AgyWorkspace />}
+        <div ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} className={schedulerOpen || agyOpen ? 'hidden' : 'flex-1 overflow-y-auto'}>
           <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pb-8 pt-8" aria-live="off">
             {s.ready && s.items.length === 0 && <Welcome name={activeBotName} onPick={(t) => send(t).catch(() => {})} />}
             {!s.ready && <div className="flex justify-center pt-[20vh]"><span className="typing"><i /><i /><i /></span></div>}
@@ -216,7 +223,7 @@ function ChatView({ devices, settingsInitialDevice, schedulerOpen, settingsOpen,
           </main>
         </div>
 
-        <div className={schedulerOpen ? 'hidden' : 'dock relative'}>
+        <div className={schedulerOpen || agyOpen ? 'hidden' : 'dock relative'}>
           <TaskDock tasks={tasks} pos={pos} />
           {error && <p className="mx-auto mb-1.5 max-w-3xl px-4 text-center text-xs text-danger" role="alert">{error}<button onClick={() => setError('')} className="ml-2 text-fg4 underline">知道了</button></p>}
           <Composer name={activeBotName} connected={s.connected && s.ready} chatBusy={s.busy} working={working}

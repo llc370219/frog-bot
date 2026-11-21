@@ -131,7 +131,7 @@ func main() {
 	}
 	maxConc, _ := strconv.Atoi(env("4", "MAX_CONCURRENT"))
 	taskMin, _ := strconv.Atoi(env("30", "TASK_MAX_MINUTES"))
-	ctxTokens, _ := strconv.Atoi(env("60000", "CONTEXT_TOKENS"))
+	ctxTokens, _ := strconv.Atoi(env("32000", "CONTEXT_TOKENS"))
 
 	sandboxStatus := setupSandbox(dataDir, workspace)
 

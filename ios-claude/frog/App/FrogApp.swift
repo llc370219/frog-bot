@@ -57,6 +57,8 @@ enum Nav: Hashable {
     case bot(BotRef)
     case channels(BotRef)
     case agents(BotRef)
+    case agy(UUID)
+    case agyChat(server: UUID, sessionID: String, projectID: String, title: String)
     case settings
     case server(UUID)
     case relay
@@ -151,6 +153,11 @@ struct RootView: View {
             if let s = model.session(ref) { ChannelsView(session: s) } else { Unavailable(text: "这台服务器现在连不上。") }
         case .agents(let ref):
             if let s = model.session(ref) { AgentsView(session: s) } else { Unavailable(text: "这台服务器现在连不上。") }
+        case .agy(let id):
+            if let s = model.server(id) { AgyHomeView(server: s, path: $path) } else { Unavailable(text: "这台服务器已经移除了。") }
+        case .agyChat(let id, let sid, let pid, let title):
+            if let s = model.server(id) { AgyChatView(server: s, sessionID: sid, projectID: pid, title: title, path: $path) }
+            else { Unavailable(text: "这台服务器已经移除了。") }
         case .settings: SettingsView(path: $path)
         case .server(let id):
             if let s = model.server(id) { ServerSettingsView(server: s, path: $path) } else { Unavailable(text: "这台服务器已经移除了。") }

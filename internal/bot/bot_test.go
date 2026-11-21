@@ -257,7 +257,7 @@ func TestStopCancelsAll(t *testing.T) {
 	}
 }
 
-// 审批只能通过 HTTP 接口（用户点按钮）完成，并且绑定到具体参数。
+// 仅聊天层走审批（并通过 HTTP 接口绑定具体参数），后台 Agent 层直接执行而不再弹审批卡。
 func TestApprovalViaAPI(t *testing.T) {
 	ai := &fakeAI{agent: func(ctx context.Context, ms []onefrog.Message) (onefrog.Message, error) {
 		if toolSteps(ms) == 0 {
@@ -276,23 +276,30 @@ func TestApprovalViaAPI(t *testing.T) {
 	if b.chatTool.Get("approve") != nil {
 		t.Fatal("chat layer must not have an approve tool")
 	}
+	// 1) 后台 Agent 层直接完成，不产生审批阻塞
 	id, _ := b.StartTask("清理 junk", "清理")
+	waitFor(t, "agent task completed without approval", func() bool { tk, _ := b.store.Task(id); return tk.Status == "completed" })
+	if len(b.store.PendingApprovals()) != 0 {
+		t.Fatal("background agent task should not request approval")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ws", "junk")); !os.IsNotExist(err) {
+		t.Error("junk should be removed by agent")
+	}
+
+	// 2) 聊天层直接修改文件仍然弹审批卡片，且只能通过 HTTP 接口批准一次
+	_, _ = b.Send("在 todo.md 里记一行：买牛奶")
 	var appr ApprovalRec
-	waitFor(t, "approval requested", func() bool {
+	waitFor(t, "chat approval requested", func() bool {
 		p := b.store.PendingApprovals()
 		if len(p) == 1 {
 			appr = p[0]
 		}
 		return len(p) == 1
 	})
-	if !strings.Contains(string(appr.Args), "rm -r junk") {
-		t.Errorf("approval should show exact command: %s", appr.Args)
+	if !strings.HasPrefix(appr.TaskID, "chat_") || appr.Tool != "write_file" {
+		t.Errorf("expected chat write approval, got: %+v", appr)
 	}
-	// 聊天层被叫醒解释，但不能批准
-	waitFor(t, "chat explains", func() bool { return countMsgs(b.store, "assistant", "需要你在卡片上确认") == 1 })
-	if _, err := os.Stat(filepath.Join(dir, "ws", "junk")); err != nil {
-		t.Fatal("must not run before approval")
-	}
+	waitFor(t, "chat explains", func() bool { return countMsgs(b.store, "assistant", "需要你在卡片上确认") >= 1 })
 	post := func(path, body string) int {
 		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
 		if err != nil {
@@ -307,10 +314,7 @@ func TestApprovalViaAPI(t *testing.T) {
 	if code := post("/api/approvals/"+appr.ID, `{"decision":"once"}`); code != 200 {
 		t.Fatalf("approve: %d", code)
 	}
-	waitFor(t, "completed", func() bool { tk, _ := b.store.Task(id); return tk.Status == "completed" })
-	if _, err := os.Stat(filepath.Join(dir, "ws", "junk")); !os.IsNotExist(err) {
-		t.Error("junk should be removed after approval")
-	}
+	waitFor(t, "chat write applied", func() bool { d, _ := os.ReadFile(filepath.Join(dir, "ws", "todo.md")); return string(d) == "- 买牛奶\n" })
 	if a, _ := b.store.Approval(appr.ID); a.Status != "allow" {
 		t.Errorf("approval status %q", a.Status)
 	}
@@ -613,25 +617,8 @@ func TestSecretFullFlowNoPlaintext(t *testing.T) {
 	if c, _ := b.store.SecretCard(card.ID); c.Status != "saved" {
 		t.Errorf("card status %q", c.Status)
 	}
-	// 3) 派任务使用密钥 → 必须审批（默认 on-request 下 echo 本来是只读、会自动放行）
+	// 3) 派后台任务使用密钥 → Agent 层免审直接注入执行，输出自动脱敏
 	_, _ = b.Send("测试 token")
-	var appr ApprovalRec
-	waitFor(t, "approval for secret use", func() bool {
-		p := b.store.PendingApprovals()
-		if len(p) == 1 {
-			appr = p[0]
-		}
-		return len(p) == 1
-	})
-	if !strings.Contains(string(appr.Args), "{{secret:API_TOKEN}}") || strings.Contains(string(appr.Args), secret) {
-		t.Errorf("approval must show placeholder only: %s", appr.Args)
-	}
-	if !strings.Contains(appr.Reason, "API_TOKEN") {
-		t.Errorf("reason: %s", appr.Reason)
-	}
-	if code := post("/api/approvals/"+appr.ID, `{"decision":"session"}`); code != 200 {
-		t.Fatal("approve")
-	}
 	waitFor(t, "task completed", func() bool {
 		for _, tk := range b.store.Tasks() {
 			if tk.Title == "测试 token" && tk.Status == "completed" {
@@ -775,4 +762,188 @@ loop:
 			t.Error("previous thinking was fed back into model history")
 		}
 	}
+}
+
+// 省 Token 优化：system 提示词保持静态（可命中前缀缓存），实时简报后置；历史里的长任务通知自动折叠。
+func TestChatPrefixCacheAndCompactNoticeHistory(t *testing.T) {
+	longOut := "结论先行：全部通过。\n" + strings.Repeat("详细日志行 abcdefghij 1234567890\n", 80)
+	var mu sync.Mutex
+	var chatReqs []onefrog.ChatRequest
+	provider := providerFunc(func(ctx context.Context, req onefrog.ChatRequest, onText func(string)) (onefrog.Message, error) {
+		if req.Model == "agent" {
+			return onefrog.Message{Role: "assistant", Content: longOut}, nil
+		}
+		mu.Lock()
+		chatReqs = append(chatReqs, onefrog.ChatRequest{Messages: append([]onefrog.Message(nil), req.Messages...)})
+		mu.Unlock()
+		reply := onefrog.Message{Role: "assistant", Content: "收到。"}
+		if onText != nil {
+			onText(reply.Content)
+		}
+		return reply, nil
+	})
+	dir := t.TempDir()
+	b, err := New(Config{DataDir: filepath.Join(dir, "data"), Workspace: filepath.Join(dir, "ws"),
+		ChatProvider: provider, ChatModel: "chat", AgentProvider: provider, AgentModel: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Start()
+	defer b.Close()
+
+	id, _ := b.StartTask("跑长日志任务", "长日志")
+	waitFor(t, "task reported", func() bool { tk, _ := b.store.Task(id); return tk.Reported && countMsgs(b.store, "assistant", "收到。") >= 1 })
+
+	_, _ = b.Send("接下来呢")
+	waitFor(t, "second reply", func() bool { return countMsgs(b.store, "assistant", "收到。") >= 2 })
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(chatReqs) < 2 {
+		t.Fatalf("expected >= 2 chat requests, got %d", len(chatReqs))
+	}
+	r0, r1 := chatReqs[0], chatReqs[1]
+	// 1) system 消息不含动态时间，且跨轮次完全一致
+	if strings.Contains(r0.Messages[0].Content, "现在时间：") {
+		t.Error("system prompt should not contain volatile timestamp")
+	}
+	if r0.Messages[0].Content != r1.Messages[0].Content {
+		t.Error("system prompt changed across turns, breaking prefix cache")
+	}
+	// 2) 实时情况仍然放在最后一条用户输入之前传给了模型
+	if len(r1.Messages) < 3 || !strings.Contains(r1.Messages[len(r1.Messages)-2].Content, "现在时间：") {
+		t.Fatalf("brief missing before user input: %+v", r1.Messages)
+	}
+	// 3) 汇报当轮收到了长输出，但下一轮历史里的系统通知已被折叠
+	if !strings.Contains(r0.Messages[len(r0.Messages)-1].Content, strings.Repeat("详细日志行 abcdefghij 1234567890\n", 20)) {
+		t.Error("report turn should receive full task output")
+	}
+	sawNotice := false
+	for _, m := range r1.Messages[1 : len(r1.Messages)-2] {
+		if strings.HasPrefix(m.Content, "[系统通知]") {
+			sawNotice = true
+			if len(m.Content) > 450 {
+				t.Errorf("handled notice in history was not compacted: len=%d", len(m.Content))
+			}
+		}
+	}
+	if !sawNotice {
+		t.Error("expected compacted notice in history")
+	}
+}
+
+// HistoryWindow 超出上限后按块滑动，避免每发一条消息都让历史起点偏移 1 位导致前缀缓存失效。
+func TestHistoryWindowChunkedEviction(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	appendHandled := func(i int) {
+		id := onefrog.NewID("msg")
+		s.Append("message", Message{ID: id, Role: "user", Text: "msg"}, false)
+		s.Append("message.handled", []string{id}, true)
+	}
+	for i := 0; i < 24; i++ {
+		appendHandled(i)
+	}
+	if got := len(s.HistoryWindow(16, 24)); got != 24 {
+		t.Fatalf("at 24 want 24, got %d", got)
+	}
+	appendHandled(24) // 第 25 条：裁掉前 8 条，保留 17 条
+	first := s.HistoryWindow(16, 24)
+	if len(first) != 17 {
+		t.Fatalf("at 25 want 17, got %d", len(first))
+	}
+	anchor := first[0].ID
+	// 接下来连续追加 7 条（26..32），窗口起点保持不变
+	for n := 26; n <= 32; n++ {
+		appendHandled(n)
+		w := s.HistoryWindow(16, 24)
+		if w[0].ID != anchor {
+			t.Fatalf("window head shifted early at total=%d", n)
+		}
+		if len(w) < 17 || len(w) > 24 {
+			t.Fatalf("unexpected window len=%d at total=%d", len(w), n)
+		}
+	}
+}
+
+// react / ask_user / 已提前说确认语的 start_task 执行完直接结束本轮，不再浪费第二次模型调用。
+func TestTurnEndingToolsSkipExtraModelCall(t *testing.T) {
+	var mu sync.Mutex
+	chatCalls := 0
+	provider := providerFunc(func(ctx context.Context, req onefrog.ChatRequest, onText func(string)) (onefrog.Message, error) {
+		if req.Model == "agent" {
+			return onefrog.Message{Role: "assistant", Content: "后台完成"}, nil
+		}
+		mu.Lock()
+		chatCalls++
+		mu.Unlock()
+		last := req.Messages[len(req.Messages)-1].Content
+		switch {
+		case last == "谢谢":
+			return toolCall("react", map[string]string{"emoji": "👍"}), nil
+		case last == "选哪个":
+			return toolCall("ask_user", map[string]any{"question": "选方案", "options": []string{"A", "B"}}), nil
+		case last == "去干活":
+			if onText != nil {
+				onText("好，我去处理。")
+			}
+			m := toolCall("start_task", map[string]string{"task": "测试", "title": "测试"})
+			m.Content = "好，我去处理。"
+			return m, nil
+		default:
+			if onText != nil {
+				onText("搞定了。")
+			}
+			return onefrog.Message{Role: "assistant", Content: "搞定了。"}, nil
+		}
+	})
+	b, err := New(Config{DataDir: filepath.Join(t.TempDir(), "data"), Workspace: filepath.Join(t.TempDir(), "ws"),
+		ChatProvider: provider, ChatModel: "chat", AgentProvider: provider, AgentModel: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Start()
+	defer b.Close()
+
+	// 1) react：只调 1 次聊天模型
+	u1, _ := b.Send("谢谢")
+	waitFor(t, "react handled", func() bool { return len(b.store.Unhandled()) == 0 })
+	if m, _ := b.store.Message(u1.ID); len(m.Reactions) != 1 {
+		t.Fatalf("reaction missing: %+v", m.Reactions)
+	}
+	mu.Lock()
+	if chatCalls != 1 {
+		t.Fatalf("react should take 1 chat LLM call, got %d", chatCalls)
+	}
+	mu.Unlock()
+
+	// 2) ask_user：只调 1 次聊天模型
+	_, _ = b.Send("选哪个")
+	waitFor(t, "card shown", func() bool { _, ok := b.store.PendingCard(); return ok && len(b.store.Unhandled()) == 0 })
+	mu.Lock()
+	if chatCalls != 2 {
+		t.Fatalf("ask_user should take 1 chat LLM call, got %d", chatCalls-1)
+	}
+	mu.Unlock()
+
+	// 3) 已带确认语的 start_task：派发回合只调 1 次聊天模型，完成后汇报再调 1 次（共 +2 次而非 +3 次）
+	_, _ = b.Send("去干活")
+	waitFor(t, "task done and reported", func() bool { return countMsgs(b.store, "assistant", "搞定了。") == 1 })
+	if countMsgs(b.store, "assistant", "好，我去处理。") != 1 {
+		t.Fatal("pre-tool ack missing")
+	}
+	mu.Lock()
+	if chatCalls != 4 {
+		t.Fatalf("pre-acked start_task + final report should take 2 chat LLM calls, got %d", chatCalls-2)
+	}
+	mu.Unlock()
+}
+
+type providerFunc func(ctx context.Context, req onefrog.ChatRequest, onText func(string)) (onefrog.Message, error)
+
+func (f providerFunc) Chat(ctx context.Context, req onefrog.ChatRequest, onText func(string)) (onefrog.Message, error) {
+	return f(ctx, req, onText)
 }
