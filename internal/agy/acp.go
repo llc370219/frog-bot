@@ -1,5 +1,5 @@
-// Package agy 提供跨过聊天 Bot、直接通过 Agent Client Protocol (ACP) 控制服务器上 Antigravity CLI (`agy`) 的能力：
-// 项目文件夹管理、新建/恢复多轮对话、流式输出（思考/回复/工具调用）以及转发 agy 自身的权限模式与确认选项。
+// Package agy 直接发现并连接宿主机已安装的各类 Coding Agent CLI（Antigravity、Claude Code、Codex、Pi、Gemini CLI、OpenCode），
+// 复用本机登录态与真实项目目录，支持多轮流式输出、思考链、工具调用与权限确认。
 package agy
 
 import (
@@ -12,7 +12,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -89,14 +88,17 @@ type PermOption struct {
 	Kind     string `json:"kind,omitempty"`
 }
 
-func startACPClient(exe string, wrapCmd func(*exec.Cmd) error, onUpdate func(string, json.RawMessage), onPerm func(context.Context, permWireRequest) string, onDead func(error)) (*acpClient, error) {
-	cmd := exec.Command(exe, "acp")
+func startACPClient(exe string, acpArgs []string, wrapCmd func(*exec.Cmd) error, onUpdate func(string, json.RawMessage), onPerm func(context.Context, permWireRequest) string, onDead func(error)) (*acpClient, error) {
+	if len(acpArgs) == 0 {
+		acpArgs = []string{"acp"}
+	}
+	cmd := exec.Command(exe, acpArgs...)
 	if wrapCmd != nil {
 		if err := wrapCmd(cmd); err != nil {
 			return nil, err
 		}
 	}
-	cmd.Env = cleanEnv(os.Environ())
+	cmd.Env = buildChildEnv(exe)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -150,22 +152,6 @@ func startACPClient(exe string, wrapCmd func(*exec.Cmd) error, onUpdate func(str
 	c.agentName = initRes.AgentInfo.Name
 	c.agentVer = initRes.AgentInfo.Version
 	return c, nil
-}
-
-func cleanEnv(environ []string) []string {
-	drop := map[string]bool{
-		"FROGBOT_MASTER_KEY": true,
-		"FROGBOT_API_KEY":    true,
-		"FROGBOT_PASSWORD":   true,
-	}
-	out := make([]string, 0, len(environ))
-	for _, kv := range environ {
-		k, _, _ := cutString(kv, '=')
-		if !drop[k] {
-			out = append(out, kv)
-		}
-	}
-	return out
 }
 
 func cutString(s string, sep byte) (string, string, bool) {
@@ -429,34 +415,9 @@ func (c *acpClient) Close() {
 	})
 }
 
-// ResolveBinary 查找服务器上的 agy 可执行文件（兼容 systemd 服务无完整用户 PATH 的环境）。
+// ResolveBinary 查找本机上的 agy 可执行文件（保持向后兼容）。
 func ResolveBinary() (string, error) {
-	if custom := os.Getenv("FROGBOT_AGY_BIN"); custom != "" {
-		if isExecFile(custom) {
-			return custom, nil
-		}
-		return "", fmt.Errorf("FROGBOT_AGY_BIN 不可执行：%s", custom)
-	}
-	name := "agy"
-	if runtime.GOOS == "windows" {
-		name = "agy.exe"
-	}
-	if p, err := exec.LookPath(name); err == nil {
-		return p, nil
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		for _, sub := range []string{
-			filepath.Join(".local", "bin", name),
-			filepath.Join("bin", name),
-			filepath.Join(".antigravity", "bin", name),
-			filepath.Join(".npm-global", "bin", name),
-		} {
-			if p := filepath.Join(home, sub); isExecFile(p) {
-				return p, nil
-			}
-		}
-	}
-	return "", errors.New("未找到 agy 可执行文件，请先在服务器上安装 Antigravity CLI（放入 ~/.local/bin 或 PATH）")
+	return ResolveAgentBinary("agy")
 }
 
 func isExecFile(p string) bool {

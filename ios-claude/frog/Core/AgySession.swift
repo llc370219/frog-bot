@@ -33,8 +33,22 @@ struct AgyQueuedPrompt: Hashable, Identifiable {
     }
 }
 
+struct AgyAgentCLI: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var installed: Bool
+    var path: String?
+    var version: String?
+    var modes: [AgyModeOption]?
+    var models: [AgyModelOption]?
+    var default_mode: String?
+    var default_model: String?
+}
+
 struct AgyStatus: Codable, Equatable {
     var installed: Bool
+    var default_agent: String?
+    var agents: [AgyAgentCLI]?
     var path: String?
     var agent_version: String?
     var projects_root: String
@@ -65,6 +79,8 @@ struct AgySessionSummary: Codable, Hashable, Identifiable {
     var id: String
     var project_id: String
     var cwd: String
+    var agent: String?
+    var agent_name: String?
     var title: String
     var mode: String
     var model: String?
@@ -176,6 +192,23 @@ final class AgyStore {
         projects.first(where: { $0.id == selectedProjectID }) ?? projects.first
     }
 
+    var installedAgents: [AgyAgentCLI] {
+        (status?.agents ?? []).filter(\.installed)
+    }
+
+    var activeAgentID: String {
+        status?.default_agent ?? installedAgents.first?.id ?? "agy"
+    }
+
+    func selectAgent(_ agentID: String) async {
+        do {
+            let st: AgyStatus = try await client.send("POST", "/api/agy/agent", body: ["agent": agentID])
+            status = st
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
     func loadAll() async {
         loading = true
         error = nil
@@ -232,16 +265,19 @@ final class AgyStore {
         await refreshSessions()
     }
 
-    func createSession(mode: String = "", model: String = "") async throws -> AgySessionSummary {
+    func createSession(mode: String = "", model: String = "", agent: String = "") async throws -> AgySessionSummary {
         guard let pid = activeProject?.id else {
             throw APIError.invalid("请先创建或选择一个项目文件夹")
         }
-        let res = try await client.post("/api/agy/sessions", body: ["project_id": pid, "mode": mode, "model": model])
+        let targetAgent = agent.isEmpty ? activeAgentID : agent
+        let res = try await client.post("/api/agy/sessions", body: ["project_id": pid, "agent": targetAgent, "mode": mode, "model": model])
         let s = res["session"]
         let summary = AgySessionSummary(
             id: s["id"].str,
             project_id: s["project_id"].str,
             cwd: s["cwd"].str,
+            agent: s["agent"].string,
+            agent_name: s["agent_name"].string,
             title: s["title"].str.isEmpty ? "新对话" : s["title"].str,
             mode: s["mode"].str.isEmpty ? "auto" : s["mode"].str,
             model: s["model"].string,

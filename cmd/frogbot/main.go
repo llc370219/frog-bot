@@ -426,8 +426,8 @@ func fatal(format string, a ...any) {
 	os.Exit(1)
 }
 
-// setupSandbox 在 Linux 上让 Agent 的命令进 Landlock 沙箱：数据目录（登录数据、会话密钥、密钥库）读不到，
-// 只开放一键安装的 CLI（只读）和工作区（可写）。通过自检才启用。
+// setupSandbox 在 Linux 上让 Agent 的命令进 Landlock 沙箱：仅隔离 frog 自身数据目录（登录数据、会话密钥、密钥库），
+// 保持宿主机真实 HOME、已装 CLI 与工作区正常访问。通过自检才启用。
 func setupSandbox(dataDir, workspace string) sandbox.Status {
 	st := sandbox.Probe()
 	if !st.Available {
@@ -446,13 +446,10 @@ func setupSandbox(dataDir, workspace string) sandbox.Status {
 	spec := sandbox.Spec{
 		Protect: []string{dataDir},
 		Allow: []sandbox.Rule{
-			{Path: filepath.Join(dataDir, "tools"), Access: sandbox.ReadOnly},
 			{Path: workspace, Access: sandbox.ReadWrite},
 		},
 	}
-	// 例外目录要先存在才能加进规则：tools 在第一次一键安装前还没有，不建的话装好后要重启才能用。
 	_ = os.MkdirAll(workspace, 0o755)
-	_ = os.MkdirAll(filepath.Join(dataDir, "tools"), 0o755)
 	if err := sandbox.SelfTest(self, spec); err != nil {
 		log.Printf("⚠ Agent 沙箱自检没通过，不启用沙箱：%v。提权功能将被禁用。", err)
 		return sandbox.Status{Reason: err.Error()}

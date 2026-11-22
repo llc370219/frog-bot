@@ -25,6 +25,17 @@ func (h *Hub) Handler() http.Handler {
 		writeJSON(w, h.Status(r.Context()), nil)
 	})
 
+	mux.HandleFunc("POST /api/agy/agent", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Agent string `json:"agent"`
+		}
+		if !decodeJSON(w, r, &body, 4096) {
+			return
+		}
+		st, err := h.SetDefaultAgent(r.Context(), body.Agent)
+		writeJSON(w, st, err)
+	})
+
 	mux.HandleFunc("GET /api/agy/projects", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, h.ListProjects(), nil)
 	})
@@ -64,13 +75,14 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agy/sessions", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ProjectID string `json:"project_id"`
+			Agent     string `json:"agent"`
 			Mode      string `json:"mode"`
 			Model     string `json:"model"`
 		}
 		if !decodeJSON(w, r, &body, 8192) {
 			return
 		}
-		snap, err := h.CreateSession(r.Context(), body.ProjectID, body.Mode, body.Model)
+		snap, err := h.CreateSession(r.Context(), body.ProjectID, body.Agent, body.Mode, body.Model)
 		writeJSON(w, snap, err)
 	})
 

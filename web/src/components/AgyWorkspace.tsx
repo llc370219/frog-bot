@@ -40,6 +40,8 @@ const emptyLive = (): LiveState => ({
 
 export type CodingController = {
   status: AgyStatus | null;
+  activeAgent: string;
+  selectAgent: (agentId: string) => Promise<void>;
   projects: AgyProject[];
   activeProject: AgyProject | null;
   sessions: AgySessionSummary[];
@@ -49,7 +51,7 @@ export type CodingController = {
   setError: (e: string) => void;
   selectProject: (id: string) => void;
   selectSession: (id: string) => void;
-  newSession: (mode?: string, model?: string) => Promise<void>;
+  newSession: (mode?: string, model?: string, agent?: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   deleteProject: (p: AgyProject) => Promise<void>;
   openNewProject: () => void;
@@ -132,14 +134,27 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
     if (id) localStorage.setItem(ACTIVE_SESS_KEY, id);
   }, []);
 
-  const newSession = useCallback(async (mode?: string, model?: string) => {
+  const selectAgent = useCallback(async (agentId: string) => {
+    setError('');
+    try {
+      const st = await agyAPI.setDefaultAgent(agentId);
+      setStatus(st);
+      setSessionId('');
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  const newSession = useCallback(async (mode?: string, model?: string, agent?: string) => {
     if (!activeProject) return;
     setError('');
+    const targetAgent = agent || status?.default_agent || '';
     try {
       const snap = await agyAPI.createSession(
         activeProject.id,
-        mode ?? status?.default_mode ?? 'auto',
+        mode ?? status?.default_mode ?? '',
         model ?? status?.default_model ?? '',
+        targetAgent,
       );
       setSessions((prev) => [snap.session, ...prev.filter((s) => s.id !== snap.session.id)]);
       setSessionId(snap.session.id);
@@ -154,8 +169,9 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
     if (!activeProject) return '';
     const snap = await agyAPI.createSession(
       activeProject.id,
-      mode ?? status?.default_mode ?? 'auto',
+      mode ?? status?.default_mode ?? '',
       model ?? status?.default_model ?? '',
+      status?.default_agent || '',
     );
     setSessions((prev) => [snap.session, ...prev]);
     setSessionId(snap.session.id);
@@ -196,6 +212,8 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
 
   return {
     status,
+    activeAgent: status?.default_agent || 'agy',
+    selectAgent,
     projects,
     activeProject,
     sessions,
@@ -222,7 +240,7 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
 
 export default function AgyWorkspace({ coding }: { coding: CodingController }) {
   const {
-    status, activeProject, sessionId, error, setError,
+    status, activeAgent, selectAgent, activeProject, sessionId, error, setError,
     newProjModal, setNewProjModal, filesModal, setFilesModal,
     onProjectCreated, syncSessionUpdate, ensureSession,
   } = coding;
@@ -451,11 +469,23 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
               <FolderOpen size={13} />文件
             </button>
           )}
+          {(status?.agents || []).filter((a) => a.installed).length > 0 && (
+            <select
+              aria-label="Coding CLI"
+              value={live.session?.agent || activeAgent}
+              onChange={(e) => void selectAgent(e.target.value)}
+              className="rounded-lg border border-line bg-canvas px-2 py-1 text-xs font-medium text-fg focus:outline-none"
+            >
+              {(status?.agents || []).filter((a) => a.installed).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          )}
           {modes.length > 0 && (
             <select aria-label="Coding 权限模式" value={curMode} onChange={(e) => handleChangeMode(e.target.value)}
               disabled={!sessionId}
               className="rounded-lg border border-line bg-canvas px-2 py-1 text-xs text-fg2 focus:outline-none disabled:opacity-50">
-              {modes.map((m) => <option key={m.id} value={m.id}>模式：{m.name}</option>)}
+              {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           )}
           {models.length > 0 && (
@@ -477,7 +507,7 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
         <div className="flex items-center gap-2 border-b border-line bg-warn/10 px-4 py-2 text-xs text-fg2">
           <AlertTriangle size={14} className="shrink-0 text-warn" />
           <span className="flex-1">
-            {status.error || '当前服务器未检测到可用的 ACP 后端（如 agy acp），请检查安装或登录状态。'}
+            {status.error || '未检测到已安装的 Coding CLI'}
           </span>
         </div>
       )}

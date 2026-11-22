@@ -411,20 +411,26 @@ export const isActive = (t: Task) => t.status === 'queued' || t.status === 'runn
 export const isOpen = (t: Task) => !terminal(t.status);
 export const isImage = (name: string, mime?: string) => (mime ? mime.startsWith('image/') && !mime.includes('svg') : /\.(png|jpe?g|gif|webp)$/i.test(name));
 
-// ---------- 直连 Antigravity CLI (agy) ----------
+// ---------- 直连本机已安装的 Coding CLI (agy / claude / codex / pi / gemini / opencode) ----------
 
 export type AgyModeOption = { id: string; name: string; description?: string };
 export type AgyModelOption = { id: string; name: string };
 export type AgyCommandOption = { name: string; description?: string; input_hint?: string };
 export type AgyQueuedPrompt = { id: string; text: string; behavior?: 'follow_up' | 'steer'; created_at: string };
+export type AgyAgentCLI = {
+  id: string; name: string; installed: boolean; path?: string; version?: string;
+  modes?: AgyModeOption[]; models?: AgyModelOption[]; default_mode?: string; default_model?: string;
+};
 export type AgyStatus = {
-  installed: boolean; path?: string; agent_version?: string; projects_root: string;
+  installed: boolean; default_agent?: string; agents?: AgyAgentCLI[];
+  path?: string; agent_version?: string; projects_root: string;
   modes: AgyModeOption[]; models: AgyModelOption[]; commands?: AgyCommandOption[]; default_mode: string; default_model?: string; error?: string;
 };
 export type AgyProject = { id: string; name: string; path: string; managed: boolean; created_at: string };
 export type AgyFileEntry = { name: string; is_dir: boolean; size?: number };
 export type AgySessionSummary = {
-  id: string; project_id: string; cwd: string; title: string; mode: string; model?: string;
+  id: string; project_id: string; cwd: string; agent?: string; agent_name?: string;
+  title: string; mode: string; model?: string;
   busy: boolean; pending_permissions: number; queued_count?: number; updated_at: string;
 };
 export type AgyToolCall = {
@@ -454,6 +460,7 @@ export type AgySendResult = {
 
 export const agyAPI = {
   status: (signal?: AbortSignal): Promise<AgyStatus> => get('/api/agy/status', signal),
+  setDefaultAgent: (agent: string): Promise<AgyStatus> => post('/api/agy/agent', { agent }),
   projects: (signal?: AbortSignal): Promise<AgyProject[]> => get('/api/agy/projects', signal),
   createProject: (name: string, path = ''): Promise<AgyProject> => post('/api/agy/projects', { name, path }),
   deleteProject: (id: string, deleteFiles = false): Promise<{ ok: boolean }> =>
@@ -464,8 +471,8 @@ export const agyAPI = {
     `/api/agy/projects/${encodeURIComponent(projectID)}/files?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`,
   sessions: (projectID: string, signal?: AbortSignal): Promise<AgySessionSummary[]> =>
     get(`/api/agy/sessions?project_id=${encodeURIComponent(projectID)}`, signal),
-  createSession: (projectID: string, mode = '', model = ''): Promise<AgySnapshot> =>
-    post('/api/agy/sessions', { project_id: projectID, mode, model }),
+  createSession: (projectID: string, mode = '', model = '', agent = ''): Promise<AgySnapshot> =>
+    post('/api/agy/sessions', { project_id: projectID, agent, mode, model }),
   updateConfig: (sessionID: string, patch: { mode?: string; model?: string; title?: string }): Promise<AgySessionSummary> =>
     post(`/api/agy/sessions/${encodeURIComponent(sessionID)}/config`, patch),
   deleteSession: (sessionID: string): Promise<{ ok: boolean }> =>

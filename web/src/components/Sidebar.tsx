@@ -303,7 +303,7 @@ export default function Sidebar({
                           <span className={`truncate text-[13px] ${selected ? 'font-medium' : ''}`}>{s.title || '新对话'}</span>
                         </div>
                         <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-fg4">
-                          <span className="truncate">{s.mode}</span>
+                          <span className="truncate">{s.agent_name || s.mode}</span>
                           <span>·</span>
                           <span>{new Date(s.updated_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
                         </div>

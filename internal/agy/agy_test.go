@@ -18,6 +18,14 @@ import (
 // TestMain 让测试二进制在 FROGBOT_FAKE_AGY=1 时扮演一个标准 ACP stdio 服务器，
 // 无需真实 Google 登录或网络即可在沙箱内端到端测试项目目录、会话管理、流式对话和权限回调。
 func TestMain(m *testing.M) {
+	switch os.Getenv("FROGBOT_FAKE_CLI_KIND") {
+	case "claude":
+		runFakeClaudeStream()
+		os.Exit(0)
+	case "codex":
+		runFakeCodexAppServer()
+		os.Exit(0)
+	}
 	if os.Getenv("FROGBOT_FAKE_AGY") == "1" {
 		runFakeACPServer()
 		os.Exit(0)
@@ -500,5 +508,150 @@ func TestAgyProjectsSessionsStreamingAndPermissions(t *testing.T) {
 	unsub3()
 	if len(loadedSnap.Messages) != 2 || loadedSnap.Messages[0].Text != "历史问题" || loadedSnap.Messages[1].Text != "历史回答" {
 		t.Fatalf("history replay failed: %+v", loadedSnap.Messages)
+	}
+}
+
+func runFakeClaudeStream() {
+	sc := bufio.NewScanner(os.Stdin)
+	fmt.Println(`{"type":"system","subtype":"init","session_id":"claude_sess_42","slash_commands":["compact","review"]}`)
+	for sc.Scan() {
+		var in struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(sc.Bytes(), &in) != nil || in.Type != "user" {
+			continue
+		}
+		fmt.Println(`{"type":"stream_event","session_id":"claude_sess_42","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"检查代码库"}}}`)
+		fmt.Println(`{"type":"assistant","session_id":"claude_sess_42","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls -la"}}],"usage":{"input_tokens":1200,"output_tokens":300}}}`)
+		fmt.Println(`{"type":"user","session_id":"claude_sess_42","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"main.go"}]}}`)
+		fmt.Println(`{"type":"stream_event","session_id":"claude_sess_42","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Claude 已连接宿主 CLI 完成分析"}}}`)
+		fmt.Println(`{"type":"result","subtype":"success","session_id":"claude_sess_42","is_error":false,"result":"Claude 已连接宿主 CLI 完成分析"}`)
+	}
+}
+
+func runFakeCodexAppServer() {
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		var env rpcEnvelope
+		if json.Unmarshal(sc.Bytes(), &env) != nil || env.Method == "" {
+			continue
+		}
+		switch env.Method {
+		case "initialize":
+			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": env.ID, "result": map[string]any{"userAgent": "codex-test"}})
+			fmt.Println(string(raw))
+		case "thread/start":
+			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": env.ID, "result": map[string]any{"thread": map[string]string{"id": "thr_99"}}})
+			fmt.Println(string(raw))
+		case "turn/start":
+			var p struct {
+				ThreadID string `json:"threadId"`
+			}
+			_ = json.Unmarshal(env.Params, &p)
+			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": env.ID, "result": map[string]any{"turn": map[string]string{"id": "turn_1"}}})
+			fmt.Println(string(raw))
+			d1, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "item/agentMessage/delta", "params": map[string]any{"threadId": p.ThreadID, "delta": "Codex 宿主直连成功"}})
+			fmt.Println(string(d1))
+			d2, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"threadId": p.ThreadID, "turn": map[string]string{"id": "turn_1", "status": "completed"}}})
+			fmt.Println(string(d2))
+		}
+	}
+}
+
+func TestMultiHostCLIDiscoveryAndDrivers(t *testing.T) {
+	selfExe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	writeWrapper := func(name, kind string) string {
+		p := filepath.Join(binDir, name)
+		script := fmt.Sprintf("#!/bin/sh\nexport FROGBOT_FAKE_CLI_KIND=%s\nexec %q -test.run=^$\n", kind, selfExe)
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	claudeBin := writeWrapper("claude", "claude")
+	codexBin := writeWrapper("codex", "codex")
+	t.Setenv("FROGBOT_CLAUDE_BIN", claudeBin)
+	t.Setenv("FROGBOT_CODEX_BIN", codexBin)
+	t.Setenv("FROGBOT_AGY_BIN", filepath.Join(binDir, "nonexistent-agy"))
+
+	hub, err := NewHub(Config{
+		DataDir:      filepath.Join(t.TempDir(), "data"),
+		ProjectsRoot: filepath.Join(t.TempDir(), "projects"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+
+	st := hub.Status(context.Background())
+	if !st.Installed || st.DefaultAgent != "claude" {
+		t.Fatalf("expected claude to be auto-selected when agy absent, got installed=%v default=%q", st.Installed, st.DefaultAgent)
+	}
+
+	projs := hub.ListProjects()
+	// 1. 测试 Claude Code 原生 stream-json 会话
+	cSnap, err := hub.CreateSession(context.Background(), projs[0].ID, "claude", "bypassPermissions", "sonnet")
+	if err != nil {
+		t.Fatalf("CreateSession claude: %v", err)
+	}
+	_, cLive, cUnsub, err := hub.Subscribe(context.Background(), cSnap.Session.ID, projs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cUnsub()
+
+	if _, err := hub.SendPrompt(context.Background(), cSnap.Session.ID, projs[0].ID, "检查目录", ""); err != nil {
+		t.Fatalf("SendPrompt claude: %v", err)
+	}
+	waitTurnDone(t, cLive)
+
+	cAfter, _, cUnsub2, _ := hub.Subscribe(context.Background(), cSnap.Session.ID, projs[0].ID)
+	cUnsub2()
+	if len(cAfter.Messages) != 2 || !strings.Contains(cAfter.Messages[1].Text, "Claude 已连接宿主 CLI") || len(cAfter.Messages[1].Tools) != 1 {
+		t.Fatalf("unexpected claude messages: %+v", cAfter.Messages)
+	}
+
+	// 2. 切换到 Codex CLI app-server 会话
+	if _, err := hub.SetDefaultAgent(context.Background(), "codex"); err != nil {
+		t.Fatalf("SetDefaultAgent codex: %v", err)
+	}
+	xSnap, err := hub.CreateSession(context.Background(), projs[0].ID, "codex", "auto", "")
+	if err != nil {
+		t.Fatalf("CreateSession codex: %v", err)
+	}
+	_, xLive, xUnsub, err := hub.Subscribe(context.Background(), xSnap.Session.ID, projs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer xUnsub()
+
+	if _, err := hub.SendPrompt(context.Background(), xSnap.Session.ID, projs[0].ID, "测试 Codex", ""); err != nil {
+		t.Fatalf("SendPrompt codex: %v", err)
+	}
+	waitTurnDone(t, xLive)
+
+	xAfter, _, xUnsub2, _ := hub.Subscribe(context.Background(), xSnap.Session.ID, projs[0].ID)
+	xUnsub2()
+	if len(xAfter.Messages) != 2 || !strings.Contains(xAfter.Messages[1].Text, "Codex 宿主直连成功") {
+		t.Fatalf("unexpected codex messages: %+v", xAfter.Messages)
+	}
+}
+
+func waitTurnDone(t *testing.T, ch <-chan StreamEvent) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Kind == "turn.done" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for turn.done")
+		}
 	}
 }

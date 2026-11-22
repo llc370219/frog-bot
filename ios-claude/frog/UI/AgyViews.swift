@@ -59,13 +59,45 @@ struct CodingWorkspaceView: View {
                 }
 
                 if let st = store.status, (!st.installed || (st.error ?? "").isEmpty == false) {
-                    Label(st.error ?? "当前服务器未配置可用的 ACP 后端（如 agy acp），请检查登录或环境", systemImage: "exclamationmark.triangle.fill")
+                    Label(st.error ?? "未检测到已安装的 Coding CLI", systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote)
                         .foregroundStyle(Theme.warn)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16).padding(.vertical, 12)
                         .background(Theme.warnSoft, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .padding(.horizontal, 20).padding(.bottom, 10)
+                }
+
+                // 本机已检测到的 Coding CLI 切换条
+                if !store.installedAgents.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(store.installedAgents) { ag in
+                                let selected = ag.id == store.activeAgentID
+                                Button {
+                                    Haptics.tap()
+                                    Task { await store.selectAgent(ag.id) }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "terminal")
+                                            .font(.system(size: 11, weight: .semibold))
+                                        Text(ag.name)
+                                    }
+                                    .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                                    .foregroundStyle(selected ? Theme.accent : Theme.fg3)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(selected ? Theme.accentSoft : Theme.s2, in: Capsule())
+                                    .overlay(
+                                        Capsule().strokeBorder(selected ? Theme.accent.opacity(0.45) : Color.clear, lineWidth: 1)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .padding(.bottom, 8)
                 }
 
                 // 顶部项目胶囊条
@@ -207,7 +239,7 @@ struct CodingWorkspaceView: View {
                                             .foregroundStyle(Theme.fg4)
                                     }
                                     HStack(spacing: 6) {
-                                        Text(s.mode + ((s.model?.isEmpty == false) ? " · \(s.model!)" : ""))
+                                        Text(((s.agent_name?.isEmpty == false) ? "\(s.agent_name!) · " : "") + s.mode + ((s.model?.isEmpty == false) ? " · \(s.model!)" : ""))
                                             .font(.system(size: 15))
                                             .foregroundStyle(s.pending_permissions > 0 ? Theme.warn : Theme.fg3)
                                             .lineLimit(1)

@@ -3,21 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo bash
 #
-# 可选环境变量（写在 sudo 后面，例如 curl … | sudo PORT=9000 bash）：
-#   PORT=8080              监听端口
-#   FROGBOT_USER=admin     登录用户名（只在第一次安装时使用）
-#   FROGBOT_PASSWORD=…     登录密码（只在第一次安装时使用；不设就随机生成）
-#   VERSION=v0.1.2         安装指定版本（默认装最新发布的那个，正式版和测试版都算）
-#   DOMAIN=bot.example.com 用 Caddy 自动申请 HTTPS 证书，frog 只监听本机
-#   ROOT_HELPER=0          不安装提权助手（frogbot-rootd）。默认安装：Agent 需要 root 时弹卡片，
-#                          你输入登录密码后才以 root 执行，并写审计日志 /var/log/frogbot-rootd.log
-#
-# 再次运行 = 升级：保留数据、账号和密码，只替换程序。
-# 卸载：sudo bash install.sh uninstall    （保留数据；加 --purge 连数据一起删）
-#
-# 测试用（不会出现在正常安装里）：
-#   FROGBOT_ARTIFACT_DIR=目录   不联网下载，直接用本地的 frogbot_*_linux_*.tar.gz 和 SHA256SUMS
-#   FROGBOT_ROOT=目录           把 /opt、/var/lib、/etc 都装到这个目录下（不创建系统用户、不碰 systemd）
+# 默认直接运行在当前宿主用户环境（自动继承宿主用户的 HOME、PATH 以及本机已安装登录的 claude / codex / agy / pi 等 CLI），
+# 同时由内置 Linux Landlock 沙箱保护 frog 自身的 data 密钥目录。
 set -euo pipefail
 
 REPO="llc370219/frog-bot"
@@ -35,13 +22,16 @@ ROOTD_UNIT_FILE="$ROOT/etc/systemd/system/frogbot-rootd.service"
 ROOTD_STATE="$ROOT/etc/frogbot/rootd.json"
 ROOT_HELPER="${ROOT_HELPER:-1}"
 WRAPPER="$ROOT/usr/local/bin/frogbot"
-SVC_USER="frogbot"
+SVC_USER=""
+SVC_GROUP=""
+SVC_HOME=""
+SVC_PATH=""
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[注意]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[错误]\033[0m %s\n' "$*" >&2; exit 1; }
 
-sandbox() { [ -n "$ROOT" ]; }   # 测试模式：装到 FROGBOT_ROOT 下
+sandbox() { [ -n "$ROOT" ]; }
 
 need_root() {
   if ! sandbox && [ "$(id -u)" -ne 0 ]; then
@@ -51,7 +41,7 @@ need_root() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-fetch() { # fetch URL 输出文件
+fetch() {
   if have curl; then curl -fsSL --retry 3 --connect-timeout 15 -o "$2" "$1"
   elif have wget; then wget -q -O "$2" "$1"
   else die "需要 curl 或 wget"; fi
@@ -92,7 +82,7 @@ public_ip() {
   echo "${ip:-<服务器IP>}"
 }
 
-download() { # download 版本 架构 目录
+download() {
   local ver="$1" arch="$2" dir="$3" name="frogbot_${1}_linux_${2}.tar.gz"
   if [ -n "${FROGBOT_ARTIFACT_DIR:-}" ]; then
     say "使用本地发布包：$FROGBOT_ARTIFACT_DIR/$name"
@@ -111,19 +101,84 @@ download() { # download 版本 架构 目录
   echo "$dir/frogbot_${ver}_linux_${arch}"
 }
 
-ensure_user() {
-  sandbox && return 0
-  if ! id "$SVC_USER" >/dev/null 2>&1; then
-    say "创建系统用户 $SVC_USER（不能登录，没有 root 权限）"
-    useradd --system --home-dir "$DATA_ROOT" --shell /usr/sbin/nologin "$SVC_USER" 2>/dev/null \
-      || useradd -r -d "$DATA_ROOT" -s /sbin/nologin "$SVC_USER"
-  fi
+has_host_cli_traces() {
+  local h="$1"
+  [ -d "$h" ] || return 1
+  local p
+  for p in \
+    "$h/.local/bin/agy" "$h/.local/bin/claude" "$h/.local/bin/codex" "$h/.local/bin/pi" "$h/.local/bin/gemini" "$h/.local/bin/opencode" \
+    "$h/.antigravity" "$h/.claude" "$h/.codex" "$h/.gemini" "$h/.nvm" "$h/.bun" "$h/.npm-global"; do
+    [ -e "$p" ] && return 0
+  done
+  return 1
 }
 
-own() { sandbox || chown -R "$SVC_USER:$SVC_USER" "$@"; }
+resolve_host_user() {
+  if sandbox; then
+    SVC_USER="$(id -un)"
+    SVC_GROUP="$(id -gn)"
+    SVC_HOME="${HOME:-/tmp}"
+    SVC_PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}"
+    return 0
+  fi
 
-as_svc() { # 以服务用户身份运行
-  if sandbox; then "$@"
+  local chosen="${FROGBOT_RUN_USER:-}"
+  if [ -z "$chosen" ] && [ -f "$ENV_FILE" ]; then
+    chosen="$(sed -n 's/^FROGBOT_RUN_USER=//p' "$ENV_FILE" 2>/dev/null | head -n1 | tr -d '[:space:]')"
+  fi
+  if [ "$chosen" = "frogbot" ]; then chosen=""; fi
+
+  if [ -z "$chosen" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] && [ "$SUDO_USER" != "nobody" ] && [ "$SUDO_USER" != "frogbot" ]; then
+    chosen="$SUDO_USER"
+  fi
+
+  if [ -z "$chosen" ]; then
+    if has_host_cli_traces "/root"; then
+      chosen="root"
+    else
+      local d u uid
+      for d in /home/*; do
+        [ -d "$d" ] || continue
+        u="$(basename "$d")"
+        [ "$u" = "frogbot" ] && continue
+        uid="$(id -u "$u" 2>/dev/null || echo 0)"
+        if [ "$uid" -ge 1000 ] && has_host_cli_traces "$d"; then
+          chosen="$u"
+          break
+        fi
+      done
+    fi
+  fi
+
+  [ -n "$chosen" ] || chosen="root"
+  id "$chosen" >/dev/null 2>&1 || chosen="root"
+
+  SVC_USER="$chosen"
+  SVC_GROUP="$(id -gn "$SVC_USER")"
+  SVC_HOME="$(getent passwd "$SVC_USER" 2>/dev/null | cut -d: -f6 || true)"
+  if [ -z "$SVC_HOME" ]; then
+    if [ "$SVC_USER" = "root" ]; then SVC_HOME="/root"; else SVC_HOME="/home/$SVC_USER"; fi
+  fi
+
+  local login_p=""
+  if [ "$SVC_USER" = "root" ]; then
+    login_p="$(sh -lc 'printf %s "$PATH"' 2>/dev/null || true)"
+  elif have runuser; then
+    login_p="$(runuser -l "$SVC_USER" -c 'printf %s "$PATH"' 2>/dev/null || true)"
+  else
+    login_p="$(su - "$SVC_USER" -c 'printf %s "$PATH"' 2>/dev/null || true)"
+  fi
+  SVC_PATH="$SVC_HOME/.local/bin:$SVC_HOME/bin:$SVC_HOME/.antigravity/bin:$SVC_HOME/.npm-global/bin:$SVC_HOME/.bun/bin:$SVC_HOME/.cargo/bin:$SVC_HOME/.volta/bin:$SVC_HOME/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+  if [ -n "$login_p" ]; then
+    SVC_PATH="$SVC_PATH:$login_p"
+  fi
+  say "使用宿主用户环境：$SVC_USER（HOME=$SVC_HOME）"
+}
+
+own() { sandbox || chown -R "$SVC_USER:$SVC_GROUP" "$@"; }
+
+as_svc() {
+  if sandbox || [ "$SVC_USER" = "root" ]; then "$@"
   elif have runuser; then runuser -u "$SVC_USER" -- "$@"
   else su -s /bin/sh "$SVC_USER" -c "$(printf '%q ' "$@")"; fi
 }
@@ -133,28 +188,30 @@ write_env() {
   [ -n "${DOMAIN:-}" ] && listen="127.0.0.1:$PORT"
   mkdir -p "$ETC_DIR"
   if [ -f "$ENV_FILE" ]; then
-    # 升级：保留用户改过的配置，只更新监听地址（如果这次显式给了 PORT / DOMAIN）
     if [ -n "$PORT_GIVEN" ] || [ -n "${DOMAIN:-}" ]; then
       sed -i "s|^ADDR=.*|ADDR=$listen|" "$ENV_FILE"
     fi
+    if grep -q '^FROGBOT_RUN_USER=' "$ENV_FILE"; then
+      sed -i "s|^FROGBOT_RUN_USER=.*|FROGBOT_RUN_USER=$SVC_USER|" "$ENV_FILE"
+    else
+      printf '\nFROGBOT_RUN_USER=%s\n' "$SVC_USER" >> "$ENV_FILE"
+    fi
+    chmod 640 "$ENV_FILE"
+    sandbox || chown "root:$SVC_GROUP" "$ENV_FILE"
     return 0
   fi
   cat > "$ENV_FILE" <<ENV
 # frog 服务器版配置（改完执行 sudo systemctl restart frogbot）
 FROGBOT_MODE=server
+FROGBOT_RUN_USER=$SVC_USER
 ADDR=$listen
 DATA_DIR=$DATA_ROOT/data
 WORKSPACE=$DATA_ROOT/workspace
 FROGBOT_NO_BROWSER=1
-# 所有 Bot 合计同时运行的后台任务数
 MAX_CONCURRENT=4
-# 也可以在这里写模型配置（优先于网页设置），例如：
-# BASE_URL=https://api.x.ai/v1
-# API_KEY=...
-# CHAT_MODEL=...
 ENV
   chmod 640 "$ENV_FILE"
-  sandbox || chown "root:$SVC_USER" "$ENV_FILE"
+  sandbox || chown "root:$SVC_GROUP" "$ENV_FILE"
 }
 
 write_unit() {
@@ -170,22 +227,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$SVC_USER
-Group=$SVC_USER
+Group=$SVC_GROUP
+Environment="HOME=$SVC_HOME"
+Environment="PATH=$SVC_PATH"
 EnvironmentFile=$ENV_FILE
 WorkingDirectory=$DATA_ROOT
 ExecStart=$APP_DIR/frogbot -server
 Restart=on-failure
 RestartSec=3
-# 基本加固：后台 agent 的 shell 只能写 $DATA_ROOT，不能提权（这不是完整沙箱）
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=$DATA_ROOT
-ProtectHome=true
-# 提权助手的 socket（只读挂载也能连；目录不存在时忽略）
-ReadWritePaths=-/run/frogbot-rootd
-PrivateTmp=true
-ProtectKernelTunables=true
-ProtectControlGroups=true
 
 [Install]
 WantedBy=multi-user.target
@@ -203,7 +252,6 @@ After=network.target
 [Service]
 Type=simple
 User=root
-# 只接受 frogbot.service 主进程的连接；密码哈希在 $ROOTD_STATE（root 0600）
 ExecStart=$APP_DIR/frogbot rootd -unit frogbot.service -user $SVC_USER -state $ROOTD_STATE
 RuntimeDirectory=frogbot-rootd
 RuntimeDirectoryMode=0755
@@ -223,19 +271,20 @@ write_wrapper() {
 # 由 frog 安装脚本生成：管理命令（服务本身由 systemd 运行）。
 ENV_FILE="__ENV_FILE__"
 APP="__APP_DIR__/frogbot"
+RUN_USER="__SVC_USER__"
 case "${1:-}" in
   reset-password)
     shift
     DATA_DIR="$(sed -n 's/^DATA_DIR=//p' "$ENV_FILE" 2>/dev/null)"
-    if [ "$(id -u)" = 0 ] && id frogbot >/dev/null 2>&1; then
-      runuser -u frogbot -- "$APP" reset-password -data "$DATA_DIR" "$@" || exit $?
-      # 提权助手单独保存一份密码哈希，重置后同步过去
-      if [ -f /etc/frogbot/rootd.json ]; then
-        "$APP" rootd sync-password -data "$DATA_DIR" >/dev/null && systemctl try-restart frogbot-rootd && echo "提权助手的密码也已同步。"
-      fi
-      exit 0
+    if [ "$(id -u)" = 0 ] && [ "$RUN_USER" != "root" ] && id "$RUN_USER" >/dev/null 2>&1; then
+      runuser -u "$RUN_USER" -- "$APP" reset-password -data "$DATA_DIR" "$@" || exit $?
+    else
+      "$APP" reset-password -data "$DATA_DIR" "$@" || exit $?
     fi
-    exec "$APP" reset-password -data "$DATA_DIR" "$@" ;;
+    if [ -f /etc/frogbot/rootd.json ] && [ "$(id -u)" = 0 ]; then
+      "$APP" rootd sync-password -data "$DATA_DIR" >/dev/null && systemctl try-restart frogbot-rootd && echo "提权助手的密码也已同步。"
+    fi
+    exit 0 ;;
   version|-version|--version) exec "$APP" -version ;;
   *)
     echo "frog 由 systemd 运行：sudo systemctl status|restart|stop frogbot"
@@ -244,7 +293,7 @@ case "${1:-}" in
     echo "版本：    frogbot version" ;;
 esac
 WRAP
-  sed -i "s|__ENV_FILE__|$ENV_FILE|; s|__APP_DIR__|$APP_DIR|" "$WRAPPER"
+  sed -i "s|__ENV_FILE__|$ENV_FILE|; s|__APP_DIR__|$APP_DIR|; s|__SVC_USER__|$SVC_USER|" "$WRAPPER"
   chmod 755 "$WRAPPER"
 }
 
@@ -270,7 +319,7 @@ setup_caddy() {
     warn "$cf 里已经有别的站点配置，没有改动它。请手动加入：$DOMAIN { reverse_proxy 127.0.0.1:$PORT }"
     return 0
   else
-    : > "$cf"   # Caddy 自带的默认欢迎页配置，直接替换
+    : > "$cf"
   fi
   cat >> "$cf" <<CADDY
 # frogbot-begin
@@ -305,7 +354,7 @@ uninstall() {
   if [ "$purge" = "--purge" ]; then
     warn "删除所有数据：$DATA_ROOT 和 $ETC_DIR"
     rm -rf "$DATA_ROOT" "$ETC_DIR"
-    sandbox || userdel "$SVC_USER" 2>/dev/null || true
+    sandbox || userdel frogbot 2>/dev/null || true
   else
     say "数据保留在 $DATA_ROOT，配置在 $ETC_DIR（彻底删除：curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | sudo bash -s uninstall --purge）"
   fi
@@ -330,7 +379,7 @@ main() {
   WORK_DIR="$(mktemp -d)"; trap 'rm -rf "${WORK_DIR:-}"' EXIT
   src="$(download "$ver" "$arch" "$WORK_DIR" | tail -n1)"
 
-  ensure_user
+  resolve_host_user
   mkdir -p "$APP_DIR" "$DATA_ROOT/data" "$DATA_ROOT/workspace"
   chmod 750 "$DATA_ROOT"
   own "$DATA_ROOT"
@@ -339,7 +388,6 @@ main() {
   cp -f "$src/LICENSE" "$src/ATTRIBUTION.md" "$APP_DIR/" 2>/dev/null || true
   if [ -d "$src/licenses" ]; then rm -rf "$APP_DIR/licenses"; cp -R "$src/licenses" "$APP_DIR/licenses"; fi
   write_env
-  # 升级时端口以配置文件为准
   local addr_line
   addr_line="$(sed -n 's/^ADDR=//p' "$ENV_FILE" | head -n1)"
   [ -n "$addr_line" ] && PORT="${addr_line##*:}"
@@ -364,7 +412,6 @@ main() {
     write_rootd_unit
     mkdir -p "$ETC_DIR"
     if [ ! -f "$ROOTD_STATE" ]; then
-      # 第一次装提权助手：把当前登录密码的哈希复制一份给它（之后网页上改密码会自动同步）
       "$APP_DIR/frogbot" rootd sync-password -data "$DATA_ROOT/data" -state "$ROOTD_STATE" -enable >/dev/null \
         || warn "提权助手没能读取登录密码，之后可运行：sudo frogbot reset-password"
     fi
@@ -392,14 +439,14 @@ main() {
   shown_user="$(sed -n 's/.*"username": *"\([^"]*\)".*/\1/p' "$DATA_ROOT/data/auth.json" 2>/dev/null | head -n1)"
   cat <<DONE
 
-  🐸 frog $ver 已$( [ -n "$upgrade" ] && echo 升级 || echo 安装 )，服务名 frogbot（开机自启，出错自动重启）
+  🐸 frog $ver 已$( [ -n "$upgrade" ] && echo 升级 || echo 安装 )，服务名 frogbot（宿主用户：$SVC_USER）
 
   访问地址：$url
   用户名：  ${shown_user:-$ADMIN_USER}
 DONE
   if [ -n "$password" ]; then
     echo "  初始密码：$password"
-    echo "            ↑ 只显示这一次，请马上记下。登录后可在「设置 → 账号与登录」修改。"
+    echo "            ↑ 只显示这一次，请马上记下。登录后可在「设置 → 账号」修改。"
   else
     echo "  密码：    $user_line"
   fi
@@ -413,14 +460,6 @@ ${rootd_note:+  $rootd_note
   卸载：    curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | sudo bash -s uninstall
 
 DONE
-  if [ -z "${DOMAIN:-}" ]; then
-    warn "现在是 HTTP 明文：密码和聊天内容在网络上不加密。建议用域名 + HTTPS，重新运行："
-    echo "        curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | sudo DOMAIN=你的域名 bash" >&2
-    warn "脚本没有改防火墙。云服务器请在安全组 / 防火墙里放行 TCP $PORT，例如：sudo ufw allow $PORT/tcp"
-  else
-    warn "请确认域名 $DOMAIN 已解析到这台服务器，并在防火墙放行 TCP 80 和 443。"
-  fi
-  warn "后台 agent 能在这台服务器上执行命令（没有完整沙箱），请用专门的 VPS，不要和重要服务放在一起。"
 }
 
 main "$@"
