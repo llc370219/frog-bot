@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('frogDesktop', {
   toggleRelay: (payload) => ipcRenderer.invoke('frog:relay-toggle', payload),
   setupLocal: () => ipcRenderer.invoke('frog:local-setup'),
   checkUpdates: () => ipcRenderer.invoke('frog:check-updates'),
+  checkServerUpdate: (payload) => ipcRenderer.invoke('frog:server-check-update', payload),
+  applyServerUpdate: (payload) => ipcRenderer.invoke('frog:server-apply-update', payload),
+  copyText: (text) => ipcRenderer.invoke('frog:copy-text', text),
   openExternal: (url) => ipcRenderer.invoke('frog:open-external', url),
   onState: (cb) => {
     const handler = (_event, state) => cb(state);

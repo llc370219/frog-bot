@@ -164,6 +164,58 @@
         </div>
       </div>
     </div>
+
+    <!-- 服务端版本与升级 -->
+    <div id="srv-upd-backdrop" class="modal-backdrop hidden">
+      <div class="modal-card confirm-card" role="dialog" aria-modal="true" aria-labelledby="srv-upd-title">
+        <div class="modal-head" style="margin-bottom:16px">
+          <div class="modal-head-text">
+            <h2 id="srv-upd-title">服务端版本</h2>
+            <p id="srv-upd-subtitle"></p>
+          </div>
+          <button id="btn-srv-upd-close" type="button" class="icon-btn" title="关闭">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <div class="srv-upd-body">
+          <div class="srv-upd-row">
+            <span>更新通道</span>
+            <div class="segmented" style="width:140px;margin:0">
+              <button type="button" id="srv-ch-stable" class="seg-item active">正式版</button>
+              <button type="button" id="srv-ch-beta" class="seg-item">Beta</button>
+            </div>
+          </div>
+          <div class="srv-upd-row">
+            <span>当前版本</span>
+            <span id="srv-upd-current" class="mono"></span>
+          </div>
+          <div class="srv-upd-row">
+            <span>目标版本</span>
+            <select id="srv-upd-select" class="srv-upd-select"></select>
+          </div>
+
+          <div id="srv-upd-pw-wrap" class="field hidden" style="margin-top:6px">
+            <span class="field-label">管理员密码</span>
+            <input id="srv-upd-pw" type="password" placeholder="输入管理员密码确认" />
+          </div>
+
+          <div id="srv-upd-note" class="banner hidden"></div>
+          <div id="srv-upd-error" class="banner banner-danger hidden"></div>
+          <div id="srv-upd-copy-wrap" class="hidden" style="display:flex;gap:8px;align-items:center">
+            <code id="srv-upd-cmd" class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--fg3)"></code>
+            <button type="button" id="btn-srv-upd-copy" class="btn btn-sm btn-secondary">复制命令</button>
+          </div>
+        </div>
+
+        <div class="modal-actions" style="margin-top:18px">
+          <button type="button" id="btn-srv-upd-refresh" class="btn btn-ghost">刷新</button>
+          <span style="flex:1"></span>
+          <button type="button" id="btn-srv-upd-cancel" class="btn btn-secondary">关闭</button>
+          <button type="button" id="btn-srv-upd-apply" class="btn btn-primary">升级</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="./app.js"></script>

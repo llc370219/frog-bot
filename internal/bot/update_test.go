@@ -51,13 +51,22 @@ func TestCheckUpdateBetaAndChannelSwitch(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(listPayload))}, nil
 	})}
 
-	// 稳定版切到 beta 通道应检测到 v1.11.0-beta
+	// 稳定版切到 beta 通道应检测到 v1.11.0-beta 并返回完整可选版本列表
 	st, err := checkUpdateForChannel(context.Background(), client, listReleasesAPI, "v1.10.0", "beta")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Latest != "v1.11.0-beta" || st.State != "available" || st.Channel != "beta" {
+	if st.Latest != "v1.11.0-beta" || st.State != "available" || st.Channel != "beta" || len(st.Releases) != 2 {
 		t.Fatalf("unexpected beta status: %+v", st)
+	}
+
+	// stable 通道只筛正式版列表
+	stStable, err := checkUpdateForChannel(context.Background(), client, listReleasesAPI, "v1.9.0", "stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stStable.Latest != "v1.10.0" || len(stStable.Releases) != 1 || stStable.Releases[0].Tag != "v1.10.0" {
+		t.Fatalf("unexpected stable status: %+v", stStable)
 	}
 
 	// 已在最新 beta 上时显示 current

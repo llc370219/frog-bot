@@ -1208,6 +1208,31 @@ kbd {
   color: var(--fg3);
 }
 
+.srv-upd-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.srv-upd-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.srv-upd-row > span:first-child { color: var(--fg2); font-weight: 500; }
+.srv-upd-select {
+  max-width: 220px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line2);
+  background: var(--canvas);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* ---------- 窄窗口 ---------- */
 @media (max-width: 1080px) {
   .tb-ctx-title { max-width: 220px; }

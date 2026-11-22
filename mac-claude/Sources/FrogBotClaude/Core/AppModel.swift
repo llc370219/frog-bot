@@ -335,8 +335,20 @@ final class AppModel {
         relay.apply()
     }
 
-    func checkUpdate(_ s: ServerEntry) async throws -> UpdateStatus {
-        try await s.client.get("/api/update")
+    func checkUpdate(_ s: ServerEntry, channel: String? = nil) async throws -> UpdateStatus {
+        var q: [URLQueryItem] = []
+        if let channel, !channel.isEmpty {
+            q.append(URLQueryItem(name: "channel", value: channel))
+        }
+        return try await s.client.get("/api/update", query: q)
+    }
+
+    func applyUpdate(_ s: ServerEntry, channel: String, version: String = "", password: String = "") async throws -> JSON {
+        try await s.client.post("/api/update/apply", body: [
+            "channel": channel,
+            "version": version,
+            "password": password,
+        ])
     }
 
     func rename(_ s: ServerEntry, to name: String) {

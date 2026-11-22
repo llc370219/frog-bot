@@ -49,6 +49,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -62,7 +65,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -84,9 +89,19 @@ import io.github.llc370219.frogbot.claude.core.RelayState
 import io.github.llc370219.frogbot.claude.core.ServerClient
 import io.github.llc370219.frogbot.claude.core.ServerEntry
 import io.github.llc370219.frogbot.claude.core.ServerStatus
+import io.github.llc370219.frogbot.claude.core.arr
+import io.github.llc370219.frogbot.claude.core.bool
+import io.github.llc370219.frogbot.claude.core.objects
 import io.github.llc370219.frogbot.claude.core.str
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 private fun statusText(s: ServerEntry): String = when (val st = s.status) {
     ServerStatus.Online -> {
@@ -308,7 +323,87 @@ fun ServerScreen(state: AppState, s: ServerEntry, nav: Nav) {
     var settings by remember { mutableStateOf<ApiSettings?>(null) }
     var picker by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
-    var update by remember { mutableStateOf<String?>(null) }
+    var updateInfo by remember { mutableStateOf<JSONObject?>(null) }
+    var channel by remember { mutableStateOf("stable") }
+    var releases by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selectedTag by remember { mutableStateOf("") }
+    var versionPicker by remember { mutableStateOf(false) }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var upgrading by remember { mutableStateOf(false) }
+    var upgradeNote by remember { mutableStateOf<String?>(null) }
+    var updateError by remember { mutableStateOf<String?>(null) }
+    var showCopyCmd by remember { mutableStateOf(false) }
+    var copiedCmd by remember { mutableStateOf(false) }
+    var askUpgradePassword by remember { mutableStateOf(false) }
+    var upgradePassword by remember { mutableStateOf("") }
+    val clipboard = LocalClipboardManager.current
+
+    fun checkServerUpdate(targetChannel: String?) {
+        checkingUpdate = true
+        updateError = null
+        upgradeNote = null
+        showCopyCmd = false
+        copiedCmd = false
+        scope.launch {
+            runCatching { state.checkUpdate(s, targetChannel) }
+                .onSuccess { j ->
+                    updateInfo = j
+                    val activeCh = j.str("channel").ifEmpty { targetChannel ?: channel }
+                    channel = activeCh
+                    var list = j.arr("releases").objects().map { it.str("tag") }.filter { it.isNotEmpty() }
+                    if (list.isEmpty()) {
+                        list = fetchGitHubReleasesFallback(activeCh)
+                    }
+                    val latest = j.str("latest")
+                    if (list.isEmpty() && latest.isNotEmpty()) {
+                        list = listOf(latest)
+                    }
+                    releases = list
+                    selectedTag = when {
+                        latest.isNotEmpty() && latest in list -> latest
+                        else -> list.firstOrNull() ?: latest
+                    }
+                }
+                .onFailure { updateError = ServerClient.describe(it) }
+            checkingUpdate = false
+        }
+    }
+
+    fun triggerUpgrade(password: String) {
+        val ver = selectedTag.ifEmpty { updateInfo?.str("latest").orEmpty() }
+        if (ver.isEmpty()) return
+        upgrading = true
+        updateError = null
+        upgradeNote = null
+        showCopyCmd = false
+        copiedCmd = false
+        scope.launch {
+            runCatching { state.applyUpdate(s, channel, ver, password) }
+                .onSuccess { res ->
+                    if (res.bool("need_password")) {
+                        upgrading = false
+                        askUpgradePassword = true
+                        return@onSuccess
+                    }
+                    upgradeNote = "正在更新并重启，几秒后自动重连…"
+                    delay(4500)
+                    runCatching { state.refresh(s) }
+                    checkServerUpdate(channel)
+                    upgrading = false
+                }
+                .onFailure {
+                    updateError = ServerClient.describe(it)
+                    showCopyCmd = true
+                    upgrading = false
+                }
+        }
+    }
+
+    LaunchedEffect(s.id, s.status) {
+        if (s.status == ServerStatus.Online && updateInfo == null && !checkingUpdate) {
+            checkServerUpdate(null)
+        }
+    }
 
     LaunchedEffect(ref) {
         settings = null
@@ -359,19 +454,145 @@ fun ServerScreen(state: AppState, s: ServerEntry, nav: Nav) {
         }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        ListRow("检查更新", update, Icons.Outlined.SystemUpdate, onClick = {
-            update = "正在检查…"
-            scope.launch {
-                update = runCatching { state.checkUpdate(s) }.fold({ j ->
-                    when (j.str("state")) {
-                        "available" -> "有新版本 ${j.str("latest")}（当前 ${j.str("current")}）"
-                        "current" -> "已是最新（${j.str("current")}）"
-                        else -> "当前 ${j.str("current").ifEmpty { "版本未知" }}"
-                    }
-                }, { "检查失败：${ServerClient.describe(it)}" })
+        SectionLabel("服务端版本")
+        val online = s.status == ServerStatus.Online
+        val currentVer = updateInfo?.str("current").orEmpty().ifEmpty { session?.info?.version ?: "—" }
+        val latestVer = updateInfo?.str("latest").orEmpty()
+        val updateState = updateInfo?.str("state").orEmpty()
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text("更新通道", style = MaterialTheme.typography.bodyLarge)
+            SingleChoiceSegmentedButtonRow {
+                listOf("stable" to "正式版", "beta" to "Beta").forEachIndexed { idx, (key, label) ->
+                    SegmentedButton(
+                        selected = channel == key,
+                        onClick = {
+                            if (channel != key) {
+                                channel = key
+                                checkServerUpdate(key)
+                            }
+                        },
+                        enabled = online && !checkingUpdate && !upgrading,
+                        shape = SegmentedButtonDefaults.itemShape(index = idx, count = 2),
+                    ) { Text(label) }
+                }
             }
-        })
+        }
+        ListRow("当前版本", currentVer)
+        Box {
+            val targetDesc = when {
+                checkingUpdate -> "正在拉取版本列表…"
+                selectedTag.isNotEmpty() -> {
+                    val suffix = when {
+                        selectedTag == latestVer -> "（最新）"
+                        selectedTag == currentVer -> "（当前）"
+                        else -> ""
+                    }
+                    "$selectedTag$suffix"
+                }
+                else -> "—"
+            }
+            ListRow(
+                "目标版本",
+                targetDesc,
+                Icons.Outlined.SystemUpdate,
+                chevron = releases.isNotEmpty(),
+                onClick = if (releases.isNotEmpty() && online && !upgrading) ({ versionPicker = true }) else null,
+            )
+            DropdownMenu(versionPicker, { versionPicker = false }) {
+                releases.forEach { tag ->
+                    val suffix = when {
+                        tag == latestVer -> "（最新）"
+                        tag == currentVer -> "（当前）"
+                        else -> ""
+                    }
+                    DropdownMenuItem(
+                        text = { Text("$tag$suffix", fontFamily = FontFamily.Monospace) },
+                        leadingIcon = { RadioButton(selected = tag == selectedTag, onClick = null) },
+                        onClick = {
+                            selectedTag = tag
+                            versionPicker = false
+                        },
+                    )
+                }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                enabled = online && !checkingUpdate && !upgrading,
+                onClick = { checkServerUpdate(channel) },
+            ) { Text("刷新") }
+            val btnLabel = when {
+                upgrading -> "正在安装 $selectedTag…"
+                selectedTag == currentVer -> "重新安装 $selectedTag"
+                selectedTag == latestVer && updateState == "available" -> "升级至 $selectedTag"
+                selectedTag.isNotEmpty() -> "切换至 $selectedTag"
+                else -> "升级"
+            }
+            Button(
+                enabled = online && !checkingUpdate && !upgrading && selectedTag.isNotEmpty(),
+                modifier = Modifier.weight(1f),
+                onClick = { triggerUpgrade("") },
+            ) {
+                if (upgrading) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text(btnLabel)
+                }
+            }
+        }
+        if (showCopyCmd && selectedTag.isNotEmpty()) {
+            val cmd = "curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | VERSION=$selectedTag sudo bash"
+            TextButton(
+                modifier = Modifier.padding(horizontal = 12.dp),
+                onClick = {
+                    clipboard.setText(AnnotatedString(cmd))
+                    copiedCmd = true
+                },
+            ) { Text(if (copiedCmd) "已复制终端升级命令" else "复制终端升级命令") }
+        }
+        upgradeNote?.let { Note(it, Frog.extra.ok) }
+        updateError?.let { Note(it, MaterialTheme.colorScheme.error) }
         ListRow("从这台手机移除", icon = Icons.Outlined.Delete, titleColor = MaterialTheme.colorScheme.error, onClick = { confirmRemove = true })
+    }
+
+    if (askUpgradePassword) {
+        AlertDialog(
+            onDismissRequest = { askUpgradePassword = false; upgradePassword = "" },
+            title = { Text("输入管理员密码确认") },
+            text = {
+                OutlinedTextField(
+                    value = upgradePassword,
+                    onValueChange = { upgradePassword = it },
+                    label = { Text("密码") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = upgradePassword.isNotEmpty(),
+                    onClick = {
+                        val pw = upgradePassword
+                        upgradePassword = ""
+                        askUpgradePassword = false
+                        triggerUpgrade(pw)
+                    },
+                ) { Text("确认") }
+            },
+            dismissButton = {
+                TextButton(onClick = { askUpgradePassword = false; upgradePassword = "" }) { Text("取消") }
+            },
+        )
     }
 
     if (confirmRemove) {
@@ -674,4 +895,29 @@ private fun PrivilegeSection(session: BotSession) {
     }
     error?.let { Note(it, MaterialTheme.colorScheme.error) }
     Note("Agent 需要 root 时（例如装系统软件）会弹出卡片，你输入登录密码后由「${session.deviceName}」上的提权助手执行，并记入审计日志。")
+}
+
+private suspend fun fetchGitHubReleasesFallback(channel: String): List<String> = withContext(Dispatchers.IO) {
+    runCatching {
+        val client = OkHttpClient.Builder().readTimeout(10, TimeUnit.SECONDS).build()
+        val req = Request.Builder()
+            .url("https://api.github.com/repos/llc370219/frog-bot/releases?per_page=30")
+            .header("Accept", "application/vnd.github+json")
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@runCatching emptyList()
+            val arr = JSONArray(resp.body?.string() ?: "[]")
+            val out = mutableListOf<String>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                if (obj.optBoolean("draft")) continue
+                val tag = obj.optString("tag_name").trim()
+                if (!tag.startsWith("v")) continue
+                val isPre = obj.optBoolean("prerelease") || '-' in tag
+                if (channel == "stable" && isPre) continue
+                if (tag !in out) out.add(tag)
+            }
+            out
+        }
+    }.getOrDefault(emptyList())
 }

@@ -58,6 +58,22 @@ struct AgyStatus: Codable, Equatable {
     var default_mode: String
     var default_model: String?
     var error: String?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        installed = (try? c.decodeIfPresent(Bool.self, forKey: .installed)) ?? false
+        default_agent = try? c.decodeIfPresent(String.self, forKey: .default_agent)
+        agents = try? c.decodeIfPresent([AgyAgentCLI].self, forKey: .agents)
+        path = try? c.decodeIfPresent(String.self, forKey: .path)
+        agent_version = try? c.decodeIfPresent(String.self, forKey: .agent_version)
+        projects_root = (try? c.decodeIfPresent(String.self, forKey: .projects_root)) ?? ""
+        modes = (try? c.decodeIfPresent([AgyModeOption].self, forKey: .modes)) ?? []
+        models = (try? c.decodeIfPresent([AgyModelOption].self, forKey: .models)) ?? []
+        commands = try? c.decodeIfPresent([AgyCommandOption].self, forKey: .commands)
+        default_mode = (try? c.decodeIfPresent(String.self, forKey: .default_mode)) ?? "auto"
+        default_model = try? c.decodeIfPresent(String.self, forKey: .default_model)
+        error = try? c.decodeIfPresent(String.self, forKey: .error)
+    }
 }
 
 struct AgyProject: Codable, Hashable, Identifiable {
@@ -204,6 +220,9 @@ final class AgyStore {
         do {
             let st: AgyStatus = try await client.send("POST", "/api/agy/agent", body: ["agent": agentID])
             status = st
+            error = nil
+        } catch where error.isCancellation {
+            return
         } catch {
             self.error = error.localizedDescription
         }
@@ -224,6 +243,9 @@ final class AgyStore {
             if let pid = activeProject?.id {
                 sessions = (try? await client.get("/api/agy/sessions", query: [URLQueryItem(name: "project_id", value: pid)])) ?? []
             }
+        } catch where error.isCancellation {
+            loading = false
+            return
         } catch {
             self.error = error.localizedDescription
         }
@@ -239,6 +261,9 @@ final class AgyStore {
         guard let pid = activeProject?.id else { return }
         do {
             sessions = try await client.get("/api/agy/sessions", query: [URLQueryItem(name: "project_id", value: pid)])
+            error = nil
+        } catch where error.isCancellation {
+            return
         } catch {
             self.error = error.localizedDescription
         }

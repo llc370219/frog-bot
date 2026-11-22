@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +30,7 @@ import (
 const (
 	releasesURL      = "https://github.com/llc370219/frog-bot/releases"
 	latestReleaseAPI = "https://api.github.com/repos/llc370219/frog-bot/releases/latest"
-	listReleasesAPI  = "https://api.github.com/repos/llc370219/frog-bot/releases?per_page=20"
+	listReleasesAPI  = "https://api.github.com/repos/llc370219/frog-bot/releases?per_page=30"
 )
 
 // Version 由构建脚本通过 -ldflags "-X frogbot/internal/bot.Version=vX.Y.Z" 注入；main 也会同步。
@@ -80,14 +81,20 @@ func (b *Bot) saveUpdateChannel(ch string) string {
 	return ch
 }
 
+type releaseItem struct {
+	Tag        string `json:"tag"`
+	Prerelease bool   `json:"prerelease,omitempty"`
+}
+
 type updateStatus struct {
-	Current      string `json:"current"`
-	Latest       string `json:"latest,omitempty"`
-	Channel      string `json:"channel"`
-	ReleaseURL   string `json:"release_url"`
-	State        string `json:"state"`
-	CanApply     bool   `json:"can_apply"`
-	NeedPassword bool   `json:"need_password,omitempty"`
+	Current      string        `json:"current"`
+	Latest       string        `json:"latest,omitempty"`
+	Channel      string        `json:"channel"`
+	ReleaseURL   string        `json:"release_url"`
+	State        string        `json:"state"`
+	CanApply     bool          `json:"can_apply"`
+	NeedPassword bool          `json:"need_password,omitempty"`
+	Releases     []releaseItem `json:"releases"`
 }
 
 var releaseClient = &http.Client{Timeout: 10 * time.Second}
@@ -111,6 +118,7 @@ func checkUpdateForChannel(ctx context.Context, client *http.Client, endpoint, c
 		State:        "no_release",
 		CanApply:     canApply,
 		NeedPassword: needPw,
+		Releases:     []releaseItem{},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -130,10 +138,11 @@ func checkUpdateForChannel(ctx context.Context, client *http.Client, endpoint, c
 		return status, fmt.Errorf("GitHub HTTP %d", resp.StatusCode)
 	}
 
-	tag, err := extractReleaseTag(resp.Body, channel == "beta")
+	tag, rels, err := extractReleases(resp.Body, channel)
 	if err != nil {
 		return status, err
 	}
+	status.Releases = rels
 	if tag == "" {
 		return status, nil
 	}
@@ -144,47 +153,59 @@ func checkUpdateForChannel(ctx context.Context, client *http.Client, endpoint, c
 	return status, nil
 }
 
-func extractReleaseTag(r io.Reader, listMode bool) (string, error) {
+func extractReleases(r io.Reader, channel string) (string, []releaseItem, error) {
 	body, err := io.ReadAll(io.LimitReader(r, 2<<20))
 	if err != nil {
-		return "", errors.New("读取发布信息失败")
+		return "", []releaseItem{}, errors.New("读取发布信息失败")
 	}
-	if !listMode {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
 		var rel struct {
-			Tag   string `json:"tag_name"`
-			Draft bool   `json:"draft"`
+			Tag        string `json:"tag_name"`
+			Draft      bool   `json:"draft"`
+			Prerelease bool   `json:"prerelease"`
 		}
-		if err := json.Unmarshal(body, &rel); err != nil || strings.TrimSpace(rel.Tag) == "" {
-			return "", errors.New("解析发布信息失败")
+		if err := json.Unmarshal(trimmed, &rel); err != nil || strings.TrimSpace(rel.Tag) == "" {
+			return "", []releaseItem{}, errors.New("解析发布信息失败")
 		}
 		if rel.Draft {
-			return "", nil
+			return "", []releaseItem{}, nil
 		}
-		return strings.TrimSpace(rel.Tag), nil
+		t := strings.TrimSpace(rel.Tag)
+		pre := rel.Prerelease || strings.Contains(t, "-")
+		return t, []releaseItem{{Tag: t, Prerelease: pre}}, nil
 	}
 
 	var list []struct {
-		Tag   string `json:"tag_name"`
-		Draft bool   `json:"draft"`
+		Tag        string `json:"tag_name"`
+		Draft      bool   `json:"draft"`
+		Prerelease bool   `json:"prerelease"`
 	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return "", errors.New("解析发布列表失败")
+	if err := json.Unmarshal(trimmed, &list); err != nil {
+		return "", []releaseItem{}, errors.New("解析发布列表失败")
 	}
-	best := ""
+	seen := map[string]bool{}
+	items := make([]releaseItem, 0, len(list))
 	for _, rel := range list {
 		t := strings.TrimSpace(rel.Tag)
-		if rel.Draft || !releaseVersion.MatchString(t) || !strings.HasPrefix(t, "v") {
+		if rel.Draft || !releaseVersion.MatchString(t) || !strings.HasPrefix(t, "v") || seen[t] {
 			continue
 		}
-		if best == "" {
-			best = t
+		isPre := rel.Prerelease || strings.Contains(t, "-")
+		if channel == "stable" && isPre {
 			continue
 		}
-		if newer, ok := newerSemver(best, t); ok && newer {
-			best = t
-		}
+		seen[t] = true
+		items = append(items, releaseItem{Tag: t, Prerelease: isPre})
 	}
-	return best, nil
+	sort.Slice(items, func(i, j int) bool {
+		newer, ok := newerSemver(items[j].Tag, items[i].Tag)
+		return ok && newer
+	})
+	if len(items) == 0 {
+		return "", items, nil
+	}
+	return items[0].Tag, items, nil
 }
 
 var releaseVersion = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
@@ -304,39 +325,42 @@ func canWriteSelfBinary() bool {
 
 var validTagRe = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 
-func (b *Bot) applyUpdate(ctx context.Context, channel, password string) (map[string]any, error) {
+func (b *Bot) applyUpdate(ctx context.Context, channel, targetVersion, password string) (map[string]any, error) {
 	ch := b.saveUpdateChannel(channel)
-	endpoint := latestReleaseAPI
-	if ch == "beta" {
-		endpoint = listReleasesAPI
+	tag := strings.TrimSpace(targetVersion)
+	if tag == "" {
+		st, err := checkUpdateForChannel(ctx, releaseClient, listReleasesAPI, currentVersion(), ch)
+		if err != nil {
+			return nil, err
+		}
+		tag = strings.TrimSpace(st.Latest)
 	}
-	st, err := checkUpdateForChannel(ctx, releaseClient, endpoint, currentVersion(), ch)
-	if err != nil {
-		return nil, err
-	}
-	tag := strings.TrimSpace(st.Latest)
 	if !validTagRe.MatchString(tag) {
 		return nil, errors.New("未找到可安装的目标版本")
 	}
 
 	if canWriteSelfBinary() {
-		if err := selfReplaceBinary(ctx, tag); err != nil {
+		exePath, err := selfReplaceBinary(ctx, tag)
+		if err != nil {
 			return nil, err
 		}
 		go func() {
 			time.Sleep(350 * time.Millisecond)
-			reexecSelf()
+			reexecSelf(exePath)
 		}()
 		return map[string]any{"ok": true, "version": tag, "restarting": true}, nil
 	}
 
 	p := currentPrivilege()
 	if p != nil && p.Client != nil && p.Client.Installed() && runtime.GOOS == "linux" {
-		if err := p.authorize(password, 0); err != nil {
+		authCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_, authErr := p.Client.Do(authCtx, rootd.Request{Op: "authorize", Password: password})
+		cancel()
+		if authErr != nil {
 			if password == "" {
 				return map[string]any{"need_password": true, "version": tag}, nil
 			}
-			return nil, err
+			return nil, authErr
 		}
 		cmd := fmt.Sprintf("nohup sh -c 'curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | VERSION=%s bash >/var/log/frogbot-upgrade.log 2>&1' >/dev/null 2>&1 &", tag)
 		if _, err := p.Client.Do(ctx, rootd.Request{Op: "run", Command: cmd, TimeoutSec: 30, Task: "system-upgrade"}); err != nil {
@@ -348,14 +372,15 @@ func (b *Bot) applyUpdate(ctx context.Context, channel, password string) (map[st
 	return nil, errors.New("当前运行目录无写入权限，请在终端执行安装命令升级")
 }
 
-func selfReplaceBinary(ctx context.Context, tag string) error {
+func selfReplaceBinary(ctx context.Context, tag string) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if realExe, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = realExe
 	}
+	exe = strings.TrimSuffix(exe, " (deleted)")
 
 	ext := ".tar.gz"
 	if runtime.GOOS == "windows" {
@@ -366,7 +391,7 @@ func selfReplaceBinary(ctx context.Context, tag string) error {
 
 	sumsRaw, err := httpFetchBytes(ctx, baseURL+"SHA256SUMS", 1<<20)
 	if err != nil {
-		return fmt.Errorf("下载校验文件失败: %w", err)
+		return "", fmt.Errorf("下载校验文件失败: %w", err)
 	}
 	wantHash := ""
 	for _, line := range strings.Split(string(sumsRaw), "\n") {
@@ -377,55 +402,58 @@ func selfReplaceBinary(ctx context.Context, tag string) error {
 		}
 	}
 	if len(wantHash) != 64 {
-		return fmt.Errorf("发布包尚未支持当前平台 (%s/%s)", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("发布包尚未支持当前平台 (%s/%s)", runtime.GOOS, runtime.GOARCH)
 	}
 
 	archiveBytes, err := httpFetchBytes(ctx, baseURL+archiveName, 200<<20)
 	if err != nil {
-		return fmt.Errorf("下载安装包失败: %w", err)
+		return "", fmt.Errorf("下载安装包失败: %w", err)
 	}
 	sum := sha256.Sum256(archiveBytes)
 	if hex.EncodeToString(sum[:]) != wantHash {
-		return errors.New("安装包 SHA256 校验失败，已中止升级")
+		return "", errors.New("安装包 SHA256 校验失败，已中止升级")
 	}
 
 	binBytes, err := extractBinaryFromArchive(archiveBytes, runtime.GOOS == "windows")
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	dir := filepath.Dir(exe)
 	tmpFile, err := os.CreateTemp(dir, ".frogbot-new-*")
 	if err != nil {
-		return err
+		return "", err
 	}
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
 
 	if _, err := tmpFile.Write(binBytes); err != nil {
 		_ = tmpFile.Close()
-		return err
+		return "", err
 	}
 	if err := tmpFile.Close(); err != nil {
-		return err
+		return "", err
 	}
 	if err := os.Chmod(tmpPath, 0o755); err != nil {
-		return err
+		return "", err
 	}
 
 	if runtime.GOOS == "windows" {
 		oldPath := exe + ".old"
 		_ = os.Remove(oldPath)
 		if err := os.Rename(exe, oldPath); err != nil {
-			return err
+			return "", err
 		}
 		if err := os.Rename(tmpPath, exe); err != nil {
 			_ = os.Rename(oldPath, exe)
-			return err
+			return "", err
 		}
-		return nil
+		return exe, nil
 	}
-	return os.Rename(tmpPath, exe)
+	if err := os.Rename(tmpPath, exe); err != nil {
+		return "", err
+	}
+	return exe, nil
 }
 
 func httpFetchBytes(ctx context.Context, rawURL string, limit int64) ([]byte, error) {

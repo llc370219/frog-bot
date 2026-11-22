@@ -12,6 +12,7 @@ const {
   nativeTheme,
   nativeImage,
   Notification,
+  clipboard,
 } = require('electron');
 const {
   ConfigStore,
@@ -27,6 +28,7 @@ const TITLEBAR_HEIGHT = 42;
 const RAIL_WIDTH = 62;
 const DRAWER_WIDTH = 340;
 const GITHUB_RELEASES_API = 'https://api.github.com/repos/llc370219/frog-bot/releases/latest';
+const GITHUB_RELEASES_LIST_API = 'https://api.github.com/repos/llc370219/frog-bot/releases?per_page=30';
 const GITHUB_RELEASES_PAGE = 'https://github.com/llc370219/frog-bot/releases/latest';
 
 app.setAppUserModelId('io.github.llc370219.frog');
@@ -508,6 +510,7 @@ function serializeState() {
     drawerOpen: store.data.drawerOpen,
     closeToTray: store.data.closeToTray,
     autoCheckUpdates: store.data.autoCheckUpdates,
+    clientUpdateChannel: store.data.clientUpdateChannel || 'stable',
     activeServerId: store.data.activeServerId,
     servers,
     relay: {
@@ -715,20 +718,60 @@ function navigateServerAction(serverId, action, botId, deviceId = 'local') {
   view.webContents.loadURL(u.toString()).catch(() => {});
 }
 
+async function fetchGitHubReleasesList(channel = 'stable') {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10_000);
+  try {
+    const resp = await fetch(GITHUB_RELEASES_LIST_API, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': `frog-windows/${app.getVersion()}` },
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) return [];
+    const list = await resp.json();
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    const seen = new Set();
+    for (const rel of list) {
+      if (rel?.draft) continue;
+      const tag = String(rel?.tag_name || '').trim();
+      if (!tag.startsWith('v') || seen.has(tag)) continue;
+      const prerelease = Boolean(rel?.prerelease || tag.includes('-'));
+      if (channel === 'stable' && prerelease) continue;
+      seen.add(tag);
+      out.push({ tag, prerelease, assets: rel?.assets, html_url: rel?.html_url, body: rel?.body });
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function checkClientUpdates(manual = false) {
   if (updateInfo.checking) return updateInfo;
+  const channel = store.data.clientUpdateChannel === 'beta' ? 'beta' : 'stable';
   updateInfo = { ...updateInfo, checking: true };
   broadcastState();
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 10_000);
-    const resp = await fetch(GITHUB_RELEASES_API, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': `frog-windows/${app.getVersion()}` },
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (resp.ok) {
-      const release = await resp.json();
+    let release = null;
+    if (channel === 'beta') {
+      const list = await fetchGitHubReleasesList('beta');
+      clearTimeout(timer);
+      if (list.length > 0) {
+        release = { tag_name: list[0].tag, assets: list[0].assets, html_url: list[0].html_url, body: list[0].body };
+      }
+    } else {
+      const resp = await fetch(GITHUB_RELEASES_API, {
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': `frog-windows/${app.getVersion()}` },
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (resp.ok) release = await resp.json();
+    }
+    if (release) {
       const tag = String(release?.tag_name || '').replace(/^v/, '');
       const current = app.getVersion().replace(/^v/, '');
       const available = Boolean(tag && compareSemver(tag, current) > 0);
@@ -757,12 +800,17 @@ async function checkClientUpdates(manual = false) {
 }
 
 function compareSemver(a, b) {
-  const pa = a.split('-')[0].split('.').map((n) => Number(n) || 0);
-  const pb = b.split('-')[0].split('.').map((n) => Number(n) || 0);
+  const [mainA, preA = ''] = String(a).split('-', 2);
+  const [mainB, preB = ''] = String(b).split('-', 2);
+  const pa = mainA.split('.').map((n) => Number(n) || 0);
+  const pb = mainB.split('.').map((n) => Number(n) || 0);
   for (let i = 0; i < 3; i++) {
     if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
   }
-  return 0;
+  if (preA === preB) return 0;
+  if (!preA && preB) return 1;
+  if (preA && !preB) return -1;
+  return preA < preB ? -1 : 1;
 }
 
 function applyThemeEverywhere() {
@@ -946,9 +994,12 @@ function registerIPC() {
     applyThemeEverywhere();
     return serializeState();
   });
-  ipcMain.handle('frog:set-pref', (_e, { closeToTray, autoCheckUpdates }) => {
+  ipcMain.handle('frog:set-pref', (_e, { closeToTray, autoCheckUpdates, clientUpdateChannel }) => {
     if (closeToTray !== undefined) store.data.closeToTray = Boolean(closeToTray);
     if (autoCheckUpdates !== undefined) store.data.autoCheckUpdates = Boolean(autoCheckUpdates);
+    if (clientUpdateChannel === 'stable' || clientUpdateChannel === 'beta') {
+      store.data.clientUpdateChannel = clientUpdateChannel;
+    }
     store.save();
     broadcastState();
     return serializeState();
@@ -996,6 +1047,42 @@ function registerIPC() {
   });
   ipcMain.handle('frog:local-setup', () => setupLocalServer());
   ipcMain.handle('frog:check-updates', () => checkClientUpdates(true));
+  ipcMain.handle('frog:server-check-update', async (_e, { serverId, channel }) => {
+    const q = channel ? `?channel=${encodeURIComponent(channel)}` : '';
+    const st = await fetchServerJSON(serverId, `/api/update${q}`, { timeoutMs: 12_000 });
+    const activeCh = st?.channel || channel || 'stable';
+    let releases = Array.isArray(st?.releases) ? st.releases : [];
+    if (!releases.length) {
+      const gh = await fetchGitHubReleasesList(activeCh);
+      releases = gh.map((x) => ({ tag: x.tag, prerelease: x.prerelease }));
+    }
+    if (!releases.length && st?.latest) {
+      releases = [{ tag: st.latest, prerelease: String(st.latest).includes('-') }];
+    }
+    return { ...st, channel: activeCh, releases };
+  });
+  ipcMain.handle('frog:server-apply-update', async (_e, { serverId, channel, version, password }) => {
+    const res = await fetchServerJSON(serverId, '/api/update/apply', {
+      method: 'POST',
+      body: { channel: channel || 'stable', version: version || '', password: password || '' },
+      timeoutMs: 120_000,
+    });
+    if (res && !res.need_password) {
+      setTimeout(() => {
+        probeServer(serverId)
+          .then(() => {
+            const rt = serverRuntime.get(serverId);
+            if (rt?.view && !rt.view.webContents.isDestroyed()) rt.view.webContents.reload();
+          })
+          .catch(() => {});
+      }, 4500);
+    }
+    return res;
+  });
+  ipcMain.handle('frog:copy-text', (_e, text) => {
+    clipboard.writeText(String(text || ''));
+    return true;
+  });
   ipcMain.handle('frog:open-external', (_e, url) => {
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
       shell.openExternal(url).catch(() => {});

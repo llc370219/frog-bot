@@ -85,6 +85,15 @@ enum SessionVault {
     static func get(_ id: UUID) -> String? { load()[id.uuidString] }
 }
 
+extension Error {
+    var isCancellation: Bool {
+        if self is CancellationError { return true }
+        if let u = self as? URLError, u.code == .cancelled { return true }
+        let ns = self as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
+    }
+}
+
 /// 和一台服务器说话：普通请求、登录、上传、下载。
 /// 浏览器之外的请求不带 Origin 头，服务器的跨站检查自然放行；登录靠服务器发的会话 Cookie。
 @MainActor
@@ -151,6 +160,7 @@ final class ServerClient {
         do {
             (data, resp) = try await session.data(for: req)
         } catch let e as URLError {
+            if e.code == .cancelled { throw CancellationError() }
             throw APIError.network(Self.describe(e))
         }
         guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有正常响应") }
@@ -163,11 +173,15 @@ final class ServerClient {
 
     func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], as type: T.Type = T.self) async throws -> T {
         let (data, _) = try await send(makeRequest("GET", path, query: query))
-        do {
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            throw APIError.invalid("服务器返回的数据看不懂，可能版本太旧或地址不是 frog")
+        let decoder = JSONDecoder()
+        if let decoded = try? decoder.decode(T.self, from: data) {
+            return decoded
         }
+        if String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "null",
+           let emptyArr = try? decoder.decode(T.self, from: Data("[]".utf8)) {
+            return emptyArr
+        }
+        throw APIError.invalid("服务器返回的数据看不懂，可能版本太旧或地址不是 frog")
     }
 
     @discardableResult

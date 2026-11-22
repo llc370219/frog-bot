@@ -233,7 +233,7 @@ Environment="PATH=$SVC_PATH"
 EnvironmentFile=$ENV_FILE
 WorkingDirectory=$DATA_ROOT
 ExecStart=$APP_DIR/frogbot -server
-Restart=on-failure
+Restart=always
 RestartSec=3
 
 [Install]
@@ -387,6 +387,7 @@ main() {
   install -m 755 "$src/frogbot" "$APP_DIR/frogbot.new" && mv -f "$APP_DIR/frogbot.new" "$APP_DIR/frogbot"
   cp -f "$src/LICENSE" "$src/ATTRIBUTION.md" "$APP_DIR/" 2>/dev/null || true
   if [ -d "$src/licenses" ]; then rm -rf "$APP_DIR/licenses"; cp -R "$src/licenses" "$APP_DIR/licenses"; fi
+  own "$APP_DIR"
   write_env
   local addr_line
   addr_line="$(sed -n 's/^ADDR=//p' "$ENV_FILE" | head -n1)"

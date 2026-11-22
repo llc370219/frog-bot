@@ -182,6 +182,8 @@ final class AppModel {
             }
         } catch APIError.unauthorized {
             s.markNeedsLogin()
+        } catch where error.isCancellation {
+            return
         } catch {
             s.status = .offline(error.localizedDescription)
         }
@@ -382,8 +384,12 @@ final class AppModel {
         return try await s.client.get("/api/update", query: q)
     }
 
-    func applyUpdate(_ s: ServerEntry, channel: String, password: String = "") async throws -> JSON {
-        try await s.client.post("/api/update/apply", body: ["channel": channel, "password": password])
+    func applyUpdate(_ s: ServerEntry, channel: String, version: String = "", password: String = "") async throws -> JSON {
+        try await s.client.post("/api/update/apply", body: [
+            "channel": channel,
+            "version": version,
+            "password": password,
+        ])
     }
 
     func rename(_ s: ServerEntry, to name: String) {

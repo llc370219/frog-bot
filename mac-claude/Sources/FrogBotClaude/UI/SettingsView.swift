@@ -403,9 +403,18 @@ private struct ServerPane: View {
 
     @State private var botKey: String = ""
     @State private var settings: APISettings?
+    @State private var channel = "stable"
     @State private var update: UpdateStatus?
+    @State private var releases: [ReleaseItem] = []
+    @State private var selectedTag = ""
     @State private var checking = false
+    @State private var upgrading = false
+    @State private var upgradeNote: String?
     @State private var updateError: String?
+    @State private var showCopyCmd = false
+    @State private var copiedCmd = false
+    @State private var askUpgradePassword = false
+    @State private var upgradePassword = ""
     @State private var relogin = false
 
     private var bots: [(ref: BotRef, name: String)] {
@@ -494,29 +503,107 @@ private struct ServerPane: View {
                 Caption(text: "API 渠道整台设备共用；聊天模型、任务模型和 Agent 每个 Bot 各自选，互不影响。也可以在聊天窗口顶部直接换聊天模型。")
             }
 
-            HStack(spacing: 8) {
-                Text(versionText)
-                    .font(.system(size: 12))
-                    .foregroundStyle(updateError == nil ? Theme.fg3 : Theme.danger)
-                    .lineLimit(2)
-                Spacer()
-                if checking { ProgressView().controlSize(.small) }
-                if update?.state == "available", let s = update?.release_url, let url = URL(string: s) {
-                    Button("查看新版本") { NSWorkspace.shared.open(url) }
-                        .buttonStyle(PillButtonStyle(kind: .primary, compact: true))
+            GroupHeader(text: "服务端版本")
+            FormGroup {
+                FormRow(title: "更新通道") {
+                    Picker("", selection: $channel) {
+                        Text("正式版").tag("stable")
+                        Text("Beta").tag("beta")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 140)
+                    .disabled(!server.isOnline || checking || upgrading)
+                    .onChange(of: channel) { _, next in
+                        if update?.channel != next {
+                            check(targetChannel: next)
+                        }
+                    }
                 }
-                Button("检查更新") { check() }
+                RowDivider()
+                FormRow(title: "当前版本") {
+                    Text(currentServerVersionText)
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.fg3)
+                }
+                RowDivider()
+                FormRow(title: "目标版本") {
+                    if checking {
+                        ProgressView().controlSize(.small)
+                    } else if !releases.isEmpty {
+                        Picker("", selection: $selectedTag) {
+                            ForEach(releases) { r in
+                                let suffix = r.tag == update?.latest ? "（最新）" : (r.tag == update?.current ? "（当前）" : "")
+                                Text("\(r.tag)\(suffix)").tag(r.tag)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        .disabled(upgrading || !server.isOnline)
+                    } else {
+                        Text(update?.latest ?? "—")
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.fg3)
+                    }
+                }
+            }
+            if let upgradeNote { Caption(text: upgradeNote, tone: Theme.ok) }
+            if let updateError { Caption(text: updateError, tone: Theme.danger) }
+            if showCopyCmd, !selectedTag.isEmpty {
+                HStack(spacing: 8) {
+                    Text("curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | VERSION=\(selectedTag) sudo bash")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Theme.fg3)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Button(copiedCmd ? "已复制" : "复制命令") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(
+                            "curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | VERSION=\(selectedTag) sudo bash",
+                            forType: .string
+                        )
+                        copiedCmd = true
+                    }
                     .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
-                    .disabled(checking || !server.isOnline)
+                }
+                .padding(.top, 6)
+            }
+
+            HStack(spacing: 8) {
+                Button("刷新版本") { check(targetChannel: channel) }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
+                    .disabled(checking || upgrading || !server.isOnline)
+                if !selectedTag.isEmpty {
+                    Button(upgradeActionTitle) { triggerUpgrade(password: "") }
+                        .buttonStyle(PillButtonStyle(kind: .primary, compact: true))
+                        .disabled(upgrading || checking || !server.isOnline)
+                }
+                if upgrading { ProgressView().controlSize(.small) }
+                Spacer()
                 Button("在浏览器中打开") { if let u = server.config.baseURL { NSWorkspace.shared.open(u) } }
                     .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
                 Button("移除…") { confirmRemove() }
                     .buttonStyle(PillButtonStyle(kind: .danger, compact: true))
             }
-            .padding(.top, 18)
+            .padding(.top, 14)
+        }
+        .task(id: server.id) {
+            await loadBot()
+            if server.isOnline { check(targetChannel: nil) }
         }
         .task(id: selectedRef?.key ?? "") { await loadBot() }
         .sheet(isPresented: $relogin) { ServerSheet(mode: .login, server: server) }
+        .alert("输入管理员密码确认", isPresented: $askUpgradePassword) {
+            SecureField("密码", text: $upgradePassword)
+            Button("取消", role: .cancel) { upgradePassword = "" }
+            Button("确认") {
+                let pw = upgradePassword
+                upgradePassword = ""
+                triggerUpgrade(password: pw)
+            }
+        }
     }
 
     private var chatLabel: String {
@@ -552,17 +639,18 @@ private struct ServerPane: View {
         }
     }
 
-    private var versionText: String {
-        if let updateError { return updateError }
-        let current = update?.current ?? model.sessions(of: server).first?.info?.version
-        var t = "frog " + (current.map { $0.hasPrefix("v") ? $0 : "v" + $0 } ?? "版本未知")
-        switch update?.state {
-        case "available": t += " · 有新版本 \(update?.latest ?? "")"
-        case "current": t += " · 已是最新"
-        case "no_release": t += " · 还没有发布版本"
-        default: break
+    private var currentServerVersionText: String {
+        guard let cur = update?.current ?? model.sessions(of: server).first?.info?.version, !cur.isEmpty else {
+            return "—"
         }
-        return t
+        return cur
+    }
+
+    private var upgradeActionTitle: String {
+        if upgrading { return "正在安装 \(selectedTag)…" }
+        if selectedTag == update?.current { return "重新安装 \(selectedTag)" }
+        if selectedTag == update?.latest && update?.state == "available" { return "升级至 \(selectedTag)" }
+        return "切换至 \(selectedTag)"
     }
 
     private func loadBot() async {
@@ -571,13 +659,90 @@ private struct ServerPane: View {
         settings = try? await session.loadSettings()
     }
 
-    private func check() {
+    private func check(targetChannel: String?) {
         checking = true
         updateError = nil
+        upgradeNote = nil
+        showCopyCmd = false
+        copiedCmd = false
         Task {
-            do { update = try await model.checkUpdate(server) } catch { updateError = "检查更新失败：\(error.localizedDescription)" }
-            checking = false
+            defer { checking = false }
+            do {
+                let res = try await model.checkUpdate(server, channel: targetChannel)
+                update = res
+                let activeCh = (res.channel?.isEmpty == false ? res.channel! : (targetChannel ?? channel))
+                if channel != activeCh { channel = activeCh }
+                var list = res.releases ?? []
+                if list.isEmpty {
+                    list = await Self.fetchGitHubReleasesFallback(channel: activeCh)
+                }
+                if list.isEmpty, let lt = res.latest, !lt.isEmpty {
+                    list = [ReleaseItem(tag: lt, prerelease: lt.contains("-"))]
+                }
+                releases = list
+                if let lt = res.latest, list.contains(where: { $0.tag == lt }) {
+                    selectedTag = lt
+                } else {
+                    selectedTag = list.first?.tag ?? res.latest ?? ""
+                }
+            } catch where error.isCancellation {
+                return
+            } catch {
+                updateError = "检查版本失败：\(error.localizedDescription)"
+            }
         }
+    }
+
+    private func triggerUpgrade(password: String) {
+        let ver = selectedTag.isEmpty ? (update?.latest ?? "") : selectedTag
+        guard !ver.isEmpty else { return }
+        upgrading = true
+        updateError = nil
+        upgradeNote = nil
+        showCopyCmd = false
+        copiedCmd = false
+        Task {
+            do {
+                let out = try await model.applyUpdate(server, channel: channel, version: ver, password: password)
+                if out["need_password"].bool {
+                    upgrading = false
+                    askUpgradePassword = true
+                    return
+                }
+                upgradeNote = "正在更新并重启，几秒后自动重连…"
+                try? await Task.sleep(nanoseconds: 4_500_000_000)
+                await model.refresh(server)
+                check(targetChannel: channel)
+            } catch where error.isCancellation {
+                upgrading = false
+                return
+            } catch {
+                updateError = error.localizedDescription
+                showCopyCmd = true
+            }
+            upgrading = false
+        }
+    }
+
+    private static func fetchGitHubReleasesFallback(channel: String) async -> [ReleaseItem] {
+        guard let url = URL(string: "https://api.github.com/repos/llc370219/frog-bot/releases?per_page=30") else { return [] }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 10
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let parsed = JSON.parse(data) else { return [] }
+        var out: [ReleaseItem] = []
+        for item in parsed.array {
+            if item["draft"].bool { continue }
+            let tag = item["tag_name"].str.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard tag.hasPrefix("v") else { continue }
+            let isPre = item["prerelease"].bool || tag.contains("-")
+            if channel == "stable" && isPre { continue }
+            if !out.contains(where: { $0.tag == tag }) {
+                out.append(ReleaseItem(tag: tag, prerelease: isPre))
+            }
+        }
+        return out
     }
 
     private func confirmRemove() {

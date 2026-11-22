@@ -444,6 +444,9 @@ var folderSlugRe = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$`)
 func (h *Hub) ListProjects() []Project {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if len(h.projects) == 0 {
+		return []Project{}
+	}
 	return slices.Clone(h.projects)
 }
 
@@ -933,6 +936,17 @@ func (h *Hub) Status(ctx context.Context) StatusView {
 	}
 	h.mu.Unlock()
 
+	modes := chosen.Modes
+	if modes == nil {
+		modes = []ModeOption{}
+	}
+	models := chosen.Models
+	if models == nil {
+		models = []ModelOption{}
+	}
+	if discovered == nil {
+		discovered = []AgentCLIView{}
+	}
 	view := StatusView{
 		Installed:    anyInstalled,
 		DefaultAgent: activeID,
@@ -940,8 +954,8 @@ func (h *Hub) Status(ctx context.Context) StatusView {
 		Path:         chosen.Path,
 		AgentVersion: chosen.Version,
 		ProjectsRoot: root,
-		Modes:        chosen.Modes,
-		Models:       chosen.Models,
+		Modes:        modes,
+		Models:       models,
 		Commands:     cmds,
 		DefaultMode:  chosen.DefaultMode,
 		DefaultModel: chosen.DefaultModel,
@@ -1138,7 +1152,7 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 	}
 
 	seen := map[string]bool{}
-	var out []SessionSummary
+	out := make([]SessionSummary, 0)
 	for _, item := range agyNative {
 		if item.SessionID == "" {
 			continue

@@ -74,6 +74,7 @@ class ConfigStore {
       theme: 'system', // 'system' | 'light' | 'dark'
       closeToTray: true,
       autoCheckUpdates: true,
+      clientUpdateChannel: 'stable',
       windowBounds: { width: 1260, height: 840 },
       relay: {
         clientId: 'win-' + crypto.randomUUID().replace(/-/g, '').toLowerCase().slice(0, 24),

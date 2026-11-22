@@ -326,6 +326,12 @@ struct PrivilegeStatus: Codable, Hashable {
     }
 }
 
+struct ReleaseItem: Codable, Hashable, Identifiable {
+    var tag: String
+    var prerelease: Bool?
+    var id: String { tag }
+}
+
 struct UpdateStatus: Codable, Hashable {
     var current: String?
     var latest: String?
@@ -334,6 +340,7 @@ struct UpdateStatus: Codable, Hashable {
     var state: String?
     var can_apply: Bool?
     var need_password: Bool?
+    var releases: [ReleaseItem]?
 }
 
 struct Schedule: Codable, Hashable, Identifiable {

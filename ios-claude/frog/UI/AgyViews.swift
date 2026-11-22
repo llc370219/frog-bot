@@ -290,7 +290,10 @@ struct CodingWorkspaceView: View {
         Task {
             do {
                 let created = try await store.createSession()
+                store.error = nil
                 path.append(.agyChat(server: server.id, sessionID: created.id, projectID: created.project_id, title: created.title))
+            } catch where error.isCancellation {
+                return
             } catch {
                 store.error = error.localizedDescription
             }
@@ -869,6 +872,8 @@ private struct AgyFilesSheet: View {
         if !subDir.isEmpty { q.append(URLQueryItem(name: "dir", value: subDir)) }
         do {
             entries = try await server.client.get("/api/agy/projects/\(project.id)/files", query: q)
+        } catch where error.isCancellation {
+            return
         } catch {
             self.error = error.localizedDescription
         }

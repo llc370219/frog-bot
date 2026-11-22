@@ -31,6 +31,11 @@ export type AuthInfo = { enabled: boolean; authenticated?: boolean; username?: s
 
 export type UpdateChannel = 'stable' | 'beta';
 
+export type ReleaseItem = {
+  tag: string;
+  prerelease?: boolean;
+};
+
 export type UpdateStatus = {
   current: string;
   latest?: string;
@@ -39,6 +44,7 @@ export type UpdateStatus = {
   state: 'no_release' | 'unversioned' | 'current' | 'available';
   can_apply?: boolean;
   need_password?: boolean;
+  releases?: ReleaseItem[];
 };
 
 export type ApplyUpdateResult = {
@@ -378,8 +384,8 @@ export function createDeviceSettingsAPI(device: string, bot = 'main') {
     testProvider: (s: APISettings): Promise<{ latency_ms: number }> => post(`${settingsBase}/channels/test`, s),
     checkUpdate: (channel?: UpdateChannel, signal?: AbortSignal): Promise<UpdateStatus> =>
       get(`${settingsBase}/update${channel ? `?channel=${channel}` : ''}`, signal),
-    applyUpdate: (channel: UpdateChannel, password = ''): Promise<ApplyUpdateResult> =>
-      post('/api/update/apply', { channel, password }),
+    applyUpdate: (channel: UpdateChannel, password = '', version = ''): Promise<ApplyUpdateResult> =>
+      post('/api/update/apply', { channel, version, password }),
     version: async (signal?: AbortSignal) => (await get<Info>(`${botPath('main', device)}/info`, signal)).version,
   };
 }

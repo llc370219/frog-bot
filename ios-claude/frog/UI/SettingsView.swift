@@ -2,18 +2,18 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-/// 设置首页：主机、Bot 互联、通知、外观、版本
+/// 设置首页：主机、服务端版本、Bot 互联、通知、外观、关于
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Binding var path: [Nav]
     @AppStorage(Prefs.appearance) private var appearance = "system"
-    @AppStorage("client.update.channel") private var clientChannel = "stable"
+    @State private var selectedServerID: UUID?
 
-    @State private var checking = false
-    @State private var latestTag: String?
-    @State private var updateAvailable = false
-    @State private var updateURL: URL?
-    @State private var checkError: String?
+    private var activeServer: ServerEntry? {
+        if let id = selectedServerID, let s = model.server(id) { return s }
+        if let id = model.selection?.server, let s = model.server(id) { return s }
+        return model.servers.first
+    }
 
     var body: some View {
         List {
@@ -35,6 +35,23 @@ struct SettingsView: View {
                 }
                 .onMove { model.move(from: $0, to: $1) }
                 Button { model.sheet = .addServer } label: { Label("连接新主机", systemImage: "plus") }
+            }
+
+            if let srv = activeServer {
+                Section("服务端版本") {
+                    if model.servers.count > 1 {
+                        Picker("主机", selection: Binding(
+                            get: { srv.id },
+                            set: { selectedServerID = $0 }
+                        )) {
+                            ForEach(model.servers) { s in
+                                Text(s.name).tag(s.id)
+                            }
+                        }
+                    }
+                    ServerUpdateControl(server: srv)
+                        .id(srv.id)
+                }
             }
 
             Section {
@@ -59,45 +76,14 @@ struct SettingsView: View {
 
             Section("关于") {
                 HStack(spacing: 14) {
-                    FrogMark(size: 46)
+                    FrogMark(size: 42)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("frog").font(.headline)
-                        Text("v\(version)").font(.subheadline).monospacedDigit().foregroundStyle(Theme.fg3)
+                        Text("客户端 v\(version)").font(.subheadline).monospacedDigit().foregroundStyle(Theme.fg3)
                     }
-                    Spacer()
-                    Picker("通道", selection: $clientChannel) {
-                        Text("正式版").tag("stable")
-                        Text("Beta").tag("beta")
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 132)
-                    .onChange(of: clientChannel) { _, _ in checkClientUpdate() }
                 }
                 .padding(.vertical, 2)
 
-                HStack {
-                    Text(clientChannel == "beta" ? "最新 Beta" : "最新正式版")
-                    Spacer()
-                    if checking {
-                        ProgressView().controlSize(.small)
-                    } else if let latestTag {
-                        Text(latestTag)
-                            .monospacedDigit()
-                            .foregroundStyle(updateAvailable ? Theme.accent : Theme.fg3)
-                    } else {
-                        Button("检查") { checkClientUpdate() }
-                            .font(.subheadline)
-                    }
-                }
-
-                if updateAvailable, let url = updateURL {
-                    Link(destination: url) {
-                        Label("查看 \(latestTag ?? "新版本")", systemImage: "arrow.up.right.circle")
-                    }
-                }
-                if let checkError {
-                    Text(checkError).font(.footnote).foregroundStyle(Theme.danger)
-                }
                 Link(destination: URL(string: "https://github.com/llc370219/frog-bot")!) {
                     Label("GitHub", systemImage: "arrow.up.right.square")
                 }
@@ -106,48 +92,229 @@ struct SettingsView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("设置")
         .toolbar { EditButton() }
-        .task { checkClientUpdate() }
     }
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
     }
+}
 
-    private func checkClientUpdate() {
+/// 可复用的服务端版本选择与一键升级控件
+struct ServerUpdateControl: View {
+    @Environment(AppModel.self) private var model
+    let server: ServerEntry
+
+    @State private var channel = "stable"
+    @State private var update: UpdateStatus?
+    @State private var releases: [ReleaseItem] = []
+    @State private var selectedTag = ""
+    @State private var checking = false
+    @State private var upgrading = false
+    @State private var upgradeNote: String?
+    @State private var updateError: String?
+    @State private var showCopyCmd = false
+    @State private var copied = false
+    @State private var askUpgradePassword = false
+    @State private var upgradePassword = ""
+
+    private var actionTitle: String {
+        guard !selectedTag.isEmpty else { return "升级" }
+        if upgrading { return "正在安装 \(selectedTag)…" }
+        if selectedTag == update?.current { return "重新安装 \(selectedTag)" }
+        if selectedTag == update?.latest && update?.state == "available" { return "升级至 \(selectedTag)" }
+        return "切换至 \(selectedTag)"
+    }
+
+    var body: some View {
+        Group {
+            HStack {
+                Text("更新通道")
+                Spacer()
+                Picker("更新通道", selection: $channel) {
+                    Text("正式版").tag("stable")
+                    Text("Beta").tag("beta")
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 140)
+                .disabled(!server.isOnline || checking || upgrading)
+                .onChange(of: channel) { _, next in
+                    if update?.channel != next {
+                        checkServerUpdate(targetChannel: next)
+                    }
+                }
+            }
+
+            LabeledContent("当前版本") {
+                Text(update?.current ?? "—")
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.fg3)
+            }
+
+            if checking {
+                LabeledContent("目标版本") {
+                    ProgressView().controlSize(.small)
+                }
+            } else if !releases.isEmpty {
+                Picker("目标版本", selection: $selectedTag) {
+                    ForEach(releases) { r in
+                        let suffix = r.tag == update?.latest ? "（最新）" : (r.tag == update?.current ? "（当前）" : "")
+                        Text("\(r.tag)\(suffix)").tag(r.tag)
+                    }
+                }
+                .disabled(upgrading || !server.isOnline)
+            } else {
+                LabeledContent("目标版本") {
+                    Text(update?.latest ?? "—")
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.fg3)
+                }
+            }
+
+            if !selectedTag.isEmpty {
+                Button {
+                    triggerUpgrade(password: "")
+                } label: {
+                    HStack {
+                        Label(actionTitle, systemImage: "arrow.down.circle.fill")
+                            .fontWeight(.medium)
+                        Spacer()
+                        if upgrading { ProgressView() }
+                    }
+                }
+                .disabled(upgrading || checking || !server.isOnline)
+            }
+
+            Button {
+                checkServerUpdate(targetChannel: channel)
+            } label: {
+                Label("刷新版本列表", systemImage: "arrow.clockwise")
+            }
+            .disabled(checking || upgrading || !server.isOnline)
+
+            if showCopyCmd, !selectedTag.isEmpty {
+                Button {
+                    UIPasteboard.general.string = "curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | VERSION=\(selectedTag) sudo bash"
+                    Haptics.tap()
+                    copied = true
+                } label: {
+                    Label(copied ? "已复制终端升级命令" : "复制终端升级命令", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }
+            }
+
+            if let upgradeNote {
+                Text(upgradeNote).font(.footnote).foregroundStyle(Theme.ok)
+            }
+            if let updateError {
+                Text(updateError).font(.footnote).foregroundStyle(Theme.danger)
+            }
+        }
+        .task {
+            if server.isOnline && update == nil {
+                checkServerUpdate(targetChannel: nil)
+            }
+        }
+        .onChange(of: server.status) { _, st in
+            if st == .online && update == nil {
+                checkServerUpdate(targetChannel: nil)
+            }
+        }
+        .alert("输入管理员密码确认", isPresented: $askUpgradePassword) {
+            SecureField("密码", text: $upgradePassword)
+            Button("取消", role: .cancel) { upgradePassword = "" }
+            Button("确认") {
+                let pw = upgradePassword
+                upgradePassword = ""
+                triggerUpgrade(password: pw)
+            }
+        }
+    }
+
+    private func checkServerUpdate(targetChannel: String?) {
         checking = true
-        checkError = nil
-        let isBeta = clientChannel == "beta"
+        updateError = nil
+        upgradeNote = nil
+        showCopyCmd = false
+        copied = false
         Task {
             defer { checking = false }
             do {
-                let endpoint = isBeta
-                    ? "https://api.github.com/repos/llc370219/frog-bot/releases?per_page=20"
-                    : "https://api.github.com/repos/llc370219/frog-bot/releases/latest"
-                var req = URLRequest(url: URL(string: endpoint)!)
-                req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                req.timeoutInterval = 12
-                let (data, _) = try await URLSession.shared.data(for: req)
-                let parsed = JSON.parse(data) ?? .null
-                let chosen: JSON
-                if isBeta {
-                    chosen = parsed.array.first(where: { !$0["draft"].bool && $0["tag_name"].str.hasPrefix("v") }) ?? .null
+                let res = try await model.checkUpdate(server, channel: targetChannel)
+                update = res
+                let activeCh = (res.channel?.isEmpty == false ? res.channel! : (targetChannel ?? channel))
+                if channel != activeCh { channel = activeCh }
+                var list = res.releases ?? []
+                if list.isEmpty {
+                    list = await Self.fetchGitHubReleasesFallback(channel: activeCh)
+                }
+                if list.isEmpty, let lt = res.latest, !lt.isEmpty {
+                    list = [ReleaseItem(tag: lt, prerelease: lt.contains("-"))]
+                }
+                releases = list
+                if let lt = res.latest, list.contains(where: { $0.tag == lt }) {
+                    selectedTag = lt
                 } else {
-                    chosen = parsed
+                    selectedTag = list.first?.tag ?? res.latest ?? ""
                 }
-                let tag = chosen["tag_name"].str
-                guard !tag.isEmpty else {
-                    latestTag = "—"
-                    updateAvailable = false
-                    return
-                }
-                latestTag = tag
-                updateURL = URL(string: chosen["html_url"].str)
-                let cleanLatest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-                updateAvailable = cleanLatest != version && cleanLatest.compare(version, options: .numeric) == .orderedDescending
+            } catch where error.isCancellation {
+                return
             } catch {
-                checkError = error.localizedDescription
+                updateError = error.localizedDescription
             }
         }
+    }
+
+    private func triggerUpgrade(password: String) {
+        let ver = selectedTag.isEmpty ? (update?.latest ?? "") : selectedTag
+        guard !ver.isEmpty else { return }
+        upgrading = true
+        updateError = nil
+        upgradeNote = nil
+        showCopyCmd = false
+        copied = false
+        Task {
+            do {
+                let out = try await model.applyUpdate(server, channel: channel, version: ver, password: password)
+                if out["need_password"].bool {
+                    upgrading = false
+                    askUpgradePassword = true
+                    return
+                }
+                Haptics.success()
+                upgradeNote = "正在更新并重启，几秒后自动重连…"
+                try? await Task.sleep(nanoseconds: 4_500_000_000)
+                await model.refresh(server)
+                checkServerUpdate(targetChannel: channel)
+            } catch where error.isCancellation {
+                upgrading = false
+                return
+            } catch {
+                updateError = error.localizedDescription
+                showCopyCmd = true
+                Haptics.error()
+            }
+            upgrading = false
+        }
+    }
+
+    private static func fetchGitHubReleasesFallback(channel: String) async -> [ReleaseItem] {
+        guard let url = URL(string: "https://api.github.com/repos/llc370219/frog-bot/releases?per_page=30") else { return [] }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 10
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let parsed = JSON.parse(data) else { return [] }
+        var out: [ReleaseItem] = []
+        for item in parsed.array {
+            if item["draft"].bool { continue }
+            let tag = item["tag_name"].str.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard tag.hasPrefix("v") else { continue }
+            let isPre = item["prerelease"].bool || tag.contains("-")
+            if channel == "stable" && isPre { continue }
+            if !out.contains(where: { $0.tag == tag }) {
+                out.append(ReleaseItem(tag: tag, prerelease: isPre))
+            }
+        }
+        return out
     }
 }
 
@@ -183,14 +350,6 @@ struct ServerSettingsView: View {
     @Binding var path: [Nav]
 
     @State private var name = ""
-    @State private var channel = "stable"
-    @State private var update: UpdateStatus?
-    @State private var checking = false
-    @State private var upgrading = false
-    @State private var upgradeNote: String?
-    @State private var updateError: String?
-    @State private var askUpgradePassword = false
-    @State private var upgradePassword = ""
     @State private var changingPassword = false
     @State private var confirmLogout = false
     @State private var confirmRemove = false
@@ -251,58 +410,7 @@ struct ServerSettingsView: View {
             }
 
             Section("版本") {
-                HStack {
-                    Text("更新通道")
-                    Spacer()
-                    Picker("更新通道", selection: $channel) {
-                        Text("正式版").tag("stable")
-                        Text("Beta").tag("beta")
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 140)
-                    .disabled(!server.isOnline || checking || upgrading)
-                    .onChange(of: channel) { _, next in
-                        if update?.channel != next {
-                            checkServerUpdate(targetChannel: next)
-                        }
-                    }
-                }
-
-                LabeledContent("当前版本", value: update?.current ?? "—")
-                LabeledContent(channel == "beta" ? "最新 Beta" : "最新正式版") {
-                    if checking {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text(update?.latest ?? "—").foregroundStyle(Theme.fg3)
-                    }
-                }
-
-                if update?.state == "available", let latest = update?.latest, !latest.isEmpty {
-                    if update?.can_apply == true {
-                        Button {
-                            triggerUpgrade(password: "")
-                        } label: {
-                            HStack {
-                                Label(upgrading ? "正在升级…" : "升级至 \(latest)", systemImage: "arrow.down.circle.fill")
-                                    .fontWeight(.medium)
-                                if upgrading { Spacer(); ProgressView() }
-                            }
-                        }
-                        .disabled(upgrading || !server.isOnline)
-                    } else if let s = update?.release_url, let url = URL(string: s) {
-                        Link("查看 \(latest)", destination: url)
-                    }
-                } else {
-                    Button("刷新版本信息") { checkServerUpdate(targetChannel: channel) }
-                        .disabled(checking || upgrading || !server.isOnline)
-                }
-
-                if let upgradeNote {
-                    Text(upgradeNote).font(.footnote).foregroundStyle(Theme.ok)
-                }
-                if let updateError {
-                    Text(updateError).font(.footnote).foregroundStyle(Theme.danger)
-                }
+                ServerUpdateControl(server: server)
             }
 
             if server.authEnabled && !server.config.isTunneled {
@@ -321,23 +429,9 @@ struct ServerSettingsView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(server.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            name = server.config.name
-            if server.isOnline && update == nil {
-                checkServerUpdate(targetChannel: nil)
-            }
-        }
+        .onAppear { name = server.config.name }
         .onDisappear { if name != server.config.name { model.rename(server, to: name) } }
         .sheet(isPresented: $changingPassword) { PasswordSheet(server: server) }
-        .alert("输入管理员密码升级", isPresented: $askUpgradePassword) {
-            SecureField("密码", text: $upgradePassword)
-            Button("取消", role: .cancel) { upgradePassword = "" }
-            Button("升级") {
-                let pw = upgradePassword
-                upgradePassword = ""
-                triggerUpgrade(password: pw)
-            }
-        }
         .confirmationDialog("退出「\(server.name)」？", isPresented: $confirmLogout, titleVisibility: .visible) {
             Button("退出登录", role: .destructive) { Task { await model.logout(server) } }
         }
@@ -346,49 +440,6 @@ struct ServerSettingsView: View {
                 path.removeAll()
                 model.remove(server)
             }
-        }
-    }
-
-    private func checkServerUpdate(targetChannel: String?) {
-        checking = true
-        updateError = nil
-        upgradeNote = nil
-        Task {
-            do {
-                let res = try await model.checkUpdate(server, channel: targetChannel)
-                update = res
-                if let ch = res.channel, !ch.isEmpty {
-                    channel = ch
-                }
-            } catch {
-                updateError = error.localizedDescription
-            }
-            checking = false
-        }
-    }
-
-    private func triggerUpgrade(password: String) {
-        upgrading = true
-        updateError = nil
-        upgradeNote = nil
-        Task {
-            do {
-                let out = try await model.applyUpdate(server, channel: channel, password: password)
-                if out["need_password"].bool {
-                    upgrading = false
-                    askUpgradePassword = true
-                    return
-                }
-                Haptics.success()
-                upgradeNote = "正在重启更新，几秒后自动重连…"
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                await model.refresh(server)
-                checkServerUpdate(targetChannel: channel)
-            } catch {
-                updateError = error.localizedDescription
-                Haptics.error()
-            }
-            upgrading = false
         }
     }
 }

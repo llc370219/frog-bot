@@ -103,20 +103,17 @@ func (b *Bot) Handler(webDir string) http.Handler {
 		if qch != "" {
 			ch = b.saveUpdateChannel(qch)
 		}
-		endpoint := latestReleaseAPI
-		if ch == "beta" {
-			endpoint = listReleasesAPI
-		}
-		status, err := checkUpdateForChannel(r.Context(), releaseClient, endpoint, currentVersion(), ch)
+		status, err := checkUpdateForChannel(r.Context(), releaseClient, listReleasesAPI, currentVersion(), ch)
 		writeJSON(w, status, err)
 	})
 	mux.HandleFunc("POST /api/update/apply", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Channel  string `json:"channel"`
+			Version  string `json:"version"`
 			Password string `json:"password"`
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body)
-		res, err := b.applyUpdate(r.Context(), body.Channel, body.Password)
+		res, err := b.applyUpdate(r.Context(), body.Channel, body.Version, body.Password)
 		writeJSON(w, res, err)
 	})
 	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {

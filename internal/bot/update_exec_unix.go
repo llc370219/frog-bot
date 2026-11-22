@@ -7,10 +7,9 @@ import (
 	"syscall"
 )
 
-func reexecSelf() {
-	exe, err := os.Executable()
-	if err == nil {
-		_ = syscall.Exec(exe, os.Args, os.Environ())
+func reexecSelf(exePath string) {
+	if exePath != "" {
+		_ = syscall.Exec(exePath, os.Args, os.Environ())
 	}
 	os.Exit(0)
 }

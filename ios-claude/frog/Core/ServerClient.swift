@@ -124,6 +124,16 @@ enum SessionVault {
     static func get(_ id: UUID) -> String? { load()[id.uuidString] }
 }
 
+extension Error {
+    /// 判断是否为 Swift Concurrency 或 URLSession 生命周期取消（非业务错误，不应提示给用户）。
+    var isCancellation: Bool {
+        if self is CancellationError { return true }
+        if let u = self as? URLError, u.code == .cancelled { return true }
+        let ns = self as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
+    }
+}
+
 @MainActor
 final class ServerClient {
     static let cookieName = "frogbot_session"
@@ -208,6 +218,7 @@ final class ServerClient {
         do {
             (data, resp) = try await session.data(for: req)
         } catch let e as URLError {
+            if e.code == .cancelled { throw CancellationError() }
             throw APIError.network(Self.describe(e))
         }
         guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有响应") }
@@ -220,11 +231,16 @@ final class ServerClient {
 
     func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], as type: T.Type = T.self) async throws -> T {
         let (data, _) = try await send(makeRequest("GET", path, query: query))
-        do {
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            throw APIError.invalid("返回数据无法解析")
+        let decoder = JSONDecoder()
+        if let decoded = try? decoder.decode(T.self, from: data) {
+            return decoded
         }
+        // 兼容 Go 后端 nil slice 返回字面量 null 的情况
+        if String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "null",
+           let emptyArr = try? decoder.decode(T.self, from: Data("[]".utf8)) {
+            return emptyArr
+        }
+        throw APIError.invalid("返回数据无法解析")
     }
 
     @discardableResult
@@ -246,11 +262,15 @@ final class ServerClient {
         r.httpBody = try JSONEncoder().encode(body)
         let (data, _) = try await send(r)
         if let j = JSON.parse(data), let msg = j["error"].string, !msg.isEmpty { throw APIError.server(status: 400, message: msg) }
-        do {
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            throw APIError.invalid("返回数据无法解析")
+        let decoder = JSONDecoder()
+        if let decoded = try? decoder.decode(T.self, from: data) {
+            return decoded
         }
+        if String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "null",
+           let emptyArr = try? decoder.decode(T.self, from: Data("[]".utf8)) {
+            return emptyArr
+        }
+        throw APIError.invalid("返回数据无法解析")
     }
 
     func data(_ path: String, query: [URLQueryItem] = []) async throws -> Data {

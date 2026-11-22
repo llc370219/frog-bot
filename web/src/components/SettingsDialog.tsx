@@ -116,20 +116,43 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
 function UpdatePanel({ target }: { target: DeviceSettingsAPI }) {
   const [channel, setChannel] = useState<UpdateChannel>('stable');
   const [status, setStatus] = useState<UpdateStatus>();
+  const [releases, setReleases] = useState<{ tag: string; prerelease?: boolean }[]>([]);
+  const [selectedTag, setSelectedTag] = useState('');
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(false);
   const [upgrading, setUpgrading] = useState(false);
   const [askPassword, setAskPassword] = useState(false);
   const [password, setPassword] = useState('');
   const [restarting, setRestarting] = useState(false);
+  const [showCopyCmd, setShowCopyCmd] = useState(false);
+  const [copiedCmd, setCopiedCmd] = useState(false);
 
   const check = useCallback(async (ch?: UpdateChannel) => {
     setChecking(true);
     setError('');
+    setShowCopyCmd(false);
+    setCopiedCmd(false);
     try {
       const st = await target.checkUpdate(ch);
       setStatus(st);
+      const activeCh = st.channel || ch || 'stable';
       if (st.channel) setChannel(st.channel);
+      let list = st.releases || [];
+      if (!list.length) {
+        try {
+          const r = await fetch('https://api.github.com/repos/llc370219/frog-bot/releases?per_page=30');
+          if (r.ok) {
+            const raw = (await r.json()) as { tag_name?: string; draft?: boolean; prerelease?: boolean }[];
+            list = raw
+              .filter((x) => !x.draft && x.tag_name?.startsWith('v'))
+              .map((x) => ({ tag: x.tag_name!, prerelease: x.prerelease || x.tag_name!.includes('-') }))
+              .filter((x) => activeCh === 'beta' || !x.prerelease);
+          }
+        } catch {}
+      }
+      if (!list.length && st.latest) list = [{ tag: st.latest, prerelease: st.latest.includes('-') }];
+      setReleases(list);
+      setSelectedTag(st.latest || list[0]?.tag || '');
     } catch (err) {
       setError(message(err));
     } finally {
@@ -143,14 +166,19 @@ function UpdatePanel({ target }: { target: DeviceSettingsAPI }) {
     if (next === channel || checking || upgrading) return;
     setChannel(next);
     setAskPassword(false);
+    setShowCopyCmd(false);
     void check(next);
   };
 
   const applyUpgrade = async () => {
+    const ver = selectedTag || status?.latest || '';
+    if (!ver) return;
     setUpgrading(true);
     setError('');
+    setShowCopyCmd(false);
+    setCopiedCmd(false);
     try {
-      const res = await target.applyUpdate(channel, password);
+      const res = await target.applyUpdate(channel, password, ver);
       if (res.need_password) {
         setAskPassword(true);
         setUpgrading(false);
@@ -170,9 +198,18 @@ function UpdatePanel({ target }: { target: DeviceSettingsAPI }) {
       }, 1500);
     } catch (err) {
       setError(message(err));
+      setShowCopyCmd(true);
       setUpgrading(false);
     }
   };
+
+  const actionLabel = selectedTag
+    ? selectedTag === status?.current
+      ? `重新安装 ${selectedTag}`
+      : selectedTag === status?.latest && status?.state === 'available'
+        ? `升级至 ${selectedTag}`
+        : `切换至 ${selectedTag}`
+    : '';
 
   return (
     <div className="space-y-5">
@@ -202,35 +239,79 @@ function UpdatePanel({ target }: { target: DeviceSettingsAPI }) {
 
       <dl className="settings-versions">
         <div><dt>当前版本</dt><dd>{status?.current ?? '—'}</dd></div>
-        <div><dt>{channel === 'beta' ? '最新 Beta' : '最新正式版'}</dt><dd>{checking ? '…' : (status?.latest ?? '—')}</dd></div>
+        <div>
+          <dt>目标版本</dt>
+          <dd>
+            {checking ? '…' : releases.length > 0 ? (
+              <select
+                aria-label="目标版本"
+                value={selectedTag}
+                onChange={(e) => setSelectedTag(e.target.value)}
+                disabled={upgrading || restarting}
+                className="rounded-lg border border-line2 bg-canvas px-2.5 py-1 font-mono text-xs text-fg focus:outline-none"
+              >
+                {releases.map((r) => (
+                  <option key={r.tag} value={r.tag}>
+                    {r.tag}{r.tag === status?.latest ? '（最新）' : ''}{r.tag === status?.current ? '（当前）' : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (status?.latest ?? '—')}
+          </dd>
+        </div>
       </dl>
 
       {error && <FeedbackLine feedback={{ error: true, text: error }} />}
-      {restarting && <FeedbackLine feedback={{ error: false, text: '正在升级并重启，完成后自动刷新…' }} />}
+      {showCopyCmd && selectedTag && !restarting && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-s1 px-3 py-2 text-xs">
+          <code className="min-w-0 flex-1 truncate font-mono text-fg2">
+            {`curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | VERSION=${selectedTag} sudo bash`}
+          </code>
+          <button
+            type="button"
+            className="settings-button settings-fetch"
+            onClick={() => {
+              void navigator.clipboard?.writeText(
+                `curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | VERSION=${selectedTag} sudo bash`,
+              );
+              setCopiedCmd(true);
+            }}
+          >
+            {copiedCmd ? <Check size={13} /> : null}
+            {copiedCmd ? '已复制' : '复制命令'}
+          </button>
+        </div>
+      )}
+      {restarting && <FeedbackLine feedback={{ error: false, text: '正在更新并重启，完成后自动刷新…' }} />}
 
       {askPassword && !restarting && (
-        <div className="flex items-center gap-2 rounded-2xl border border-line bg-s1 p-3">
+        <form
+          className="flex items-center gap-2 rounded-2xl border border-line bg-s1 p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (password && !upgrading) void applyUpgrade();
+          }}
+        >
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="输入管理员密码确认升级"
+            placeholder="输入管理员密码确认"
             className="min-w-0 flex-1 rounded-xl border border-line2 bg-canvas px-3 py-1.5 text-sm text-fg focus:outline-none"
           />
           <button
-            type="button"
+            type="submit"
             className="settings-button settings-primary"
             disabled={!password || upgrading}
-            onClick={() => void applyUpgrade()}
           >
             {upgrading ? <Loader2 size={14} className="animate-spin" /> : null}
-            确认升级
+            确认
           </button>
-        </div>
+        </form>
       )}
 
       <div className="settings-actions settings-update-actions">
-        <a className="settings-link" href={status?.release_url?.startsWith(releasesPage + '/tag/') ? status.release_url : releasesPage} target="_blank" rel="noreferrer">
+        <a className="settings-link" href={selectedTag ? `${releasesPage}/tag/${encodeURIComponent(selectedTag)}` : releasesPage} target="_blank" rel="noreferrer">
           发布记录 <ArrowUpRight size={14} aria-hidden="true" />
         </a>
         <div className="flex items-center gap-2">
@@ -238,7 +319,7 @@ function UpdatePanel({ target }: { target: DeviceSettingsAPI }) {
             <RefreshCw size={14} className={checking ? 'animate-spin' : undefined} aria-hidden="true" />
             刷新
           </button>
-          {target.local && status?.state === 'available' && status.can_apply && status.latest && (
+          {target.local && selectedTag && (
             <button
               type="button"
               className="settings-button settings-primary"
@@ -246,7 +327,7 @@ function UpdatePanel({ target }: { target: DeviceSettingsAPI }) {
               onClick={() => void applyUpgrade()}
             >
               {upgrading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-              升级至 {status.latest}
+              {actionLabel}
             </button>
           )}
         </div>

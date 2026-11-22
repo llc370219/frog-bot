@@ -258,7 +258,18 @@ class AppState(private val context: Context) {
         refresh(s)
     }
 
-    suspend fun checkUpdate(s: ServerEntry): JSONObject = s.client.getObject("/api/update")
+    suspend fun checkUpdate(s: ServerEntry, channel: String? = null): JSONObject {
+        val q = if (channel.isNullOrBlank()) emptyMap() else mapOf("channel" to channel)
+        return s.client.getObject("/api/update", query = q)
+    }
+
+    suspend fun applyUpdate(s: ServerEntry, channel: String, version: String = "", password: String = ""): JSONObject {
+        val body = JSONObject()
+            .put("channel", channel)
+            .put("version", version)
+            .put("password", password)
+        return s.client.post("/api/update/apply", body)
+    }
 
     suspend fun saveBot(s: ServerEntry, device: String, existing: BotProfile?, name: String, instructions: String): String? {
         val body = JSONObject().put("name", name).put("instructions", instructions)

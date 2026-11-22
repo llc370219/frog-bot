@@ -229,6 +229,7 @@ function renderServersTab(st, body) {
             }
             <span class="grow"></span>
             ${!isCurrent ? `<button class="icon-btn" title="编辑 / 登录" data-act="edit" data-id="${escapeHTML(s.id)}">${ICONS.edit}</button>` : ''}
+            ${s.online && s.authenticated ? `<button class="icon-btn" title="服务端版本与升级" data-act="update" data-id="${escapeHTML(s.id)}">${ICONS.update}</button>` : ''}
             <button class="icon-btn" title="服务端设置" data-act="settings" data-id="${escapeHTML(s.id)}">${ICONS.gear}</button>
             <button class="icon-btn" title="定时计划" data-act="scheduler" data-id="${escapeHTML(s.id)}">${ICONS.clock}</button>
             <button class="icon-btn danger" title="从客户端移除" data-act="remove" data-id="${escapeHTML(s.id)}">${ICONS.trash}</button>
@@ -262,6 +263,8 @@ function renderServersTab(st, body) {
         await frogDesktop.selectServer(id);
       } else if (act === 'edit') {
         openServerModal(srv);
+      } else if (act === 'update') {
+        openServerUpdateModal(srv);
       } else if (act === 'settings' || act === 'scheduler') {
         await frogDesktop.setDrawer(false);
         await frogDesktop.navServer({ serverId: id, action: act });
@@ -407,6 +410,13 @@ function renderClientTab(st, body) {
           : ''
       }
       <div class="list-row">
+        <div class="list-text"><div class="list-title">客户端更新通道</div></div>
+        <div class="segmented" style="width:140px;margin:0">
+          <button type="button" class="seg-item ${st.clientUpdateChannel !== 'beta' ? 'active' : ''}" data-client-ch="stable">正式版</button>
+          <button type="button" class="seg-item ${st.clientUpdateChannel === 'beta' ? 'active' : ''}" data-client-ch="beta">Beta</button>
+        </div>
+      </div>
+      <div class="list-row">
         <div class="list-text"><div class="list-title">启动时自动检查更新</div></div>
         ${switchHTML('id="chk-auto-update"', st.autoCheckUpdates)}
       </div>
@@ -429,6 +439,13 @@ function renderClientTab(st, body) {
   });
   el('chk-auto-update')?.addEventListener('change', (e) => {
     frogDesktop.setPref({ autoCheckUpdates: e.target.checked });
+  });
+  body.querySelectorAll('[data-client-ch]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const ch = btn.getAttribute('data-client-ch');
+      await frogDesktop.setPref({ clientUpdateChannel: ch });
+      void frogDesktop.checkUpdates();
+    });
   });
   el('btn-manual-check')?.addEventListener('click', () => frogDesktop.checkUpdates());
   el('btn-download-update')?.addEventListener('click', () => {
@@ -643,6 +660,148 @@ function closeServerModal() {
   frogDesktop.setModal(false);
 }
 
+// ---------- 服务端版本与升级弹窗 ----------
+
+let srvUpdState = {
+  serverId: '',
+  serverName: '',
+  channel: 'stable',
+  current: '',
+  latest: '',
+  state: '',
+  releases: [],
+  busy: false,
+  needPw: false,
+};
+
+function renderSrvUpdModal() {
+  const { serverName, channel, current, latest, state: st, releases, busy, needPw } = srvUpdState;
+  el('srv-upd-title').textContent = `服务端版本 · ${serverName}`;
+  el('srv-upd-subtitle').textContent = '选择通道或目标版本直接升级 / 切换';
+  el('srv-ch-stable').classList.toggle('active', channel !== 'beta');
+  el('srv-ch-beta').classList.toggle('active', channel === 'beta');
+  el('srv-ch-stable').disabled = busy;
+  el('srv-ch-beta').disabled = busy;
+  el('srv-upd-current').textContent = current || '—';
+  el('srv-upd-pw-wrap').classList.toggle('hidden', !needPw);
+
+  const sel = el('srv-upd-select');
+  const prev = sel.value;
+  sel.innerHTML = releases.length
+    ? releases
+        .map((r) => {
+          const suffix = (r.tag === latest ? '（最新）' : '') + (r.tag === current ? '（当前）' : '');
+          return `<option value="${escapeHTML(r.tag)}">${escapeHTML(r.tag + suffix)}</option>`;
+        })
+        .join('')
+    : '<option value="">—</option>';
+  if (prev && releases.some((r) => r.tag === prev)) sel.value = prev;
+  else if (latest && releases.some((r) => r.tag === latest)) sel.value = latest;
+  else if (releases[0]) sel.value = releases[0].tag;
+  sel.disabled = busy || releases.length === 0;
+
+  const chosen = sel.value;
+  const applyBtn = el('btn-srv-upd-apply');
+  el('btn-srv-upd-refresh').disabled = busy;
+  applyBtn.disabled = busy || !chosen;
+  if (busy) applyBtn.textContent = '处理中…';
+  else if (!chosen) applyBtn.textContent = '升级';
+  else if (chosen === current) applyBtn.textContent = `重新安装 ${chosen}`;
+  else if (chosen === latest && st === 'available') applyBtn.textContent = `升级至 ${chosen}`;
+  else applyBtn.textContent = `切换至 ${chosen}`;
+}
+
+async function fetchSrvUpd(targetChannel) {
+  srvUpdState.busy = true;
+  el('srv-upd-error').classList.add('hidden');
+  el('srv-upd-note').classList.add('hidden');
+  el('srv-upd-copy-wrap').classList.add('hidden');
+  renderSrvUpdModal();
+  try {
+    const res = await frogDesktop.checkServerUpdate({ serverId: srvUpdState.serverId, channel: targetChannel });
+    srvUpdState.channel = res.channel || targetChannel || srvUpdState.channel;
+    srvUpdState.current = res.current || srvUpdState.current;
+    srvUpdState.latest = res.latest || '';
+    srvUpdState.state = res.state || '';
+    srvUpdState.releases = Array.isArray(res.releases) ? res.releases : [];
+  } catch (err) {
+    el('srv-upd-error').textContent = String(err?.message || err || '检查失败').replace(/^Error invoking remote method '[^']+': Error:\s*/, '');
+    el('srv-upd-error').classList.remove('hidden');
+  } finally {
+    srvUpdState.busy = false;
+    renderSrvUpdModal();
+  }
+}
+
+async function applySrvUpd() {
+  const version = el('srv-upd-select').value;
+  const password = el('srv-upd-pw').value;
+  if (!version) return;
+  srvUpdState.busy = true;
+  el('srv-upd-error').classList.add('hidden');
+  el('srv-upd-note').classList.add('hidden');
+  el('srv-upd-copy-wrap').classList.add('hidden');
+  renderSrvUpdModal();
+  try {
+    const res = await frogDesktop.applyServerUpdate({
+      serverId: srvUpdState.serverId,
+      channel: srvUpdState.channel,
+      version,
+      password,
+    });
+    if (res?.need_password) {
+      srvUpdState.needPw = true;
+      srvUpdState.busy = false;
+      renderSrvUpdModal();
+      setTimeout(() => el('srv-upd-pw').focus(), 30);
+      return;
+    }
+    srvUpdState.needPw = false;
+    el('srv-upd-pw').value = '';
+    el('srv-upd-note').textContent = '正在更新并重启，几秒后自动重连…';
+    el('srv-upd-note').classList.remove('hidden');
+    setTimeout(() => void fetchSrvUpd(srvUpdState.channel), 4500);
+  } catch (err) {
+    const msg = String(err?.message || err || '升级失败').replace(/^Error invoking remote method '[^']+': Error:\s*/, '');
+    el('srv-upd-error').textContent = msg;
+    el('srv-upd-error').classList.remove('hidden');
+    el('srv-upd-cmd').textContent = `curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | VERSION=${version} sudo bash`;
+    el('btn-srv-upd-copy').textContent = '复制命令';
+    el('srv-upd-copy-wrap').classList.remove('hidden');
+  } finally {
+    srvUpdState.busy = false;
+    renderSrvUpdModal();
+  }
+}
+
+function openServerUpdateModal(srv) {
+  srvUpdState = {
+    serverId: srv.id,
+    serverName: srv.name,
+    channel: 'stable',
+    current: srv.version || '',
+    latest: '',
+    state: '',
+    releases: [],
+    busy: false,
+    needPw: false,
+  };
+  el('srv-upd-pw').value = '';
+  el('srv-upd-error').classList.add('hidden');
+  el('srv-upd-note').classList.add('hidden');
+  el('srv-upd-copy-wrap').classList.add('hidden');
+  frogDesktop.setModal(true);
+  el('srv-upd-backdrop').classList.remove('hidden');
+  void fetchSrvUpd('');
+}
+
+function closeServerUpdateModal() {
+  el('srv-upd-backdrop').classList.add('hidden');
+  if (el('modal-backdrop').classList.contains('hidden') && el('confirm-backdrop').classList.contains('hidden')) {
+    frogDesktop.setModal(false);
+  }
+}
+
 // ---------- 事件绑定 ----------
 
 function toggleDrawerTab(tab) {
@@ -670,6 +829,31 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
   el('btn-confirm-cancel').addEventListener('click', () => closeConfirm(false));
   el('btn-confirm-ok').addEventListener('click', () => closeConfirm(true));
+
+  el('btn-srv-upd-close').addEventListener('click', closeServerUpdateModal);
+  el('btn-srv-upd-cancel').addEventListener('click', closeServerUpdateModal);
+  el('srv-upd-backdrop').addEventListener('mousedown', (e) => {
+    if (e.target === e.currentTarget) closeServerUpdateModal();
+  });
+  el('srv-ch-stable').addEventListener('click', () => {
+    if (srvUpdState.channel !== 'stable' && !srvUpdState.busy) {
+      srvUpdState.needPw = false;
+      void fetchSrvUpd('stable');
+    }
+  });
+  el('srv-ch-beta').addEventListener('click', () => {
+    if (srvUpdState.channel !== 'beta' && !srvUpdState.busy) {
+      srvUpdState.needPw = false;
+      void fetchSrvUpd('beta');
+    }
+  });
+  el('srv-upd-select').addEventListener('change', () => renderSrvUpdModal());
+  el('btn-srv-upd-refresh').addEventListener('click', () => void fetchSrvUpd(srvUpdState.channel));
+  el('btn-srv-upd-apply').addEventListener('click', () => void applySrvUpd());
+  el('btn-srv-upd-copy').addEventListener('click', async () => {
+    await frogDesktop.copyText(el('srv-upd-cmd').textContent);
+    el('btn-srv-upd-copy').textContent = '已复制';
+  });
 
   el('server-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -739,6 +923,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       }
     } else if (e.key === 'Escape') {
       if (!el('confirm-backdrop').classList.contains('hidden')) closeConfirm(false);
+      else if (!el('srv-upd-backdrop').classList.contains('hidden')) closeServerUpdateModal();
       else if (!el('modal-backdrop').classList.contains('hidden')) closeServerModal();
       else if (state?.drawerOpen) frogDesktop.setDrawer(false);
     }

@@ -390,11 +390,13 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
   }, [sessionId, activeProject?.id, rerender, syncSessionUpdate]);
 
   const live = liveRef.current;
-  const modes = live.modes.length ? live.modes : (status?.modes || []);
-  const models = live.models.length ? live.models : (status?.models || []);
+  const sessionAgent = live.session?.agent || activeAgent;
+  const agentSpec = status?.agents?.find((a) => a.id === sessionAgent);
+  const modes = live.modes.length ? live.modes : (agentSpec?.modes?.length ? agentSpec.modes : (status?.modes || []));
+  const models = live.models.length ? live.models : (agentSpec?.models?.length ? agentSpec.models : (status?.models || []));
   const commands = live.commands.length ? live.commands : (status?.commands || []);
-  const curMode = live.session?.mode || status?.default_mode || 'auto';
-  const curModel = live.session?.model || status?.default_model || '';
+  const curMode = live.session?.mode || agentSpec?.default_mode || status?.default_mode || 'auto';
+  const curModel = live.session?.model || agentSpec?.default_model || status?.default_model || '';
   const busy = !!live.session?.busy;
   const [cmdOpen, setCmdOpen] = useState(false);
 
