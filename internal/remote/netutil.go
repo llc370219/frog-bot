@@ -176,6 +176,27 @@ func normalizeListenAddr(raw, defaultAddr string) string {
 	return s
 }
 
+func normalizeRelayAddr(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if idx := strings.Index(s, "://"); idx >= 0 {
+		s = s[idx+3:]
+	}
+	if idx := strings.IndexByte(s, '/'); idx >= 0 {
+		s = s[:idx]
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(s); err == nil {
+		return s
+	}
+	return net.JoinHostPort(strings.Trim(s, "[]"), "18443")
+}
+
 func cleanHostInput(raw string) string {
 	h := strings.TrimSpace(raw)
 	if h == "" {

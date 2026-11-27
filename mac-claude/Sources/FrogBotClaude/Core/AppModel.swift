@@ -20,6 +20,7 @@ final class ServerEntry: Identifiable {
     var status: ServerStatus = .connecting
     var devices: [DeviceGroup] = []
     var authEnabled = true
+    let gateway = GatewayClient()
 
     @ObservationIgnored var onNeedsLogin: ((ServerEntry) -> Void)?
     @ObservationIgnored var pollTask: Task<Void, Never>?
@@ -28,6 +29,7 @@ final class ServerEntry: Identifiable {
         id = config.id
         self.config = config
         client = ServerClient(config: config)
+        gateway.attach(self)
     }
 
     var name: String { config.name }
@@ -243,39 +245,74 @@ final class AppModel {
         for (ref, session) in sessions where ref.server == s.id { session.stop() }
     }
 
-    /// 添加服务器，或给已有服务器重新登录 / 修改设置。
+    /// 添加服务器，或给已有服务器重新登录 / 修改设置。支持 `froge2ee://` 零配置端到端加密连接码。
     func connect(existing: ServerEntry?, name: String, address: String, username: String, password: String) async throws {
-        guard let url = ServerConfig.normalize(address) else {
-            throw APIError.invalid("地址格式不对，例如 https://bot.example.com 或 http://1.2.3.4:8080")
+        var config: ServerConfig
+        let client: ServerClient
+        let authEnabled: Bool
+        let fallbackHost: String?
+
+        if let extracted = ServerConfig.extractTunnelURI(address) {
+            let parsed = try E2EEConfig.parse(extracted.uri)
+            let preferred = name.trimmingCharacters(in: .whitespaces)
+            let resolved = !preferred.isEmpty ? preferred : (extracted.serverName ?? parsed.serverName)
+            config = ServerConfig(
+                id: existing?.id ?? UUID(),
+                name: resolved,
+                url: "http://frog.internal",
+                username: "e2ee",
+                tunnelURI: extracted.uri
+            )
+            client = ServerClient(config: config)
+            authEnabled = false
+            fallbackHost = resolved.isEmpty ? "frog" : resolved
+        } else {
+            guard let url = ServerConfig.normalize(address) else {
+                throw APIError.invalid("地址格式不对，例如 froge2ee://...、https://bot.example.com 或 http://1.2.3.4:8080")
+            }
+            let user = username.trimmingCharacters(in: .whitespaces)
+            config = ServerConfig(
+                id: existing?.id ?? UUID(),
+                name: name.trimmingCharacters(in: .whitespaces),
+                url: url.absoluteString,
+                username: user.isEmpty ? "admin" : user,
+                tunnelURI: nil
+            )
+            client = ServerClient(config: config)
+            let me = try await client.me()
+            if me.enabled && me.authenticated != true {
+                guard !password.isEmpty else { throw APIError.invalid("请输入密码") }
+                try await client.login(username: config.username, password: password)
+            }
+            authEnabled = me.enabled
+            fallbackHost = url.host
         }
-        let user = username.trimmingCharacters(in: .whitespaces)
-        var config = ServerConfig(id: existing?.id ?? UUID(), name: name.trimmingCharacters(in: .whitespaces),
-                                  url: url.absoluteString, username: user.isEmpty ? "admin" : user)
-        let client = ServerClient(config: config)
-        let me = try await client.me()
-        if me.enabled && me.authenticated != true {
-            guard !password.isEmpty else { throw APIError.invalid("请输入密码") }
-            try await client.login(username: config.username, password: password)
-        }
+
         // 确认真的能读到 Bot 列表
         var groups: [DeviceGroup]
         do {
-            groups = try await client.get("/api/devices")
-        } catch let e as APIError where e.status == 404 {
-            let bots: [BotProfile] = try await client.get("/api/bots")
-            groups = [DeviceGroup(id: "local", name: url.host ?? "本机", online: true, bots: bots)]
+            do {
+                groups = try await client.get("/api/devices")
+            } catch let e as APIError where e.status == 404 {
+                let bots: [BotProfile] = try await client.get("/api/bots")
+                groups = [DeviceGroup(id: "local", name: fallbackHost ?? "本机", online: true, bots: bots)]
+            }
+        } catch {
+            client.close()
+            throw error
         }
         if config.name.isEmpty {
-            config.name = groups.first?.name ?? url.host ?? "frog"
+            config.name = groups.first?.name ?? fallbackHost ?? "frog"
         }
         client.update(config: config)
 
         if let s = existing {
             stopSessions(of: s)
             for ref in sessions.keys where ref.server == s.id { sessions[ref] = nil }
+            s.client.close()
             s.config = config
             s.client = client
-            s.authEnabled = me.enabled
+            s.authEnabled = authEnabled
             s.devices = groups
             s.status = .online
             persist()
@@ -285,7 +322,7 @@ final class AppModel {
         } else {
             let s = ServerEntry(config: config)
             s.client = client
-            s.authEnabled = me.enabled
+            s.authEnabled = authEnabled
             s.devices = groups
             s.status = .online
             servers.append(s)
@@ -308,7 +345,12 @@ final class AppModel {
             unread[ref] = nil
         }
         let client = s.client
-        Task { try? await client.post("/api/auth/logout") }
+        Task {
+            if !s.config.isTunneled {
+                _ = try? await client.post("/api/auth/logout")
+            }
+            client.close()
+        }
         client.forgetSession()
         servers.removeAll { $0.id == s.id }
         persist()

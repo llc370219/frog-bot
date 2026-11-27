@@ -122,6 +122,45 @@ class BotSession(
 
     private suspend fun streamOnce(): End = withContext(Dispatchers.IO) {
         val query = if (lastSeq > 0) mapOf("after" to lastSeq.toString()) else emptyMap()
+        val e2ee = client.e2eeTunnel
+        if (e2ee != null) {
+            var endResult = End.Dropped
+            var replaying = true
+            val batch = ArrayList<JSONObject>()
+            try {
+                val relPath = client.relativePath("$basePath/stream", query)
+                e2ee.streamSSE(
+                    path = relPath,
+                    onStatus = { status ->
+                        if (status == 401) {
+                            endResult = End.Unauthorized
+                        } else if (status == 200) {
+                            withContext(Dispatchers.Main) { connected = true; busy = false; resetTurn() }
+                        }
+                    },
+                    onLine = { line ->
+                        if (!line.startsWith("data:")) return@streamSSE
+                        val payload = line.removePrefix("data:").trimStart()
+                        val ev = runCatching { JSONObject(payload) }.getOrNull() ?: return@streamSSE
+                        if (replaying) {
+                            batch.add(ev)
+                            if (ev.str("kind") == "replay.done") {
+                                replaying = false
+                                val copy = ArrayList(batch)
+                                batch.clear()
+                                withContext(Dispatchers.Main) { copy.forEach(::handle) }
+                            }
+                        } else {
+                            withContext(Dispatchers.Main) { handle(ev) }
+                        }
+                    },
+                )
+                if (batch.isNotEmpty()) withContext(Dispatchers.Main) { batch.forEach(::handle) }
+            } catch (_: Exception) {
+                // 断线：外层循环会重连
+            }
+            return@withContext endResult
+        }
         val req: Request = try {
             client.request("$basePath/stream", query).header("Accept", "text/event-stream").get().build()
         } catch (_: Exception) {

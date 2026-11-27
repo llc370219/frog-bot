@@ -63,6 +63,7 @@ type Bots struct {
 	agy        *agy.Hub // 跨过 Bot 直连 Antigravity CLI (agy acp)
 	remote     *remote.Manager
 	remoteApp  atomic.Pointer[http.Handler]
+	v2         *HostRuntime // Frog Bot V2 宿主微内核
 }
 
 type botEndpoint struct {
@@ -135,6 +136,16 @@ func OpenBots(cfg Config) (*Bots, error) {
 	}
 	for _, b := range bs.runtimes {
 		b.Start()
+	}
+	if hr, err := openHostRuntime(bs); err != nil {
+		log.Printf("⚠ 初始化 V2 HostRuntime 失败: %v", err)
+	} else {
+		bs.v2 = hr
+		for _, b := range bs.runtimes {
+			if err := initBotV2(b, hr); err != nil {
+				log.Printf("⚠ 初始化 Bot %s V2 扩展失败: %v", b.ID(), err)
+			}
+		}
 	}
 	apiOnly := bs.buildHandler(nil)
 	bs.remoteApp.Store(&apiOnly)
@@ -308,6 +319,9 @@ func (bs *Bots) Close() {
 	}
 	bs.closed = true
 	bs.mu.Unlock()
+	if bs.v2 != nil {
+		bs.v2.Close()
+	}
 	if bs.remote != nil {
 		bs.remote.Close()
 	}
@@ -438,6 +452,9 @@ func (bs *Bots) setProfile(id string, p BotProfile) (BotProfile, error) {
 		bs.runtimes[p.ID], bs.handlers[p.ID] = b, &botEndpoint{Handler: b.Handler("")}
 		b.coordinator = bs
 		b.Start()
+		if bs.v2 != nil {
+			_ = initBotV2(b, bs.v2)
+		}
 	}
 	bs.profiles = next
 	return p, nil
@@ -484,12 +501,14 @@ func (bs *Bots) buildHandler(ui fs.FS) http.Handler {
 			"api_version": 1, "version": currentVersion(),
 			"clients": []string{"web", "android", "macos"},
 			"auth":    map[string]any{"session": "cookie", "status_path": "/api/auth/me"},
-			"events":  map[string]any{"transport": "sse", "resume": "Last-Event-ID", "heartbeat_sec": 20},
+			"events":  map[string]any{"transport": "sse", "ws": "/api/v2/ws", "resume": "Last-Event-ID", "heartbeat_sec": 20},
+			"v2":      map[string]any{"ws": "/api/v2/ws", "status": "/api/v2/status", "doctor": "/api/v2/doctor", "mesh": "/api/v2/mesh/peers"},
 			"relay":   map[string]any{"sync": "/api/relay/sync", "inbox": "/api/relay/inbox", "ttl_sec": int(relayTTL.Seconds())},
 			"limits": map[string]any{"json_bytes": maxJSONBody, "upload_file_bytes": maxUpload,
 				"upload_request_bytes": maxUpload + (1 << 20), "upload_files": 16, "bots": maxBots},
 		}, nil)
 	})
+	bs.mountV2Routes(mux)
 	mux.HandleFunc("GET /api/auth/me", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"enabled": false}, nil) // 本机模式没有登录；服务器模式由登录中间件接管这个地址
 	})

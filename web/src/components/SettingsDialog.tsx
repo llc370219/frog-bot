@@ -1,15 +1,16 @@
-import { ArrowUpRight, Check, ChevronDown, CircleAlert, Cpu, Download, KeyRound, Loader2, LogOut, Monitor, Plug, RefreshCw, ShieldCheck, X } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronDown, CircleAlert, Cpu, Download, KeyRound, Loader2, LogOut, Monitor, Plug, RefreshCw, ShieldCheck, Terminal, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, createDeviceSettingsAPI, type AuthInfo, type DeviceGroup, type DeviceSettingsAPI, type UpdateChannel, type UpdateStatus } from '../api';
 import BotModelSettings from './BotModelSettings';
 import ChannelsPage from './ChannelsPage';
+import CLIAuthSettings from './CLIAuthSettings';
 import RemoteSettings from './RemoteSettings';
 
 const releasesPage = 'https://github.com/llc370219/frog-bot/releases';
 const message = (err: unknown) => err instanceof TypeError ? '无法连接后端服务'
   : err instanceof Error ? err.message : '请求失败';
 
-type Tab = 'models' | 'api' | 'remote' | 'update' | 'account';
+type Tab = 'models' | 'api' | 'cli' | 'remote' | 'update' | 'account';
 type Feedback = { error: boolean; text: string };
 
 export default function SettingsDialog({ onClose, devices, initialDevice, initialBot, onSettingsSaved }: {
@@ -78,7 +79,8 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
         </div>
         <nav className="settings-nav" aria-label="设置分类">
           {navButton('models', <Cpu size={16} aria-hidden="true" />, '模型与 Agent')}
-          {navButton('api', <Plug size={16} aria-hidden="true" />, 'API 渠道')}
+          {navButton('api', <Plug size={16} aria-hidden="true" />, 'API 渠道 / 反代')}
+          {device.id === 'local' && navButton('cli', <Terminal size={15} aria-hidden="true" />, '官方 CLI 登录')}
           {device.id === 'local' && navButton('remote', <ShieldCheck size={15} aria-hidden="true" />, '加密隧道')}
           {navButton('update', <RefreshCw size={15} aria-hidden="true" />, '软件版本')}
           {showAccount && navButton('account', <KeyRound size={15} aria-hidden="true" />, '账号')}
@@ -97,6 +99,11 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
           {tab === 'api' && <ChannelsPage key={device.id} target={target} deviceName={device.name} saving={saving} setSaving={setSaving}
             onDirty={setDirty} onSaved={() => onSettingsSaved(device.id)} />}
         </section>
+        {device.id === 'local' && (
+          <section id="settings-cli" className="settings-pane" hidden={tab !== 'cli'} aria-labelledby="settings-cli-title">
+            {tab === 'cli' && <CLIAuthSettings />}
+          </section>
+        )}
         {device.id === 'local' && (
           <section id="settings-remote" className="settings-pane" hidden={tab !== 'remote'} aria-labelledby="settings-remote-title">
             {tab === 'remote' && <RemoteSettings saving={saving} setSaving={setSaving} />}

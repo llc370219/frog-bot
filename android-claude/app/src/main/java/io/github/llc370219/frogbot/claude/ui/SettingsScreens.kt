@@ -106,7 +106,8 @@ import java.util.concurrent.TimeUnit
 private fun statusText(s: ServerEntry): String = when (val st = s.status) {
     ServerStatus.Online -> {
         val n = s.devices.sumOf { it.bots.size }
-        "在线 · $n 个 Bot" + if (s.config.insecure) " · HTTP 未加密" else ""
+        val badge = s.config.tunnelBadge?.let { " · $it" } ?: ""
+        "在线 · $n 个 Bot$badge" + if (s.config.insecure) " · HTTP 未加密" else ""
     }
     ServerStatus.Connecting -> "正在连接"
     ServerStatus.NeedsLogin -> "登录已过期"
@@ -245,37 +246,54 @@ private fun relayStateText(on: Boolean, s: ServerEntry, st: RelayState?): String
 @Composable
 fun AddServerScreen(state: AppState, existing: ServerEntry?, nav: Nav) {
     val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
     var name by remember { mutableStateOf(existing?.config?.name ?: "") }
-    var address by remember { mutableStateOf(existing?.config?.url ?: "") }
+    var address by remember { mutableStateOf(existing?.config?.tunnelUri ?: existing?.config?.url ?: "") }
     var user by remember { mutableStateOf(existing?.config?.username ?: "admin") }
     var pass by remember { mutableStateOf("") }
     var show by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val insecure = ServerClientHelpers.insecure(address)
+    val isTunnel = io.github.llc370219.frogbot.claude.core.ServerConfig.extractTunnelUri(address) != null
+    val insecure = !isTunnel && ServerClientHelpers.insecure(address)
 
     SubPage(if (existing == null) "添加服务器" else "重新登录", nav) {
         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(
-                if (existing == null) "填写安装 frog 时打印的访问地址、用户名和密码。" else "会话过期或密码在别处改过了，输入密码重新连接。",
+                if (existing == null) "粘贴家里电脑生成的 froge2ee:// 连接码，或填写访问地址、用户名和密码。" else "会话过期或密码在别处改过了，输入密码重新连接。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (existing == null) {
-                OutlinedTextField(name, { name = it }, label = { Text("名称（可选）") }, placeholder = { Text("东京 VPS") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                FilledTonalButton(
+                    onClick = {
+                        val clip = clipboard.getText()?.text?.trim().orEmpty()
+                        if (clip.isEmpty()) {
+                            error = "剪贴板为空"
+                        } else {
+                            address = clip
+                            error = null
+                        }
+                    },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("粘贴 froge2ee:// 连接码") }
+                OutlinedTextField(name, { name = it }, label = { Text("名称（可选）") }, placeholder = { Text("家里电脑 / 东京 VPS") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(
-                    address, { address = it }, label = { Text("地址") }, placeholder = { Text("bot.example.com") }, singleLine = true,
-                    supportingText = { Text("没写协议时，域名按 HTTPS、IP 按 HTTP") },
+                    address, { address = it }, label = { Text("连接码或地址") }, placeholder = { Text("froge2ee://... 或 bot.example.com") }, singleLine = true,
+                    supportingText = { Text(if (isTunnel) "已识别端到端加密连接码（免密码，自动局域网直连 / WSS 中继）" else "粘贴 froge2ee:// 连接码，或填写域名/IP") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth(),
                 )
             }
-            OutlinedTextField(user, { user = it }, label = { Text("用户名") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(
-                pass, { pass = it }, label = { Text("密码") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                trailingIcon = { IconButton(onClick = { show = !show }) { Icon(if (show) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, "显示密码") } },
-            )
-            if (insecure) Text("这是明文 HTTP 连接，密码和聊天内容在网络上不加密。建议给服务器配域名并开启 HTTPS。", color = Frog.extra.warn, fontSize = 13.sp)
+            if (!isTunnel) {
+                OutlinedTextField(user, { user = it }, label = { Text("用户名") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    pass, { pass = it }, label = { Text("密码") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = { IconButton(onClick = { show = !show }) { Icon(if (show) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, "显示密码") } },
+                )
+            }
+            if (insecure) Text("这是明文 HTTP 连接，密码和聊天内容在网络上不加密。建议改用 froge2ee:// 端到端加密或 HTTPS。", color = Frog.extra.warn, fontSize = 13.sp)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
             Button(
                 onClick = {
@@ -293,7 +311,7 @@ fun AddServerScreen(state: AppState, existing: ServerEntry?, nav: Nav) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Outlined.Info, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
-                    "手机不保存密码，只保存登录会话（7 天有效）。服务器要能从手机访问到：公网地址、同一个 Wi-Fi，或者 Tailscale 这类组网工具。",
+                    "家用 Windows/Mac 请在电脑端「设置 › 远程访问」选择「E2EE 盲中继」，复制 froge2ee:// 连接码粘贴到此处即可跨网安全直连。",
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

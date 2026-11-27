@@ -1,5 +1,5 @@
 import {
-  Check, CircleAlert, Copy, KeyRound, Loader2, Network, QrCode, ShieldCheck, Smartphone, Trash2, WifiOff,
+  Check, CircleAlert, Copy, KeyRound, Loader2, Lock, Network, QrCode, ShieldCheck, Smartphone, Trash2, WifiOff,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { remoteAPI, type RemoteMode, type RemotePairResponse, type RemoteStatus } from '../api';
@@ -16,6 +16,11 @@ export default function RemoteSettings({
   const [serverName, setServerName] = useState('');
   const [realityListen, setRealityListen] = useState(':8443');
   const [p2pListen, setP2PListen] = useState(':51820');
+  const [relayAddr, setRelayAddr] = useState('');
+  const [relayToken, setRelayToken] = useState('');
+  const [e2eeRelayURL, setE2EERelayURL] = useState('');
+  const [e2eeRelayToken, setE2EERelayToken] = useState('');
+  const [e2eeLANListen, setE2EELANListen] = useState(':8089');
   const [publicHost, setPublicHost] = useState('');
   const [sni, setSNI] = useState('www.apple.com');
   const [pair, setPair] = useState<RemotePairResponse | null>(null);
@@ -30,6 +35,11 @@ export default function RemoteSettings({
       setServerName(st.server_name || '');
       setRealityListen(st.reality_listen || ':8443');
       setP2PListen(st.p2p_listen || ':51820');
+      setRelayAddr(st.relay_addr || '');
+      setRelayToken(st.relay_token || '');
+      setE2EERelayURL(st.e2ee_relay_url || '');
+      setE2EERelayToken(st.e2ee_relay_token || '');
+      setE2EELANListen(st.e2ee_lan_listen || ':8089');
       setPublicHost(st.public_host || '');
       setSNI(st.sni || 'www.apple.com');
     }
@@ -52,6 +62,11 @@ export default function RemoteSettings({
         mode: targetMode,
         reality_listen: realityListen,
         p2p_listen: p2pListen,
+        relay_addr: relayAddr,
+        relay_token: relayToken,
+        e2ee_relay_url: e2eeRelayURL,
+        e2ee_relay_token: e2eeRelayToken,
+        e2ee_lan_listen: e2eeLANListen,
         public_host: publicHost,
         sni,
         server_name: serverName,
@@ -86,8 +101,9 @@ export default function RemoteSettings({
   };
 
   const modes: { id: RemoteMode; icon: typeof ShieldCheck; title: string; sub: string }[] = [
-    { id: 'reality', icon: ShieldCheck, title: 'VLESS-Reality', sub: 'sing-box 隐身直连' },
-    { id: 'p2p', icon: Network, title: 'P2P 打洞', sub: 'UDP 内网直通' },
+    { id: 'e2ee', icon: Lock, title: 'E2EE 盲中继（推荐）', sub: '免费 CF / WSS 443 + 局域网直连' },
+    { id: 'reality', icon: ShieldCheck, title: 'VLESS-Reality', sub: '公网 VPS 直连' },
+    { id: 'p2p', icon: Network, title: 'P2P 打洞', sub: '旧版 UDP 穿透' },
     { id: 'off', icon: WifiOff, title: '关闭', sub: '仅本机' },
   ];
 
@@ -151,7 +167,7 @@ export default function RemoteSettings({
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {modes.map((c) => {
           const selected = mode === c.id;
           const Icon = c.icon;
@@ -183,6 +199,58 @@ export default function RemoteSettings({
               placeholder="frog"
             />
           </div>
+
+          {mode === 'e2ee' && (
+            <div className="space-y-3">
+              <p className="text-xs leading-relaxed text-fg3">
+                全端原生（iOS / Android / Mac / Win）通过 X25519 + AES-256-GCM 端到端加密通信：在家自动走局域网直连，出门 4G/5G 自动切标准 HTTPS/WSS 443 盲中继（可 0 成本部署在 <code className="font-mono">deploy/cf-relay</code> 免费 Cloudflare Workers，或复用任意公网 Frog VPS 的 <code className="font-mono">/api/v2/relay/ws</code>）。
+              </p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="settings-field">
+                  <label htmlFor="remote-e2ee-relay">WSS 盲中继地址（外网 4G/5G 穿透）</label>
+                  <input
+                    id="remote-e2ee-relay"
+                    value={e2eeRelayURL}
+                    onChange={(e) => setE2EERelayURL(e.target.value)}
+                    placeholder="wss://frog-e2ee-relay.你的名字.workers.dev/ws"
+                    className="font-mono text-xs"
+                  />
+                </div>
+                <div className="settings-field">
+                  <label htmlFor="remote-e2ee-token">中继访问令牌（可选）</label>
+                  <input
+                    id="remote-e2ee-token"
+                    value={e2eeRelayToken}
+                    onChange={(e) => setE2EERelayToken(e.target.value)}
+                    placeholder="留空或与 RELAY_TOKEN 一致"
+                    className="font-mono text-xs"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="settings-field">
+                  <label htmlFor="remote-e2ee-lan">局域网直连端口（同 Wi-Fi 秒连）</label>
+                  <input
+                    id="remote-e2ee-lan"
+                    value={e2eeLANListen}
+                    onChange={(e) => setE2EELANListen(e.target.value)}
+                    placeholder=":8089（填 off 关闭）"
+                    className="font-mono text-xs"
+                  />
+                </div>
+                <div className="settings-field">
+                  <label htmlFor="remote-e2ee-host">指定局域网 IP（可选）</label>
+                  <input
+                    id="remote-e2ee-host"
+                    value={publicHost}
+                    onChange={(e) => setPublicHost(e.target.value)}
+                    placeholder={status?.detected_ip || '自动探测本机局域网 IP'}
+                    className="font-mono text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           {mode === 'reality' && (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -220,26 +288,50 @@ export default function RemoteSettings({
           )}
 
           {mode === 'p2p' && (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="settings-field">
-                <label htmlFor="remote-p2p-listen">UDP 端口</label>
-                <input
-                  id="remote-p2p-listen"
-                  value={p2pListen}
-                  onChange={(e) => setP2PListen(e.target.value)}
-                  placeholder=":51820"
-                  className="font-mono text-xs"
-                />
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="settings-field">
+                  <label htmlFor="remote-relay-addr">信令 / 中继服务器（5G 穿透推荐）</label>
+                  <input
+                    id="remote-relay-addr"
+                    value={relayAddr}
+                    onChange={(e) => setRelayAddr(e.target.value)}
+                    placeholder="IP:18443（如 38.47.118.155:18443）"
+                    className="font-mono text-xs"
+                  />
+                </div>
+                <div className="settings-field">
+                  <label htmlFor="remote-relay-token">中继令牌</label>
+                  <input
+                    id="remote-relay-token"
+                    value={relayToken}
+                    onChange={(e) => setRelayToken(e.target.value)}
+                    placeholder="与 frogbot relay -token 一致"
+                    className="font-mono text-xs"
+                  />
+                </div>
               </div>
-              <div className="settings-field">
-                <label htmlFor="remote-p2p-host">指定地址（可选）</label>
-                <input
-                  id="remote-p2p-host"
-                  value={publicHost}
-                  onChange={(e) => setPublicHost(e.target.value)}
-                  placeholder="自动探测 STUN / IPv6"
-                  className="font-mono text-xs"
-                />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="settings-field">
+                  <label htmlFor="remote-p2p-listen">本地 UDP 端口</label>
+                  <input
+                    id="remote-p2p-listen"
+                    value={p2pListen}
+                    onChange={(e) => setP2PListen(e.target.value)}
+                    placeholder=":51820"
+                    className="font-mono text-xs"
+                  />
+                </div>
+                <div className="settings-field">
+                  <label htmlFor="remote-p2p-host">指定直连地址（可选）</label>
+                  <input
+                    id="remote-p2p-host"
+                    value={publicHost}
+                    onChange={(e) => setPublicHost(e.target.value)}
+                    placeholder="自动探测"
+                    className="font-mono text-xs"
+                  />
+                </div>
               </div>
             </div>
           )}

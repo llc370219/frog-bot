@@ -8,8 +8,8 @@ import (
 	"sort"
 )
 
-// 密钥占位符：模型和事件里只出现 {{secret:NAME}}，真实值只在执行工具前一刻替换进去。
-var secretRef = regexp.MustCompile(`\{\{secret:([A-Z][A-Z0-9_]{0,63})\}\}`)
+// 密钥占位符：支持历史 {{secret:NAME}} 与 V2 {{secret://name}}，真实值只在执行工具前一刻替换进去。
+var secretRef = regexp.MustCompile(`\{\{secret:(?://)?([A-Za-z][A-Za-z0-9_.-]{0,63})\}\}`)
 
 // Secrets 是密钥库接口（frogbot 的 vault 实现了它）。
 type Secrets interface {

@@ -124,6 +124,54 @@ var agentCatalog = []agentSpec{
 		DefaultMode: "auto",
 		Modes:       defaultModes,
 	},
+	{
+		ID:          "grok",
+		Name:        "Grok CLI",
+		BinNames:    []string{"grok"},
+		EnvOverride: "FROGBOT_GROK_BIN",
+		Protocol:    "acp",
+		ACPArgs:     []string{"acp"},
+		DefaultMode: "auto",
+		Modes:       defaultModes,
+	},
+}
+
+var (
+	extraEnvMu sync.RWMutex
+	extraEnvFn func() map[string]string
+)
+
+// SetExtraEnvProvider registers a host callback supplying additional CLI auth env vars
+// (e.g. saved official CLI tokens / API keys from the host encrypted vault).
+func SetExtraEnvProvider(fn func() map[string]string) {
+	extraEnvMu.Lock()
+	extraEnvFn = fn
+	extraEnvMu.Unlock()
+}
+
+// FindHostBinary locates any of binNames on PATH or common user/system installation directories.
+func FindHostBinary(binNames []string) string {
+	exts := []string{""}
+	if runtime.GOOS == "windows" {
+		exts = []string{".exe", ".cmd", ".bat", ""}
+	}
+	for _, bin := range binNames {
+		if p, err := exec.LookPath(bin); err == nil && isExecFile(p) {
+			return p
+		}
+	}
+	dirs := hostSearchDirs()
+	for _, bin := range binNames {
+		for _, dir := range dirs {
+			for _, ext := range exts {
+				cand := filepath.Join(dir, bin+ext)
+				if isExecFile(cand) {
+					return cand
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func findAgentSpec(id string) (agentSpec, bool) {
@@ -373,6 +421,22 @@ func buildChildEnv(exePath string) []string {
 		addP(d)
 	}
 	out = append(out, "PATH="+strings.Join(pathParts, string(os.PathListSeparator)))
+	extraEnvMu.RLock()
+	fn := extraEnvFn
+	extraEnvMu.RUnlock()
+	if fn != nil {
+		existing := map[string]bool{}
+		for _, kv := range out {
+			if k, _, ok := strings.Cut(kv, "="); ok {
+				existing[k] = true
+			}
+		}
+		for k, v := range fn() {
+			if k != "" && v != "" && !existing[k] {
+				out = append(out, k+"="+v)
+			}
+		}
+	}
 	return out
 }
 

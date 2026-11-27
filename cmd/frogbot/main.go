@@ -32,6 +32,7 @@ import (
 	"frogbot/internal/auth"
 	"frogbot/internal/bot"
 	"frogbot/internal/onefrog"
+	"frogbot/internal/remote"
 	"frogbot/internal/rootd"
 	"frogbot/internal/sandbox"
 	"frogbot/web"
@@ -63,6 +64,27 @@ func main() {
 			return
 		case "rootd":
 			rootdMain(os.Args[2:])
+			return
+		case "relay":
+			relayMain(os.Args[2:])
+			return
+		case "relay-ws":
+			v2RelayWSMain(os.Args[2:])
+			return
+		case "doctor":
+			v2DoctorMain(os.Args[2:])
+			return
+		case "backup":
+			v2BackupMain(os.Args[2:])
+			return
+		case "restore":
+			v2RestoreMain(os.Args[2:])
+			return
+		case "gc":
+			v2GCMain(os.Args[2:])
+			return
+		case "exec":
+			v2ExecMain(os.Args[2:])
 			return
 		}
 	}
@@ -286,6 +308,30 @@ func openAuth(dataDir string) (*auth.Auth, string, error) {
 	}
 	a, err := auth.Open(dataDir)
 	return a, "", err
+}
+
+// relayMain 启动极简公网信令 + 双向打洞 + 端到端加密中继服务：
+//
+//	frogbot relay -listen :18443 -token <随机令牌>
+func relayMain(args []string) {
+	fl := flag.NewFlagSet("relay", flag.ExitOnError)
+	listen := fl.String("listen", env(":18443", "RELAY_LISTEN"), "监听地址（同时开启 TCP TLS 1.3 信令/中继 与 UDP Echo 探测）")
+	token := fl.String("token", env("", "RELAY_TOKEN"), "访问令牌（推荐设置，防止他人蹭流量）")
+	_ = fl.Parse(args)
+
+	srv, err := remote.StartRelayServer(*listen, *token)
+	if err != nil {
+		fatal("启动中继服务失败: %v", err)
+	}
+	fmt.Printf("  🐸 frog relay %s 已启动，监听 TCP+UDP %s\n", version, srv.Addr())
+	if strings.TrimSpace(*token) == "" {
+		fmt.Println("  ⚠ 未设置 -token / RELAY_TOKEN，任何人均可连接该中继。")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
+	fmt.Println("\n正在关闭中继服务…")
+	_ = srv.Close()
 }
 
 // resetPassword：frogbot reset-password [-data DIR] [-user NAME] [-password-stdin]

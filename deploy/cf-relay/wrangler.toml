@@ -1,0 +1,13 @@
+name = "frog-e2ee-relay"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+
+[durable_objects]
+bindings = [
+  { name = "RELAY_ROOM", class_name = "RelayRoom" }
+]
+
+# SQLite-backed Durable Objects are 100% supported on the Cloudflare Workers FREE plan!
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayRoom"]

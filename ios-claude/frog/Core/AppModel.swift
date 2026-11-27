@@ -240,14 +240,14 @@ final class AppModel {
         for (ref, session) in sessions where ref.server == s.id { session.stop() }
     }
 
-    /// 添加主机或更新连接设置。输入 vless:// 或 frogp2p:// 时直接走内置 sing-box 隧道。
+    /// 添加主机或更新连接设置。输入 froge2ee://、vless:// 或 frogp2p:// 时直接走端到端加密隧道。
     func connect(existing: ServerEntry?, name: String, address: String, username: String, password: String) async throws {
         if ServerConfig.extractTunnelURI(address) != nil {
             try await connectWithPairCode(address, existing: existing, customName: name)
             return
         }
         guard let url = ServerConfig.normalize(address) else {
-            throw APIError.invalid("请输入有效的 vless://、frogp2p:// 或 https:// 地址")
+            throw APIError.invalid("请输入有效的 froge2ee://、vless://、frogp2p:// 或 https:// 地址")
         }
         let user = username.trimmingCharacters(in: .whitespaces)
         var config = ServerConfig(
@@ -267,20 +267,29 @@ final class AppModel {
         syncTunnels()
     }
 
-    /// 扫码或粘贴 vless:// / frogp2p:// 连接码，启动 App 内置 sing-box 加密隧道直连主机内网。
+    /// 扫码或粘贴 froge2ee:// / vless:// / frogp2p:// 连接码，直连主机内网。
     func connectWithPairCode(_ raw: String, existing: ServerEntry? = nil, customName: String = "") async throws {
         guard let extracted = ServerConfig.extractTunnelURI(raw) else {
-            throw APIError.invalid("未识别到有效的 vless:// 或 frogp2p:// 连接码")
+            throw APIError.invalid("未识别到有效的 froge2ee://、vless:// 或 frogp2p:// 连接码")
         }
-        let tun = try FrogBoxManager.shared.acquire(uri: extracted.uri)
         let preferredName = customName.trimmingCharacters(in: .whitespaces)
-        let resolvedName = !preferredName.isEmpty ? preferredName : (extracted.serverName ?? tun.serverName)
+        let resolvedName: String
+        let tunnelUser: String
+        if extracted.uri.lowercased().hasPrefix("froge2ee://") {
+            let parsed = try E2EEConfig.parse(extracted.uri)
+            resolvedName = !preferredName.isEmpty ? preferredName : (extracted.serverName ?? parsed.serverName)
+            tunnelUser = "e2ee"
+        } else {
+            let tun = try FrogBoxManager.shared.acquire(uri: extracted.uri)
+            resolvedName = !preferredName.isEmpty ? preferredName : (extracted.serverName ?? tun.serverName)
+            tunnelUser = "sing-box"
+        }
 
         var config = ServerConfig(
             id: existing?.id ?? UUID(),
             name: resolvedName,
             url: "http://frog.internal",
-            username: "sing-box",
+            username: tunnelUser,
             tunnelURI: extracted.uri
         )
         let client = ServerClient(config: config)
@@ -288,13 +297,17 @@ final class AppModel {
             try await finishConnect(existing: existing, config: &config, client: client, authEnabled: false, fallbackHost: resolvedName.isEmpty ? "frog" : resolvedName)
             syncTunnels()
         } catch {
+            client.close()
             syncTunnels()
             throw error
         }
     }
 
     private func syncTunnels() {
-        FrogBoxManager.shared.sync(keeping: Set(servers.compactMap(\.config.tunnelURI)))
+        let frogBoxURIs = servers.compactMap(\.config.tunnelURI).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("froge2ee://")
+        }
+        FrogBoxManager.shared.sync(keeping: Set(frogBoxURIs))
     }
 
     private func finishConnect(existing: ServerEntry?, config: inout ServerConfig, client: ServerClient, authEnabled: Bool, fallbackHost: String?) async throws {
@@ -313,6 +326,7 @@ final class AppModel {
         if let s = existing {
             stopSessions(of: s)
             for ref in sessions.keys where ref.server == s.id { sessions[ref] = nil }
+            s.client.close()
             s.config = config
             s.client = client
             s.authEnabled = authEnabled
@@ -348,7 +362,12 @@ final class AppModel {
             unread[ref] = nil
         }
         let client = s.client
-        Task { try? await client.post("/api/auth/logout") }
+        Task {
+            if !s.config.isTunneled {
+                _ = try? await client.post("/api/auth/logout")
+            }
+            client.close()
+        }
         client.forgetSession()
         servers.removeAll { $0.id == s.id }
         syncTunnels()

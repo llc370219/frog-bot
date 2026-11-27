@@ -17,10 +17,13 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
 	ModeOff     = "off"
+	ModeE2EE    = "e2ee"    // 标准 HTTPS/WSS 443 盲中继 + 局域网直连（X25519+AES-256-GCM 端到端加密，全端原生零 CGO，免费 CF Workers 兼容）
 	ModeReality = "reality" // sing-box VLESS-Reality 隐身直连（云服务器 / 公网 IPv4 / IPv6）
 	ModeP2P     = "p2p"     // WireGuard 式 UDP P2P 打洞穿透（家庭内网无公网端口）
 
@@ -52,6 +55,11 @@ type Config struct {
 	Mode           string         `json:"mode"`
 	RealityListen  string         `json:"reality_listen"`
 	P2PListen      string         `json:"p2p_listen"`
+	RelayAddr      string         `json:"relay_addr,omitempty"`
+	RelayToken     string         `json:"relay_token,omitempty"`
+	E2EERelayURL   string         `json:"e2ee_relay_url,omitempty"`
+	E2EERelayToken string         `json:"e2ee_relay_token,omitempty"`
+	E2EELANListen  string         `json:"e2ee_lan_listen,omitempty"`
 	PublicHost     string         `json:"public_host"`
 	SNI            string         `json:"sni"`
 	CamouflageDest string         `json:"camouflage_dest,omitempty"`
@@ -68,27 +76,40 @@ type Config struct {
 }
 
 type SaveInput struct {
-	Mode          string `json:"mode"`
-	RealityListen string `json:"reality_listen"`
-	P2PListen     string `json:"p2p_listen"`
-	PublicHost    string `json:"public_host"`
-	SNI           string `json:"sni"`
-	ServerName    string `json:"server_name"`
+	Mode           string `json:"mode"`
+	RealityListen  string `json:"reality_listen"`
+	P2PListen      string `json:"p2p_listen"`
+	RelayAddr      string `json:"relay_addr"`
+	RelayToken     string `json:"relay_token"`
+	E2EERelayURL   string `json:"e2ee_relay_url"`
+	E2EERelayToken string `json:"e2ee_relay_token"`
+	E2EELANListen  string `json:"e2ee_lan_listen"`
+	PublicHost     string `json:"public_host"`
+	SNI            string `json:"sni"`
+	ServerName     string `json:"server_name"`
 }
 
 type StatusView struct {
-	Mode          string         `json:"mode"`
-	Ready         bool           `json:"ready"`
-	StatusText    string         `json:"status_text"`
-	Error         string         `json:"error,omitempty"`
-	RealityListen string         `json:"reality_listen"`
-	P2PListen     string         `json:"p2p_listen"`
-	PublicHost    string         `json:"public_host"`
-	SNI           string         `json:"sni"`
-	ServerName    string         `json:"server_name"`
-	DetectedIP    string         `json:"detected_ip"`
-	Candidates    []string       `json:"candidates,omitempty"`
-	Devices       []PublicDevice `json:"devices"`
+	Mode           string         `json:"mode"`
+	Ready          bool           `json:"ready"`
+	StatusText     string         `json:"status_text"`
+	Error          string         `json:"error,omitempty"`
+	RealityListen  string         `json:"reality_listen"`
+	P2PListen      string         `json:"p2p_listen"`
+	RelayAddr      string         `json:"relay_addr"`
+	RelayToken     string         `json:"relay_token"`
+	E2EERelayURL   string         `json:"e2ee_relay_url"`
+	E2EERelayToken string         `json:"e2ee_relay_token"`
+	E2EELANListen  string         `json:"e2ee_lan_listen"`
+	E2EELANAddr    string         `json:"e2ee_lan_addr,omitempty"`
+	RelayConnected bool           `json:"relay_connected"`
+	RelayError     string         `json:"relay_error,omitempty"`
+	PublicHost     string         `json:"public_host"`
+	SNI            string         `json:"sni"`
+	ServerName     string         `json:"server_name"`
+	DetectedIP     string         `json:"detected_ip"`
+	Candidates     []string       `json:"candidates,omitempty"`
+	Devices        []PublicDevice `json:"devices"`
 }
 
 type PairResponse struct {
@@ -110,6 +131,8 @@ type Manager struct {
 
 	realityInb *realityInbound
 	p2pInb     *p2pInbound
+	e2eeInb    *e2eeInbound
+	e2eeDialer *websocket.Dialer
 	runtimeErr string
 }
 
@@ -149,11 +172,14 @@ func (m *Manager) loadConfig() {
 		_ = json.Unmarshal(raw, &cfg)
 	}
 	switch cfg.Mode {
-	case ModeOff, ModeReality, ModeP2P:
+	case ModeOff, ModeE2EE, ModeReality, ModeP2P:
 	case "direct":
 		cfg.Mode = ModeReality
 	default:
 		cfg.Mode = ModeOff
+	}
+	if cfg.E2EELANListen == "" {
+		cfg.E2EELANListen = ":8089"
 	}
 	if cfg.RealityListen == "" {
 		if cfg.LegacyDirectListen != "" {
@@ -257,13 +283,41 @@ func (m *Manager) stopRuntimeLocked() {
 		_ = m.p2pInb.Close()
 		m.p2pInb = nil
 	}
+	if m.e2eeInb != nil {
+		_ = m.e2eeInb.Close()
+		m.e2eeInb = nil
+	}
 	m.runtimeErr = ""
+}
+
+// SetE2EEDialer allows tests to inject an in-memory WebSocket dialer for ModeE2EE.
+func (m *Manager) SetE2EEDialer(d *websocket.Dialer) {
+	m.mu.Lock()
+	m.e2eeDialer = d
+	m.mu.Unlock()
 }
 
 func (m *Manager) applyRuntimeLocked() error {
 	m.stopRuntimeLocked()
 	switch m.cfg.Mode {
 	case ModeOff:
+		return nil
+
+	case ModeE2EE:
+		inb, err := startE2EEInbound(
+			m.cfg.P2PPrivKey,
+			m.cfg.P2PPubKey,
+			m.cfg.E2EERelayURL,
+			m.cfg.E2EERelayToken,
+			m.cfg.E2EELANListen,
+			m.tunnelHTTPHandler(),
+			m.e2eeDialer,
+		)
+		if err != nil {
+			return err
+		}
+		m.e2eeInb = inb
+		m.syncPeersLocked()
 		return nil
 
 	case ModeReality:
@@ -283,7 +337,7 @@ func (m *Manager) applyRuntimeLocked() error {
 		return nil
 
 	case ModeP2P:
-		inb, err := startP2PInbound(m.cfg.P2PListen, m.cfg.P2PPrivKey, m.routeTunnelConn)
+		inb, err := startP2PInbound(m.cfg.P2PListen, m.cfg.P2PPrivKey, m.cfg.P2PPubKey, m.cfg.RelayAddr, m.cfg.RelayToken, m.routeTunnelConn)
 		if err != nil {
 			return err
 		}
@@ -334,12 +388,15 @@ func (m *Manager) syncPeersLocked() {
 	if m.p2pInb != nil {
 		m.p2pInb.UpdatePeers(p2pCreds)
 	}
+	if m.e2eeInb != nil {
+		m.e2eeInb.UpdatePeers(p2pCreds)
+	}
 }
 
 func (m *Manager) UpdateConfig(in SaveInput) (StatusView, error) {
 	mode := strings.TrimSpace(in.Mode)
 	switch mode {
-	case ModeOff, ModeReality, ModeP2P:
+	case ModeOff, ModeE2EE, ModeReality, ModeP2P:
 	default:
 		return StatusView{}, errors.New("不支持的隧道模式")
 	}
@@ -352,6 +409,17 @@ func (m *Manager) UpdateConfig(in SaveInput) (StatusView, error) {
 	}
 	if v := strings.TrimSpace(in.P2PListen); v != "" {
 		m.cfg.P2PListen = normalizeListenAddr(v, ":51820")
+	}
+	m.cfg.RelayAddr = normalizeRelayAddr(in.RelayAddr)
+	m.cfg.RelayToken = strings.TrimSpace(in.RelayToken)
+	m.cfg.E2EERelayURL = strings.TrimSpace(in.E2EERelayURL)
+	m.cfg.E2EERelayToken = strings.TrimSpace(in.E2EERelayToken)
+	if v := strings.TrimSpace(in.E2EELANListen); v != "" {
+		if strings.EqualFold(v, "off") {
+			m.cfg.E2EELANListen = "off"
+		} else {
+			m.cfg.E2EELANListen = normalizeListenAddr(v, ":8089")
+		}
 	}
 	m.cfg.PublicHost = cleanHostInput(in.PublicHost)
 	if sni := cleanHostInput(in.SNI); sni != "" {
@@ -407,19 +475,55 @@ func (m *Manager) statusLocked() StatusView {
 		})
 	}
 	view := StatusView{
-		Mode:          m.cfg.Mode,
-		RealityListen: m.cfg.RealityListen,
-		P2PListen:     m.cfg.P2PListen,
-		PublicHost:    m.cfg.PublicHost,
-		SNI:           m.cfg.SNI,
-		ServerName:    m.cfg.ServerName,
-		DetectedIP:    detected,
-		Devices:       devs,
+		Mode:           m.cfg.Mode,
+		RealityListen:  m.cfg.RealityListen,
+		P2PListen:      m.cfg.P2PListen,
+		RelayAddr:      m.cfg.RelayAddr,
+		RelayToken:     m.cfg.RelayToken,
+		E2EERelayURL:   m.cfg.E2EERelayURL,
+		E2EERelayToken: m.cfg.E2EERelayToken,
+		E2EELANListen:  m.cfg.E2EELANListen,
+		PublicHost:     m.cfg.PublicHost,
+		SNI:            m.cfg.SNI,
+		ServerName:     m.cfg.ServerName,
+		DetectedIP:     detected,
+		Devices:        devs,
 	}
 
 	switch m.cfg.Mode {
 	case ModeOff:
 		view.StatusText = "已关闭"
+
+	case ModeE2EE:
+		if m.runtimeErr != "" {
+			view.Error = m.runtimeErr
+			view.StatusText = "启动失败"
+			break
+		}
+		if m.e2eeInb != nil {
+			hasRelay, relayOK, relayErr, lanPort := m.e2eeInb.Status()
+			view.Ready = true
+			view.RelayConnected = relayOK
+			view.RelayError = relayErr
+			if lanPort > 0 && detected != "" {
+				view.E2EELANAddr = net.JoinHostPort(detected, fmt.Sprintf("%d", lanPort))
+			}
+			switch {
+			case hasRelay && relayOK && view.E2EELANAddr != "":
+				view.StatusText = fmt.Sprintf("E2EE 盲中继已连 · 局域网直连 %s", view.E2EELANAddr)
+			case hasRelay && relayOK:
+				view.StatusText = "E2EE 盲中继已连（外网 4G/5G 端到端加密就绪）"
+			case hasRelay && relayErr != "":
+				view.StatusText = fmt.Sprintf("E2EE 盲中继重连中 (%s)", relayErr)
+			case hasRelay:
+				view.StatusText = "正在连接 E2EE 盲中继…"
+			case view.E2EELANAddr != "":
+				view.StatusText = fmt.Sprintf("E2EE 仅局域网直连 · %s", view.E2EELANAddr)
+			default:
+				view.Ready = false
+				view.StatusText = "请填写免费盲中继 WSS 地址或开启局域网直连"
+			}
+		}
 
 	case ModeReality:
 		if m.runtimeErr != "" {
@@ -446,7 +550,18 @@ func (m *Manager) statusLocked() StatusView {
 			cands := m.p2pInb.CandidateEndpoints(m.cfg.PublicHost)
 			view.Ready = true
 			view.Candidates = cands
-			if len(cands) > 0 {
+			hasRelay, relayOK, relayErr := m.p2pInb.RelayStatus()
+			view.RelayConnected = relayOK
+			view.RelayError = relayErr
+			if hasRelay {
+				if relayOK {
+					view.StatusText = fmt.Sprintf("P2P + 中继已连 · %s", m.cfg.RelayAddr)
+				} else if relayErr != "" {
+					view.StatusText = fmt.Sprintf("P2P · 中继重连中 (%s)", relayErr)
+				} else {
+					view.StatusText = fmt.Sprintf("P2P · 正在连接中继 %s", m.cfg.RelayAddr)
+				}
+			} else if len(cands) > 0 {
 				view.StatusText = fmt.Sprintf("P2P UDP · %s", cands[0])
 			} else {
 				view.StatusText = fmt.Sprintf("P2P UDP · :%d", m.p2pInb.Port())
@@ -482,6 +597,32 @@ func (m *Manager) CreatePair() (PairResponse, error) {
 
 	var uri string
 	switch m.cfg.Mode {
+	case ModeE2EE:
+		if m.e2eeInb == nil {
+			return PairResponse{}, errors.New("E2EE 盲中继尚未就绪")
+		}
+		_, _, _, lanPort := m.e2eeInb.Status()
+		lanAddr := ""
+		if lanPort > 0 {
+			lanIP := m.cfg.PublicHost
+			if lanIP == "" {
+				lanIP = detectAdvertiseIP()
+			}
+			if lanIP != "" {
+				lanAddr = net.JoinHostPort(lanIP, fmt.Sprintf("%d", lanPort))
+			}
+		}
+		uri = BuildE2EEURI(E2EEClientOptions{
+			PeerIDHex:    dev.PeerID,
+			PeerPSKHex:   dev.PeerPSK,
+			HostID:       m.e2eeInb.hostID,
+			ServerPubB64: m.cfg.P2PPubKey,
+			RelayURL:     m.cfg.E2EERelayURL,
+			RelayToken:   m.cfg.E2EERelayToken,
+			LANAddr:      lanAddr,
+			ServerName:   m.cfg.ServerName,
+		})
+
 	case ModeReality:
 		if m.realityInb == nil {
 			return PairResponse{}, errors.New("VLESS-Reality 尚未就绪")
@@ -509,6 +650,8 @@ func (m *Manager) CreatePair() (PairResponse, error) {
 			PeerPSKHex:   dev.PeerPSK,
 			ServerPubB64: m.cfg.P2PPubKey,
 			Candidates:   cands,
+			RelayAddr:    m.cfg.RelayAddr,
+			RelayToken:   m.cfg.RelayToken,
 			ServerName:   m.cfg.ServerName,
 		})
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"frogbot/internal/host"
 	"frogbot/internal/onefrog"
 	"frogbot/internal/scheduler"
 )
@@ -131,18 +132,47 @@ func (b *Bot) runTurnGeneration(pending []Message, generation uint64) {
 	ids := make([]string, len(pending))
 	var input []string
 	notices := ""
+	hasUserMsg := false
+	hasUntrustedNotice := false
 	for i, m := range pending {
 		ids[i] = m.ID
 		if m.Role == "notice" {
 			notice := noticeText(m)
 			input = append(input, "[系统通知] "+notice)
 			notices += notice + "\n"
+			if m.FromBotID != "" || strings.Contains(m.Text, "[新邮件]") || strings.Contains(m.Text, "[跨服 FrogLink 消息]") {
+				hasUntrustedNotice = true
+			}
 		} else {
+			hasUserMsg = true
 			input = append(input, msgText(m))
 		}
 	}
+	// Reset taint on clean user-only turn; stamp tainted when untrusted external input arrives.
+	if b.v2 != nil && b.v2.Taint != nil {
+		if hasUserMsg && !hasUntrustedNotice {
+			b.v2.Taint.Reset()
+		}
+		if hasUntrustedNotice {
+			b.v2.Taint.Mark("notice", "external_input")
+		}
+	}
+	// Enforce per-bot daily API token circuit breaker before calling LLM.
+	if b.v2 != nil && b.v2.Budget != nil {
+		if ok, reason := b.v2.Budget.AllowTurn(!hasUserMsg); !ok {
+			b.store.Append("message.handled", ids, true)
+			if hasUserMsg {
+				b.say("⚠ " + reason + "。你可以在设置中提高每日预算或解除暂停。")
+			}
+			return
+		}
+	}
+	windowMsgs := b.store.HistoryWindow(16, 24)
+	if b.v2 != nil && b.v2.Hermes != nil {
+		b.archiveEvictedToFTS5(ctx, b.store.Messages(), windowMsgs)
+	}
 	var history []onefrog.Message
-	for _, m := range b.store.HistoryWindow(16, 24) {
+	for _, m := range windowMsgs {
 		role, text := m.Role, ""
 		if role == "notice" {
 			m.WantsReply = false // history never requests another reply
@@ -192,6 +222,17 @@ func (b *Bot) runTurnGeneration(pending []Message, generation uint64) {
 	if profile.Instructions != "" {
 		prompt += "\n\n职责与工作偏好：\n" + profile.Instructions
 	}
+	if b.v2 != nil && b.v2.Hermes != nil {
+		staticPeers := ""
+		if hr := b.hostRuntime(); hr != nil && hr.Mesh != nil {
+			staticPeers = hr.Mesh.StaticDirectory()
+		}
+		prompt = b.v2.Hermes.FrozenSystemPrefix(prompt, staticPeers)
+	}
+	maxSteps := 6
+	if b.v2 != nil && b.v2.Budget != nil {
+		maxSteps = b.v2.Budget.MaxSteps()
+	}
 	agent := &onefrog.Agent{Provider: provider, Model: model, Tools: b.chatTool, Guard: b.chatG,
 		SystemPrompt: prompt, Memory: b, Heartbeat: time.Hour,
 		StopAfterTools: shouldEndChatTurn,
@@ -226,8 +267,17 @@ func (b *Bot) runTurnGeneration(pending []Message, generation uint64) {
 				}
 			}
 		})}
-	_, err := agent.Run(ctx, onefrog.Task{ID: onefrog.NewID("turn"), Input: b.vault.Redact(strings.Join(input, "\n\n")),
-		History: history, Workspace: b.cfg.Workspace, Policy: onefrog.PolicyNever, MaxSteps: 6})
+	turnInput := b.vault.Redact(strings.Join(input, "\n\n"))
+	_, err := agent.Run(ctx, onefrog.Task{ID: onefrog.NewID("turn"), Input: turnInput,
+		History: history, Workspace: b.cfg.Workspace, Policy: onefrog.PolicyNever, MaxSteps: maxSteps})
+	if b.v2 != nil && b.v2.Budget != nil {
+		promptEst := host.EstimateTokens(prompt) + host.EstimateTokens(turnInput)
+		for _, hm := range history {
+			promptEst += host.EstimateTokens(hm.Content)
+		}
+		compEst := host.EstimateTokens(out.String() + think.String())
+		b.v2.Budget.RecordUsage(promptEst, compEst)
+	}
 	cause := context.Cause(ctx)
 	if errors.Is(cause, errStopped) {
 		return // Stop() 已经回复过并标记了处理
@@ -588,7 +638,7 @@ func (b *Bot) chatTools() []onefrog.Tool {
 		quickRead(fileTools.Get("grep"), "search_files", "在工作区文件里用正则搜索内容，返回 文件:行号: 内容。"),
 		b.quickWrite(fileTools.Get("write_file")),
 		b.quickWrite(fileTools.Get("edit_file")),
-	}, append(b.secretTools(), b.scheduleTools()...)...)
+	}, append(append(b.secretTools(), b.scheduleTools()...), b.v2Tools()...)...)
 }
 
 var fileTools = onefrog.NewRegistry(onefrog.DefaultTools()...)

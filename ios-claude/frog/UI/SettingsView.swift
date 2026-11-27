@@ -405,7 +405,20 @@ struct ServerSettingsView: View {
                     }
                 }
                 if let mainRef, server.isOnline {
-                    NavigationLink(value: Nav.channels(mainRef)) { Label("API 渠道", systemImage: "powerplug") }
+                    NavigationLink(value: Nav.channels(mainRef)) { Label("API 渠道（自定义）", systemImage: "powerplug") }
+                    NavigationLink(value: Nav.proxyGateway(server.id)) { Label("账号反代网关（可选）", systemImage: "exclamationmark.shield") }
+                }
+            }
+
+            if server.isOnline {
+                Section {
+                    NavigationLink(value: Nav.cliAuth(server.id)) {
+                        Label("官方 CLI 账号登录", systemImage: "terminal")
+                    }
+                } header: {
+                    Text("Coding CLI")
+                } footer: {
+                    Text("直接在手机上完成 VPS 官方 Codex / Claude / Gemini / Grok CLI 登录（非反代）。")
                 }
             }
 

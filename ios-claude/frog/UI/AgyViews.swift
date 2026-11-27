@@ -94,9 +94,39 @@ struct CodingWorkspaceView: View {
                                 }
                                 .buttonStyle(.plain)
                             }
+                            Button {
+                                Haptics.tap()
+                                path.append(.cliAuth(server.id))
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "person.badge.key")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    Text("CLI 登录")
+                                }
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Theme.fg2)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Theme.s2, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
                         .padding(.horizontal, 20)
                     }
+                    .padding(.bottom, 8)
+                } else if server.isOnline {
+                    HStack {
+                        Button {
+                            Haptics.tap()
+                            path.append(.cliAuth(server.id))
+                        } label: {
+                            Label("管理官方 CLI 登录（Codex / Claude / Gemini / Grok）", systemImage: "person.badge.key")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
                     .padding(.bottom, 8)
                 }
 

@@ -46,12 +46,14 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         frogApp.state.foreground = true
+        frogApp.state.servers.forEach { it.gateway.setForeground(true) }
         frogApp.updater.check()
     }
 
     override fun onStop() {
         super.onStop()
         frogApp.state.foreground = false
+        frogApp.state.servers.forEach { it.gateway.setForeground(false) }
     }
 
     private fun installUpdate() {

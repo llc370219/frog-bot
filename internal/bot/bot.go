@@ -71,6 +71,7 @@ type Bot struct {
 	slots          *taskSlots // 所有 Bot 共用的后台任务并发上限
 	coordinator    *Bots
 	profile        atomic.Pointer[BotProfile]
+	v2             *BotV2 // Frog Bot V2 扩展（Hermes 记忆/FTS5/技能/指针、预算熔断、污点追踪、Actor 信箱、IMAP/简报）
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -225,6 +226,9 @@ func (b *Bot) stop() {
 
 func (b *Bot) Close() {
 	b.stop()
+	if b.v2 != nil {
+		b.v2.Close()
+	}
 	if b.sched != nil {
 		b.sched.Stop()
 	}

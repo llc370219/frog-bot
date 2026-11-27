@@ -13,7 +13,8 @@ import (
 // 不需要登录就能访问的路径：登录页本身和它用到的图标。
 func public(path string) bool {
 	switch path {
-	case "/login", "/favicon.ico", "/frog.png", "/api/auth/login", "/api/auth/me", "/api/health":
+	case "/login", "/favicon.ico", "/frog.png", "/api/auth/login", "/api/auth/me", "/api/health",
+		"/api/v2/relay/ws", "/api/v2/mesh/tunnel", "/api/v2/mesh/deliver", "/api/v2/mesh/pair-accept":
 		return true
 	}
 	return false

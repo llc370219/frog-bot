@@ -26,7 +26,7 @@ sealed interface ServerStatus {
 }
 
 /** App 里的一台服务器：连接设置、在线状态、上面的设备和 Bot 列表 */
-class ServerEntry(config: ServerConfig, cookie: String?) {
+class ServerEntry(config: ServerConfig, cookie: String?, scope: CoroutineScope? = null) {
     val id: String = config.id
     var config by mutableStateOf(config)
     var client = ServerClient(config, cookie)
@@ -35,6 +35,9 @@ class ServerEntry(config: ServerConfig, cookie: String?) {
     var authEnabled by mutableStateOf(true)
     var onNeedsLogin: ((ServerEntry) -> Unit)? = null
     var poll: Job? = null
+    val gateway: GatewayClient = GatewayClient(scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)).also {
+        it.attach(this)
+    }
 
     val name: String get() = config.name
     val online: Boolean get() = status == ServerStatus.Online
@@ -194,25 +197,56 @@ class AppState(private val context: Context) {
         sessions.values.filter { it.ref.server == s.id }.forEach { it.stop() }
     }
 
-    /** 添加服务器，或给已有服务器重新登录 */
+    /** 添加服务器，或给已有服务器重新登录；支持 `froge2ee://` 零配置端到端加密连接码 */
     suspend fun connect(existing: ServerEntry?, name: String, address: String, username: String, password: String) {
-        val url = ServerConfig.normalize(address) ?: throw ApiException("地址格式不对，例如 https://bot.example.com 或 http://1.2.3.4:8080")
-        val user = username.trim().ifEmpty { "admin" }
-        var config = ServerConfig(existing?.id ?: UUID.randomUUID().toString(), name.trim(), url, user)
-        val client = ServerClient(config, null)
-        val me = client.me()
-        val enabled = me.bool("enabled")
-        if (enabled && !me.bool("authenticated")) {
-            if (password.isEmpty()) throw ApiException("请输入密码")
-            client.login(user, password)
+        val extracted = ServerConfig.extractTunnelUri(address)
+        var config: ServerConfig
+        val client: ServerClient
+        val enabled: Boolean
+        val fallbackName: String
+
+        if (extracted != null) {
+            val (uri, uriName) = extracted
+            val parsed = E2EEConfig.parse(uri)
+            val resolvedName = name.trim().ifEmpty { uriName ?: parsed.serverName }
+            config = ServerConfig(
+                id = existing?.id ?: UUID.randomUUID().toString(),
+                name = resolvedName,
+                url = "http://frog.internal",
+                username = "e2ee",
+                tunnelUri = uri,
+            )
+            client = ServerClient(config, null)
+            enabled = false
+            fallbackName = resolvedName.ifEmpty { "frog" }
+        } else {
+            val url = ServerConfig.normalize(address)
+                ?: throw ApiException("地址格式不对，例如 froge2ee://...、https://bot.example.com 或 http://1.2.3.4:8080")
+            val user = username.trim().ifEmpty { "admin" }
+            config = ServerConfig(existing?.id ?: UUID.randomUUID().toString(), name.trim(), url, user, tunnelUri = null)
+            client = ServerClient(config, null)
+            val me = client.me()
+            enabled = me.bool("enabled")
+            if (enabled && !me.bool("authenticated")) {
+                if (password.isEmpty()) throw ApiException("请输入密码")
+                client.login(user, password)
+            }
+            fallbackName = config.baseUrl?.host ?: "frog"
         }
-        val groups = loadDevices(client, config.baseUrl?.host ?: "frog")
-        if (config.name.isEmpty()) config = config.copy(name = groups.firstOrNull()?.name ?: config.baseUrl?.host ?: "frog")
+
+        val groups = try {
+            loadDevices(client, fallbackName)
+        } catch (e: Exception) {
+            client.close()
+            throw e
+        }
+        if (config.name.isEmpty()) config = config.copy(name = groups.firstOrNull()?.name ?: fallbackName)
         client.config = config
 
         val s = existing ?: ServerEntry(config, client.cookie).also { servers.add(it) }
         if (existing != null) {
             stopSessions(existing)
+            existing.client.close()
             sessions.keys.filter { it.startsWith(existing.id + "|") }.forEach { sessions.remove(it) }
         }
         s.config = config
@@ -233,7 +267,12 @@ class AppState(private val context: Context) {
         stopSessions(s)
         sessions.keys.filter { it.startsWith(s.id + "|") }.forEach { sessions.remove(it); unread.remove(it) }
         val client = s.client
-        scope.launch { runCatching { client.post("/api/auth/logout") } }
+        scope.launch {
+            if (!s.config.isTunneled) {
+                runCatching { client.post("/api/auth/logout") }
+            }
+            client.close()
+        }
         client.cookie = null
         saveCookie(s)
         servers.remove(s)

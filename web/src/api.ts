@@ -495,7 +495,7 @@ export const agyAPI = {
 
 // ---------- 内置 sing-box 加密隧道与一键配对 ----------
 
-export type RemoteMode = 'off' | 'reality' | 'p2p';
+export type RemoteMode = 'off' | 'e2ee' | 'reality' | 'p2p';
 
 export type RemotePairedDevice = {
   id: string;
@@ -511,6 +511,14 @@ export type RemoteStatus = {
   error?: string;
   reality_listen: string;
   p2p_listen: string;
+  relay_addr: string;
+  relay_token: string;
+  e2ee_relay_url?: string;
+  e2ee_relay_token?: string;
+  e2ee_lan_listen?: string;
+  e2ee_lan_addr?: string;
+  relay_connected?: boolean;
+  relay_error?: string;
   public_host: string;
   sni: string;
   server_name: string;
@@ -523,6 +531,11 @@ export type RemoteSaveInput = {
   mode: RemoteMode;
   reality_listen: string;
   p2p_listen: string;
+  relay_addr: string;
+  relay_token: string;
+  e2ee_relay_url?: string;
+  e2ee_relay_token?: string;
+  e2ee_lan_listen?: string;
   public_host: string;
   sni: string;
   server_name: string;

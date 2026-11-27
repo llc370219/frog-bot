@@ -399,12 +399,11 @@ final class AgyChatSession {
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 90
         do {
-            let (bytes, resp) = try await client.streamSession.bytes(for: req)
-            guard let http = resp as? HTTPURLResponse else { return false }
-            if http.statusCode == 401 { return true }
-            guard http.statusCode == 200 else { return false }
+            let (statusCode, lines) = try await client.streamLines(for: req)
+            if statusCode == 401 { return true }
+            guard statusCode == 200 else { return false }
             connected = true
-            for try await line in bytes.lines {
+            for try await line in lines {
                 guard line.hasPrefix("data:") else { continue }
                 var payload = line.dropFirst(5)
                 if payload.first == " " { payload = payload.dropFirst() }

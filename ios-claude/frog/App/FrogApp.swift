@@ -61,6 +61,8 @@ enum Nav: Hashable {
     case agyChat(server: UUID, sessionID: String, projectID: String, title: String)
     case settings
     case server(UUID)
+    case cliAuth(UUID)
+    case proxyGateway(UUID)
     case relay
     case notifications
 }
@@ -164,6 +166,10 @@ struct RootView: View {
         case .settings: SettingsView(path: $path)
         case .server(let id):
             if let s = model.server(id) { ServerSettingsView(server: s, path: $path) } else { Unavailable(text: "这台服务器已经移除了。") }
+        case .cliAuth(let id):
+            if let s = model.server(id) { CLIAuthView(server: s) } else { Unavailable(text: "这台服务器已经移除了。") }
+        case .proxyGateway(let id):
+            if let s = model.server(id) { ProxyGatewayView(server: s) } else { Unavailable(text: "这台服务器已经移除了。") }
         case .relay: RelaySettingsView()
         case .notifications: NotificationSettingsView()
         }

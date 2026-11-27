@@ -93,7 +93,7 @@ struct ServerSheet: View {
                     if mode != .login {
                         Section {
                             HStack(spacing: 8) {
-                                TextField("vless:// · frogp2p:// · https://", text: $address)
+                                TextField("froge2ee:// · https:// · vless://", text: $address)
                                     .keyboardType(.URL)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()

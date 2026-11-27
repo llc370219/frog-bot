@@ -121,17 +121,16 @@ final class BotSession {
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 90 // 服务器每 20 秒发一次心跳
         do {
-            let (bytes, resp) = try await client.streamSession.bytes(for: req)
-            guard let http = resp as? HTTPURLResponse else { return .dropped }
-            if http.statusCode == 401 { return .unauthorized }
-            guard http.statusCode == 200 else { return .dropped }
+            let (statusCode, lines) = try await client.streamLines(for: req)
+            if statusCode == 401 { return .unauthorized }
+            guard statusCode == 200 else { return .dropped }
             connected = true
             busy = false
             resetTurn()
             // 重放历史时先攒着，收到 replay.done 一次性合并，避免逐条刷新界面
             var replaying = true
             var batch: [JSON] = []
-            for try await line in bytes.lines {
+            for try await line in lines {
                 guard line.hasPrefix("data:") else { continue } // id: 行和 ": ping" 心跳都不需要
                 var payload = line.dropFirst(5)
                 if payload.first == " " { payload = payload.dropFirst() }

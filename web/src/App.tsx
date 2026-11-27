@@ -1,6 +1,7 @@
-import { Eye, FolderSearch, ListTodo, SquareTerminal, WifiOff } from 'lucide-react';
+import { Eye, FolderSearch, ListTodo, Shield, SquareTerminal, WifiOff } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, botKey, BotContext, createBotAPI, isImage, isOpen, useActiveBot, useBot, type Attachment, type BotProfile, type DeviceGroup, type Info, type Msg, type State } from './api';
+import V2ControlCenter from './components/V2Panels';
 import ApprovalCard from './components/ApprovalCard';
 import AgyWorkspace, { useCodingWorkspace } from './components/AgyWorkspace';
 import Artifact from './components/Artifact';
@@ -37,6 +38,7 @@ export default function App() {
   });
   const [schedulerOpen, setSchedulerOpen] = useState(launchAction === 'scheduler');
   const [settingsOpen, setSettingsOpen] = useState(launchAction === 'settings');
+  const [v2Open, setV2Open] = useState(false);
   const [activeBotId, setActiveBotId] = useState(() => launchBot ? botKey(launchDevice, launchBot) : localStorage.getItem('frogbot-active-bot'));
   const devices = directory.length ? directory : [{ id: 'local', name: '本机', online: true, bots: [] }];
   const local = devices[0];
@@ -95,6 +97,11 @@ export default function App() {
           {loadError && <button className="underline" onClick={() => { setLoadError(''); setAttempt((n) => n + 1); }}>重试</button>}
         </main>
       )}
+      {v2Open && <V2ControlCenter onClose={() => setV2Open(false)} />}
+      <button onClick={() => setV2Open(true)} title="Frog Bot V2 总控中心（审批 / 过验证 / CLI 日志 / Mesh / 灾备）"
+        className="fixed bottom-4 left-4 z-30 flex items-center gap-1.5 rounded-full border border-line bg-s1/90 px-3 py-1.5 text-xs font-medium text-fg shadow backdrop-blur hover:bg-s2">
+        <Shield size={13} />V2 总控
+      </button>
       {settingsOpen && (
         <SettingsDialog
           onClose={() => setSettingsOpen(false)}

@@ -52,17 +52,21 @@ type P2PPeerCredential struct {
 }
 
 type P2PClientOptions struct {
-	PeerIDHex     string
-	PeerPSKHex    string
-	ServerPubB64  string
-	Candidates    []string
-	ServerName    string
+	PeerIDHex    string
+	PeerPSKHex   string
+	ServerPubB64 string
+	Candidates   []string
+	RelayAddr    string
+	RelayToken   string
+	ServerName   string
 }
 
 func BuildP2PURI(opts P2PClientOptions) string {
 	primary := "127.0.0.1:51820"
 	if len(opts.Candidates) > 0 {
 		primary = opts.Candidates[0]
+	} else if strings.TrimSpace(opts.RelayAddr) != "" {
+		primary = strings.TrimSpace(opts.RelayAddr)
 	}
 	pskToken := opts.PeerPSKHex
 	if rawPSK, err := hex.DecodeString(opts.PeerPSKHex); err == nil && len(rawPSK) == 32 {
@@ -70,11 +74,23 @@ func BuildP2PURI(opts P2PClientOptions) string {
 	}
 
 	rawQuery := "pub=" + opts.ServerPubB64
+	if r := strings.TrimSpace(opts.RelayAddr); r != "" {
+		rawQuery += "&r=" + url.QueryEscape(r)
+	}
+	if rt := strings.TrimSpace(opts.RelayToken); rt != "" {
+		rawQuery += "&rt=" + url.QueryEscape(rt)
+	}
 	if len(opts.Candidates) > 1 {
 		var extras []string
-		curLen := 96 + len(primary) + len(opts.ServerName)*3
+		// 为 QR Version 12 (366B) 留足余量，最多控制 URI 总长 <= 325 字节
+		curLen := 72 + len(primary) + len(rawQuery) + len(opts.ServerName)*3
+		maxExtras := 5
+		if strings.TrimSpace(opts.RelayAddr) != "" {
+			// 有中继信令实时下发最新地址，二维码里只需附带最多 2 个本地/直连地址做局域网秒连加速
+			maxExtras = 2
+		}
 		for _, ep := range opts.Candidates[1:] {
-			if curLen+len(ep)+4 > 310 {
+			if len(extras) >= maxExtras || curLen+len(ep)+4 > 325 {
 				break
 			}
 			extras = append(extras, ep)
@@ -144,7 +160,9 @@ func ParseP2PURI(raw string) (P2PClientOptions, error) {
 			}
 		}
 	}
-	if len(cands) == 0 {
+	relayAddr := strings.TrimSpace(u.Query().Get("r"))
+	relayToken := strings.TrimSpace(u.Query().Get("rt"))
+	if len(cands) == 0 && relayAddr == "" {
 		return P2PClientOptions{}, errors.New("P2P 链接缺少候选端点")
 	}
 	name := strings.TrimSpace(u.Fragment)
@@ -156,6 +174,8 @@ func ParseP2PURI(raw string) (P2PClientOptions, error) {
 		PeerPSKHex:   pskHex,
 		ServerPubB64: base64.RawURLEncoding.EncodeToString(pubBytes),
 		Candidates:   cands,
+		RelayAddr:    relayAddr,
+		RelayToken:   relayToken,
 		ServerName:   name,
 	}, nil
 }
@@ -239,6 +259,10 @@ type p2pInbound struct {
 	staticPriv *ecdh.PrivateKey
 	router     func(ctx context.Context, devID string, conn net.Conn, dest TargetAddr)
 
+	relayAddr  string
+	relayToken string
+	relay      *hostRelayClient
+
 	mu         sync.RWMutex
 	peers      map[[8]byte]P2PPeerCredential
 	sessions   map[uint64]*arqSession
@@ -249,7 +273,7 @@ type p2pInbound struct {
 	cancel context.CancelFunc
 }
 
-func startP2PInbound(listen, privB64 string, router func(ctx context.Context, devID string, conn net.Conn, dest TargetAddr)) (*p2pInbound, error) {
+func startP2PInbound(listen, privB64, pubB64, relayAddr, relayToken string, router func(ctx context.Context, devID string, conn net.Conn, dest TargetAddr)) (*p2pInbound, error) {
 	privBytes, err := decodeBase64Flexible(privB64)
 	if err != nil || len(privBytes) != 32 {
 		return nil, errors.New("P2P 私钥无效")
@@ -279,6 +303,8 @@ func startP2PInbound(listen, privB64 string, router func(ctx context.Context, de
 		port:       port,
 		staticPriv: priv,
 		router:     router,
+		relayAddr:  strings.TrimSpace(relayAddr),
+		relayToken: strings.TrimSpace(relayToken),
 		peers:      map[[8]byte]P2PPeerCredential{},
 		sessions:   map[uint64]*arqSession{},
 		ctx:        ctx,
@@ -286,13 +312,38 @@ func startP2PInbound(listen, privB64 string, router func(ctx context.Context, de
 	}
 	go inb.readLoop()
 	go inb.stunKeepaliveLoop()
+
+	if inb.relayAddr != "" {
+		hostID := HostIDFromP2PPubKey(pubB64)
+		if hostID != "" {
+			inb.relay = startHostRelayClient(
+				inb.relayAddr,
+				inb.relayToken,
+				hostID,
+				func() []string { return inb.CandidateEndpoints("") },
+				inb.punchClientEndpoints,
+				inb.onRelayPacket,
+			)
+		}
+	}
 	return inb, nil
 }
 
 func (p *p2pInbound) Port() int { return p.port }
 
+func (p *p2pInbound) RelayStatus() (configured bool, connected bool, lastErr string) {
+	if p.relay == nil {
+		return false, false, ""
+	}
+	conn, errStr := p.relay.Status()
+	return true, conn, errStr
+}
+
 func (p *p2pInbound) Close() error {
 	p.cancel()
+	if p.relay != nil {
+		p.relay.Close()
+	}
 	p.mu.Lock()
 	for _, s := range p.sessions {
 		_ = s.Close()
@@ -300,6 +351,72 @@ func (p *p2pInbound) Close() error {
 	p.sessions = map[uint64]*arqSession{}
 	p.mu.Unlock()
 	return p.conn.Close()
+}
+
+// punchClientEndpoints 收到中继信令后，立即向手机候选端点反向发送 UDP 打洞包打开本地路由器 NAT 映射。
+func (p *p2pInbound) punchClientEndpoints(endpoints []string) {
+	var addrs []*net.UDPAddr
+	for _, ep := range endpoints {
+		if ua, err := net.ResolveUDPAddr("udp", ep); err == nil {
+			addrs = append(addrs, ua)
+		}
+	}
+	if len(addrs) == 0 {
+		return
+	}
+	var punch [16]byte
+	copy(punch[0:8], p2pPunchMagic[:])
+	_, _ = rand.Read(punch[8:16])
+	for round := 0; round < 4; round++ {
+		if p.ctx.Err() != nil {
+			return
+		}
+		for _, ua := range addrs {
+			_, _ = p.conn.WriteToUDP(punch[:], ua)
+		}
+		select {
+		case <-time.After(140 * time.Millisecond):
+		case <-p.ctx.Done():
+			return
+		}
+	}
+}
+
+func (p *p2pInbound) sendPacket(b []byte, to net.Addr) {
+	switch a := to.(type) {
+	case relayPeerAddr:
+		if p.relay != nil {
+			p.relay.SendPacket(a.connID, b)
+		}
+	case *net.UDPAddr:
+		_, _ = p.conn.WriteToUDP(b, a)
+	default:
+		if to != nil {
+			_, _ = p.conn.WriteTo(b, to)
+		}
+	}
+}
+
+func (p *p2pInbound) onRelayPacket(connID uint32, pkt []byte) {
+	if len(pkt) < 16 {
+		return
+	}
+	addr := relayPeerAddr{connID: connID}
+	switch pkt[0] {
+	case pktTypeInit:
+		p.handleInit(pkt, addr)
+	case pktTypeData:
+		if len(pkt) < 25 {
+			return
+		}
+		sessID := binary.BigEndian.Uint64(pkt[1:9])
+		p.mu.RLock()
+		sess := p.sessions[sessID]
+		p.mu.RUnlock()
+		if sess != nil {
+			sess.onEncryptedPacket(pkt, addr)
+		}
+	}
 }
 
 func (p *p2pInbound) UpdatePeers(list []P2PPeerCredential) {
@@ -360,6 +477,16 @@ func (p *p2pInbound) RefreshSTUN(timeout time.Duration) string {
 		p.mu.Unlock()
 	}()
 
+	// 优先向自建中继同端口发送极简 UDP Echo 探测（零第三方 STUN 依赖）
+	if p.relayAddr != "" {
+		if raddr, err := net.ResolveUDPAddr("udp", p.relayAddr); err == nil {
+			var echo [16]byte
+			copy(echo[0:4], relayUDPEchoReqMagic[:])
+			copy(echo[4:16], txID[:])
+			_, _ = p.conn.WriteToUDP(echo[:], raddr)
+		}
+	}
+
 	var req [20]byte
 	binary.BigEndian.PutUint16(req[0:2], 0x0001)
 	binary.BigEndian.PutUint16(req[2:4], 0)
@@ -417,6 +544,21 @@ func (p *p2pInbound) readLoop() {
 			continue
 		}
 		pkt := buf[:n]
+		if n > 16 && [4]byte(pkt[0:4]) == relayUDPEchoRespMagic {
+			p.mu.RLock()
+			w := p.stunWaiter
+			p.mu.RUnlock()
+			if w != nil && [12]byte(pkt[4:16]) == w.txID {
+				obs := strings.TrimSpace(string(pkt[16:n]))
+				if _, _, err := net.SplitHostPort(obs); err == nil {
+					select {
+					case w.ch <- obs:
+					default:
+					}
+				}
+			}
+			continue
+		}
 		if n >= 20 && binary.BigEndian.Uint32(pkt[4:8]) == stunMagicCookie {
 			p.mu.RLock()
 			w := p.stunWaiter
@@ -450,7 +592,7 @@ func (p *p2pInbound) readLoop() {
 	}
 }
 
-func (p *p2pInbound) handleInit(pkt []byte, addr *net.UDPAddr) {
+func (p *p2pInbound) handleInit(pkt []byte, addr net.Addr) {
 	// [0x01][peerID:8][clientSessID:8][cEphPub:32][sealed(ts:8 + rand:8) = 32] => 81 bytes
 	if len(pkt) != 81 {
 		return
@@ -503,6 +645,7 @@ func (p *p2pInbound) handleInit(pkt []byte, addr *net.UDPAddr) {
 	_, _ = rand.Read(serverSessBytes[:])
 	serverSessID := binary.BigEndian.Uint64(serverSessBytes[:])
 
+	_, isRelay := addr.(relayPeerAddr)
 	c2sKey, s2cKey := deriveDirectionalKeys(staticShared, ephShared, cred.PeerPSK[:], clientSessID, serverSessID)
 	sess, err := newARQSession(arqConfig{
 		devID:      cred.DevID,
@@ -510,8 +653,9 @@ func (p *p2pInbound) handleInit(pkt []byte, addr *net.UDPAddr) {
 		remoteID:   clientSessID,
 		txKey:      s2cKey,
 		rxKey:      c2sKey,
-		sendUDP:    func(b []byte, to net.Addr) { _, _ = p.conn.WriteTo(b, to) },
+		sendUDP:    p.sendPacket,
 		remoteAddr: addr,
+		viaRelay:   isRelay,
 	})
 	if err != nil {
 		return
@@ -543,7 +687,7 @@ func (p *p2pInbound) handleInit(pkt []byte, addr *net.UDPAddr) {
 	var rNonce [12]byte
 	binary.BigEndian.PutUint64(rNonce[4:12], serverSessID)
 	resp = respAEAD.Seal(resp, rNonce[:], plain[8:16], resp[:49])
-	_, _ = p.conn.WriteToUDP(resp, addr)
+	p.sendPacket(resp, addr)
 }
 
 func (p *p2pInbound) serveMuxSession(sessID uint64, sess *arqSession) {
@@ -597,6 +741,7 @@ type p2pOutbound struct {
 	mu      sync.Mutex
 	mux     *yamux.Session
 	udpConn *net.UDPConn
+	relay   *clientRelayLink
 	arq     *arqSession
 	closed  bool
 }
@@ -621,6 +766,10 @@ func (c *p2pOutbound) Close() error {
 		_ = c.udpConn.Close()
 		c.udpConn = nil
 	}
+	if c.relay != nil {
+		c.relay.Close()
+		c.relay = nil
+	}
 	return nil
 }
 
@@ -643,6 +792,10 @@ func (c *p2pOutbound) DialContext(ctx context.Context, targetAddr string) (net.C
 			if c.udpConn != nil {
 				_ = c.udpConn.Close()
 				c.udpConn = nil
+			}
+			if c.relay != nil {
+				c.relay.Close()
+				c.relay = nil
 			}
 		}
 		c.mu.Unlock()
@@ -680,7 +833,7 @@ func (c *p2pOutbound) ensureMux(ctx context.Context) (*yamux.Session, error) {
 	}
 	c.mu.Unlock()
 
-	udpConn, arq, mux, err := punchAndConnectP2P(ctx, c.opts)
+	udpConn, relayLink, arq, mux, err := punchAndConnectP2P(ctx, c.opts)
 	if err != nil {
 		return nil, err
 	}
@@ -690,65 +843,106 @@ func (c *p2pOutbound) ensureMux(ctx context.Context) (*yamux.Session, error) {
 	if c.closed {
 		_ = mux.Close()
 		_ = arq.Close()
-		_ = udpConn.Close()
+		if udpConn != nil {
+			_ = udpConn.Close()
+		}
+		if relayLink != nil {
+			relayLink.Close()
+		}
 		return nil, net.ErrClosed
 	}
 	if c.mux != nil && !c.mux.IsClosed() {
 		_ = mux.Close()
 		_ = arq.Close()
-		_ = udpConn.Close()
+		if udpConn != nil {
+			_ = udpConn.Close()
+		}
+		if relayLink != nil {
+			relayLink.Close()
+		}
 		return c.mux, nil
 	}
 	c.udpConn = udpConn
+	c.relay = relayLink
 	c.arq = arq
 	c.mux = mux
 	return mux, nil
 }
 
-func punchAndConnectP2P(ctx context.Context, opts P2PClientOptions) (*net.UDPConn, *arqSession, *yamux.Session, error) {
+type rxPkt struct {
+	pkt      []byte
+	from     net.Addr
+	viaRelay bool
+}
+
+func punchAndConnectP2P(ctx context.Context, opts P2PClientOptions) (*net.UDPConn, *clientRelayLink, *arqSession, *yamux.Session, error) {
 	var peerID [8]byte
 	var peerPSK [32]byte
 	if _, err := hex.Decode(peerID[:], []byte(opts.PeerIDHex)); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	if _, err := hex.Decode(peerPSK[:], []byte(opts.PeerPSKHex)); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	sPubBytes, err := decodeBase64Flexible(opts.ServerPubB64)
 	if err != nil || len(sPubBytes) != 32 {
-		return nil, nil, nil, errors.New("P2P 服务端公钥无效")
+		return nil, nil, nil, nil, errors.New("P2P 服务端公钥无效")
 	}
 	sStaticPub, err := ecdh.X25519().NewPublicKey(sPubBytes)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
+	var resolvedMu sync.Mutex
 	var resolved []*net.UDPAddr
-	for _, ep := range opts.Candidates {
-		if ua, err := net.ResolveUDPAddr("udp", ep); err == nil {
-			resolved = append(resolved, ua)
+	addResolved := func(list []string) {
+		resolvedMu.Lock()
+		defer resolvedMu.Unlock()
+		for _, ep := range list {
+			ua, err := net.ResolveUDPAddr("udp", ep)
+			if err != nil {
+				continue
+			}
+			dup := false
+			for _, ex := range resolved {
+				if ex.String() == ua.String() {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				resolved = append(resolved, ua)
+			}
 		}
 	}
-	if len(resolved) == 0 {
-		return nil, nil, nil, errors.New("无法解析 P2P 候选地址")
+	addResolved(opts.Candidates)
+
+	if len(resolved) == 0 && strings.TrimSpace(opts.RelayAddr) == "" {
+		return nil, nil, nil, nil, errors.New("无法解析 P2P 候选地址")
 	}
 
 	udpConn, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return nil, nil, nil, err
+	if err != nil && strings.TrimSpace(opts.RelayAddr) == "" {
+		return nil, nil, nil, nil, err
 	}
-	_ = udpConn.SetReadBuffer(2 << 20)
-	_ = udpConn.SetWriteBuffer(2 << 20)
+	if udpConn != nil {
+		_ = udpConn.SetReadBuffer(2 << 20)
+		_ = udpConn.SetWriteBuffer(2 << 20)
+	}
 
 	cEphPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
-		_ = udpConn.Close()
-		return nil, nil, nil, err
+		if udpConn != nil {
+			_ = udpConn.Close()
+		}
+		return nil, nil, nil, nil, err
 	}
 	staticShared, err := cEphPriv.ECDH(sStaticPub)
 	if err != nil {
-		_ = udpConn.Close()
-		return nil, nil, nil, err
+		if udpConn != nil {
+			_ = udpConn.Close()
+		}
+		return nil, nil, nil, nil, err
 	}
 
 	var cSessBytes [8]byte
@@ -773,54 +967,170 @@ func punchAndConnectP2P(ctx context.Context, opts P2PClientOptions) (*net.UDPCon
 	binary.BigEndian.PutUint64(iNonce[4:12], clientSessID)
 	initPkt = initAEAD.Seal(initPkt, iNonce[:], plain[:], initPkt[:49])
 
-	// 并发向所有候选端点（公网 IPv6 / STUN IPv4 / 局域网 IPv4）发送 UDP 打洞握手包
-	sendBurst := func() {
-		for _, ua := range resolved {
-			_, _ = udpConn.WriteToUDP(initPkt, ua)
-		}
-	}
-	sendBurst()
-
-	hctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	hctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
+	// 1. 若配置了公网中继：先做极快同端口 UDP Echo 探测手机 5G NAT 映射，再连中继触发双向同步打洞 + 准备中继兜底
+	var relayLink *clientRelayLink
+	var relayErr error
+	if relayAddr := strings.TrimSpace(opts.RelayAddr); relayAddr != "" {
+		var clientEps []string
+		if udpConn != nil {
+			if mapped := probeRelayUDPEcho(udpConn, relayAddr, 450*time.Millisecond); mapped != "" {
+				clientEps = append(clientEps, mapped)
+			}
+			if ua, ok := udpConn.LocalAddr().(*net.UDPAddr); ok && ua.Port > 0 {
+				clientEps = append(clientEps, discoverLocalEndpoints(ua.Port)...)
+			}
+		}
+		hostID := HostIDFromP2PPubKey(opts.ServerPubB64)
+		rctx, rcancel := context.WithTimeout(hctx, 6*time.Second)
+		relayLink, relayErr = openClientRelay(rctx, relayAddr, opts.RelayToken, hostID, clientEps)
+		rcancel()
+		if relayLink != nil && len(relayLink.hostEndpoints) > 0 {
+			addResolved(relayLink.hostEndpoints)
+		}
+	}
+
+	// 2. 并发向所有候选端点（本地 / 公网 IPv6 / 信令换回的主机最新 NAT 端口）发 UDP 打洞握手包
+	sendUDPBurst := func() int {
+		if udpConn == nil {
+			return 0
+		}
+		resolvedMu.Lock()
+		list := append([]*net.UDPAddr(nil), resolved...)
+		resolvedMu.Unlock()
+		for _, ua := range list {
+			_, _ = udpConn.WriteToUDP(initPkt, ua)
+		}
+		return len(list)
+	}
+
+	udpSentCount := sendUDPBurst()
+	var relayInitSentNs atomic.Int64
+	udpStartAt := time.Now()
+	if relayLink != nil && udpSentCount == 0 {
+		relayInitSentNs.Store(time.Now().UnixNano())
+		relayLink.SendPacket(initPkt)
+	}
+
+	// 统一收包通道（同时监听 UDP 直连回包 与 中继兜底回包，谁先到谁胜出）
+	rxCh := make(chan rxPkt, 64)
+	stopReaders := make(chan struct{})
+	var udpReaderDone chan struct{}
+	if udpConn != nil {
+		udpReaderDone = make(chan struct{})
+		go func() {
+			defer close(udpReaderDone)
+			rb := make([]byte, 2048)
+			for {
+				select {
+				case <-stopReaders:
+					return
+				default:
+				}
+				_ = udpConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+				n, raddr, err := udpConn.ReadFromUDP(rb)
+				if err != nil {
+					var ne net.Error
+					if errors.As(err, &ne) && ne.Timeout() {
+						continue
+					}
+					return
+				}
+				if n >= 16 {
+					cp := make([]byte, n)
+					copy(cp, rb[:n])
+					select {
+					case rxCh <- rxPkt{pkt: cp, from: raddr, viaRelay: false}:
+					case <-stopReaders:
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	// 若中继已连上，启动转发协程，且在 1.2s 内若 UDP 未打通则自动经由中继发出加密 Init 兜底
 	stopPunch := make(chan struct{})
-	go func() {
-		t := time.NewTicker(220 * time.Millisecond)
-		defer t.Stop()
+	punchDone := make(chan struct{})
+	go func(rl *clientRelayLink) {
+		defer close(punchDone)
+		udpTick := time.NewTicker(220 * time.Millisecond)
+		defer udpTick.Stop()
+		var fallbackTimer <-chan time.Time
+		if rl != nil && relayInitSentNs.Load() == 0 {
+			ft := time.NewTimer(1200 * time.Millisecond)
+			defer ft.Stop()
+			fallbackTimer = ft.C
+		}
+		var relayRetry *time.Ticker
+		var relayRetryCh <-chan time.Time
+		defer func() {
+			if relayRetry != nil {
+				relayRetry.Stop()
+			}
+		}()
 		for {
 			select {
-			case <-t.C:
-				sendBurst()
+			case <-udpTick.C:
+				sendUDPBurst()
+			case <-fallbackTimer:
+				fallbackTimer = nil
+				if rl != nil {
+					relayInitSentNs.Store(time.Now().UnixNano())
+					rl.SendPacket(initPkt)
+					relayRetry = time.NewTicker(900 * time.Millisecond)
+					relayRetryCh = relayRetry.C
+				}
+			case <-relayRetryCh:
+				if rl != nil {
+					rl.SendPacket(initPkt)
+				}
 			case <-stopPunch:
 				return
 			case <-hctx.Done():
-				_ = udpConn.SetReadDeadline(time.Now())
 				return
 			}
 		}
-	}()
+	}(relayLink)
 
-	buf := make([]byte, 2048)
+	var relayRxCh <-chan []byte
+	if relayLink != nil {
+		relayRxCh = relayLink.rxCh
+	}
+
 	var sess *arqSession
+	var wonViaRelay bool
 	for sess == nil {
-		if hctx.Err() != nil {
+		var pkt []byte
+		var from net.Addr
+		var viaRelay bool
+
+		select {
+		case <-hctx.Done():
 			close(stopPunch)
-			_ = udpConn.Close()
-			return nil, nil, nil, errors.New("P2P 打洞连接超时")
-		}
-		_ = udpConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-		n, raddr, err := udpConn.ReadFromUDP(buf)
-		if err != nil {
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
+			close(stopReaders)
+			if udpConn != nil {
+				_ = udpConn.Close()
+			}
+			if relayLink != nil {
+				relayLink.Close()
+			}
+			if relayErr != nil {
+				return nil, nil, nil, nil, fmt.Errorf("P2P 打洞超时且中继不可用: %v", relayErr)
+			}
+			return nil, nil, nil, nil, errors.New("P2P 打洞连接超时")
+		case item := <-rxCh:
+			pkt, from, viaRelay = item.pkt, item.from, item.viaRelay
+		case rp, ok := <-relayRxCh:
+			if !ok {
+				relayRxCh = nil
 				continue
 			}
-			close(stopPunch)
-			_ = udpConn.Close()
-			return nil, nil, nil, err
+			pkt, from, viaRelay = rp, relayPeerAddr{connID: relayLink.connID}, true
 		}
-		pkt := buf[:n]
+
 		if len(pkt) != 73 || pkt[0] != pktTypeResp {
 			continue
 		}
@@ -845,38 +1155,94 @@ func punchAndConnectP2P(ctx context.Context, opts P2PClientOptions) (*net.UDPCon
 			continue
 		}
 
+		var initialRTT time.Duration
+		if sentNs := relayInitSentNs.Load(); viaRelay && sentNs > 0 {
+			initialRTT = time.Since(time.Unix(0, sentNs))
+		} else {
+			initialRTT = time.Since(udpStartAt)
+		}
+
+		var sendFn func([]byte, net.Addr)
+		if viaRelay {
+			rl := relayLink
+			sendFn = func(b []byte, _ net.Addr) { rl.SendPacket(b) }
+		} else {
+			uc := udpConn
+			sendFn = func(b []byte, to net.Addr) { _, _ = uc.WriteTo(b, to) }
+		}
+
 		c2sKey, s2cKey := deriveDirectionalKeys(staticShared, ephShared, peerPSK[:], clientSessID, serverSessID)
 		sess, err = newARQSession(arqConfig{
 			localID:    clientSessID,
 			remoteID:   serverSessID,
 			txKey:      c2sKey,
 			rxKey:      s2cKey,
-			sendUDP:    func(b []byte, to net.Addr) { _, _ = udpConn.WriteTo(b, to) },
-			remoteAddr: raddr,
+			sendUDP:    sendFn,
+			remoteAddr: from,
+			viaRelay:   viaRelay,
+			initialRTT: initialRTT,
 		})
 		if err != nil {
 			close(stopPunch)
-			_ = udpConn.Close()
-			return nil, nil, nil, err
+			close(stopReaders)
+			if udpConn != nil {
+				_ = udpConn.Close()
+			}
+			if relayLink != nil {
+				relayLink.Close()
+			}
+			return nil, nil, nil, nil, err
+		}
+		wonViaRelay = viaRelay
+	}
+
+	close(stopPunch)
+	<-punchDone
+	close(stopReaders)
+	if udpConn != nil {
+		_ = udpConn.SetReadDeadline(time.Now())
+		if udpReaderDone != nil {
+			<-udpReaderDone
 		}
 	}
-	close(stopPunch)
-	_ = udpConn.SetReadDeadline(time.Time{})
 
-	// 后台收包循环
-	go func() {
-		rb := make([]byte, 2048)
-		for {
-			n, raddr, err := udpConn.ReadFromUDP(rb)
-			if err != nil {
-				_ = sess.Close()
-				return
-			}
-			if n >= 25 && rb[0] == pktTypeData && binary.BigEndian.Uint64(rb[1:9]) == clientSessID {
-				sess.onEncryptedPacket(rb[:n], raddr)
-			}
+	if wonViaRelay {
+		// 中继兜底胜出：关闭多余 UDP 套接字，切入中继收包循环
+		if udpConn != nil {
+			_ = udpConn.Close()
+			udpConn = nil
 		}
-	}()
+		rl := relayLink
+		go func() {
+			for pkt := range rl.rxCh {
+				if len(pkt) >= 25 && pkt[0] == pktTypeData && binary.BigEndian.Uint64(pkt[1:9]) == clientSessID {
+					sess.onEncryptedPacket(pkt, relayPeerAddr{connID: rl.connID})
+				}
+			}
+			_ = sess.Close()
+		}()
+	} else {
+		// UDP P2P 直连胜出：立即释放中继连接，零中继流量消耗
+		if relayLink != nil {
+			relayLink.Close()
+			relayLink = nil
+		}
+		_ = udpConn.SetReadDeadline(time.Time{})
+		uc := udpConn
+		go func() {
+			rb := make([]byte, 2048)
+			for {
+				n, raddr, err := uc.ReadFromUDP(rb)
+				if err != nil {
+					_ = sess.Close()
+					return
+				}
+				if n >= 25 && rb[0] == pktTypeData && binary.BigEndian.Uint64(rb[1:9]) == clientSessID {
+					sess.onEncryptedPacket(rb[:n], raddr)
+				}
+			}
+		}()
+	}
 
 	mcfg := yamux.DefaultConfig()
 	mcfg.EnableKeepAlive = true
@@ -885,10 +1251,15 @@ func punchAndConnectP2P(ctx context.Context, opts P2PClientOptions) (*net.UDPCon
 	mux, err := yamux.Client(sess, mcfg)
 	if err != nil {
 		_ = sess.Close()
-		_ = udpConn.Close()
-		return nil, nil, nil, err
+		if udpConn != nil {
+			_ = udpConn.Close()
+		}
+		if relayLink != nil {
+			relayLink.Close()
+		}
+		return nil, nil, nil, nil, err
 	}
-	return udpConn, sess, mux, nil
+	return udpConn, relayLink, sess, mux, nil
 }
 
 // ---------- HKDF Key Derivation ----------
@@ -924,6 +1295,8 @@ type arqConfig struct {
 	rxKey      [32]byte
 	sendUDP    func([]byte, net.Addr)
 	remoteAddr net.Addr
+	viaRelay   bool
+	initialRTT time.Duration
 }
 
 type txSegment struct {
@@ -946,6 +1319,7 @@ type arqSession struct {
 	txAEAD   cipher.AEAD
 	rxAEAD   cipher.AEAD
 	sendUDP  func([]byte, net.Addr)
+	baseRTO  time.Duration
 
 	txPktNonce atomic.Uint64
 	lastRxUnix atomic.Int64
@@ -983,6 +1357,21 @@ func newARQSession(cfg arqConfig) (*arqSession, error) {
 	if err != nil {
 		return nil, err
 	}
+	baseRTO := 120 * time.Millisecond
+	if cfg.initialRTT > 0 {
+		if r := cfg.initialRTT * 2; r > baseRTO {
+			baseRTO = r
+		}
+		if baseRTO > 600*time.Millisecond {
+			baseRTO = 600 * time.Millisecond
+		}
+	}
+	if cfg.viaRelay {
+		// 中继底层已是可靠 TCP/TLS 1.3，放宽 ARQ 超时避免跨洋 RTT 触发无效重传
+		if baseRTO < 500*time.Millisecond {
+			baseRTO = 500 * time.Millisecond
+		}
+	}
 	s := &arqSession{
 		devID:      cfg.devID,
 		localID:    cfg.localID,
@@ -990,6 +1379,7 @@ func newARQSession(cfg arqConfig) (*arqSession, error) {
 		txAEAD:     txAEAD,
 		rxAEAD:     rxAEAD,
 		sendUDP:    cfg.sendUDP,
+		baseRTO:    baseRTO,
 		remoteAddr: cfg.remoteAddr,
 		unacked:    map[uint32]*txSegment{},
 		ooo:        map[uint32]rxSegment{},
@@ -1202,9 +1592,15 @@ func (s *arqSession) retransmitLoop() {
 				if !ok {
 					continue
 				}
-				rto := 85 * time.Millisecond
+				rto := s.baseRTO
+				if rto <= 0 {
+					rto = 120 * time.Millisecond
+				}
 				if seg.tries > 2 {
-					rto = 220 * time.Millisecond
+					rto = rto * 2
+					if rto > 1500*time.Millisecond {
+						rto = 1500 * time.Millisecond
+					}
 				}
 				if now.Sub(seg.sentAt) >= rto {
 					seg.sentAt = now

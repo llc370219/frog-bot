@@ -250,6 +250,15 @@ struct ChannelsView: View {
                         Text("只对「\(session.profile.name)」生效。")
                     }
                 }
+                Section {
+                    NavigationLink {
+                        ProxyGatewayView(server: session.server)
+                    } label: {
+                        Label("订阅账号反代网关（可选 · 实验性）", systemImage: "exclamationmark.shield")
+                    }
+                } footer: {
+                    Text("可对接 CLIProxyAPI / OpenCodex / Magpie 并同步为一个独立渠道，与上方自定义 API 渠道完全并存、自由切换。")
+                }
                 if let message {
                     Section { Text(message.0).foregroundStyle(message.1 ? Theme.danger : Theme.ok) }
                 }

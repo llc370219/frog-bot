@@ -10,6 +10,7 @@ struct ChatView: View {
     @State private var error: String?
     @State private var dropping = false
     @State private var trayOpen = false
+    @State private var v2DrawerOpen = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -171,6 +172,20 @@ struct ChatView: View {
                     .background(Theme.warnSoft, in: Capsule())
                 }
                 .buttonStyle(.plain)
+            }
+            Button { v2DrawerOpen.toggle() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "shield.lefthalf.filled")
+                    if session.server.gateway.attentionCount > 0 {
+                        Text("\(session.server.gateway.attentionCount)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Theme.warn)
+                    }
+                }
+            }
+            .help("Frog V2 总控中心（审批 / 过验证 / CLI 日志 / Mesh）")
+            .popover(isPresented: $v2DrawerOpen, arrowEdge: .bottom) {
+                V2ControlDrawerView(server: session.server)
             }
             Button { trayOpen.toggle() } label: {
                 Label("任务", systemImage: "list.bullet")

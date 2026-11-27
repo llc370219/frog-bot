@@ -54,6 +54,7 @@ type Scope struct {
 type Info struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description,omitempty"`
+	PurposeRule string     `json:"purpose_rule,omitempty"` // 自然语言用途规则（如"仅限用于 imap.qq.com 收信或 *.example.com 签到"）
 	Scope       Scope      `json:"scope"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
@@ -76,10 +77,11 @@ type Vault struct {
 	aead cipher.AEAD
 	Now  func() time.Time
 
-	mu    sync.Mutex
-	recs  map[string]*record
-	plain map[string]string // 解密后的明文只在内存里，用于替换和脱敏
-	repl  *strings.Replacer
+	mu        sync.Mutex
+	recs      map[string]*record
+	plain     map[string]string // 解密后的明文只在内存里，用于替换和脱敏
+	repl      *strings.Replacer
+	scrubRepl *strings.Replacer // V2 多编码+高熵首尾片段脱敏 -> [REDACTED:secret://xxx]
 }
 
 // LoadKey 读取主密钥：优先环境变量（64 位 hex / base64 的 32 字节；其他字符串会做 SHA-256），
@@ -122,6 +124,11 @@ func parseKey(s string) []byte {
 
 // Open 打开（或新建）dir/secrets.json。
 func Open(dir string, key []byte) (*Vault, error) {
+	return OpenFile(filepath.Join(dir, "secrets.json"), key)
+}
+
+// OpenFile 打开（或新建）指定路径的密钥箱（如 /data/host/vault.enc）。
+func OpenFile(path string, key []byte) (*Vault, error) {
 	if len(key) != 32 {
 		return nil, errors.New("主密钥必须是 32 字节")
 	}
@@ -133,7 +140,7 @@ func Open(dir string, key []byte) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := &Vault{path: filepath.Join(dir, "secrets.json"), aead: aead, recs: map[string]*record{}, plain: map[string]string{}}
+	v := &Vault{path: path, aead: aead, recs: map[string]*record{}, plain: map[string]string{}}
 	b, err := os.ReadFile(v.path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -141,7 +148,7 @@ func Open(dir string, key []byte) (*Vault, error) {
 	if len(b) > 0 {
 		var f fileFormat
 		if err := json.Unmarshal(b, &f); err != nil {
-			return nil, fmt.Errorf("secrets.json 损坏: %w", err)
+			return nil, fmt.Errorf("%s 损坏: %w", filepath.Base(path), err)
 		}
 		for _, r := range f.Secrets {
 			pt, err := v.decrypt(r.Name, r.Cipher)
@@ -213,8 +220,29 @@ func (v *Vault) save() error {
 
 // Set 新建或更新一个密钥。value 不会出现在任何错误信息里。
 func (v *Vault) Set(name, value, desc string, scope *Scope) error {
-	if err := ValidName(name); err != nil {
-		return err
+	return v.SetWithRule(name, value, desc, "", scope)
+}
+
+var handleRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]{1,63}$`)
+
+// NormalizeHandle 将 secret://foo-bar 或 FOO_BAR 规范为 vault 键名（兼容历史 UPPER_SNAKE 与 V2 小写句柄）。
+func NormalizeHandle(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.TrimPrefix(name, "secret://")
+	return name
+}
+
+// SetWithRule 新建或更新密钥并绑定自然语言用途规则（V2 Blind Vault）。
+func (v *Vault) SetWithRule(name, value, desc, purposeRule string, scope *Scope) error {
+	name = NormalizeHandle(name)
+	if purposeRule == "" {
+		if err := ValidName(name); err != nil {
+			return err
+		}
+	} else {
+		if !handleRe.MatchString(name) || reserved[strings.ToUpper(name)] {
+			return fmt.Errorf("无效的密钥句柄名: %s", name)
+		}
 	}
 	if value == "" {
 		return errors.New("密钥值不能为空")
@@ -241,6 +269,9 @@ func (v *Vault) Set(name, value, desc string, scope *Scope) error {
 	if desc != "" {
 		r.Description = desc
 	}
+	if purposeRule != "" {
+		r.PurposeRule = purposeRule
+	}
 	if scope != nil {
 		r.Scope = Scope{Tools: append([]string(nil), scope.Tools...), Domains: append([]string(nil), scope.Domains...)}
 	}
@@ -259,6 +290,65 @@ func (v *Vault) Set(name, value, desc string, scope *Scope) error {
 	}
 	v.rebuild()
 	return nil
+}
+
+// GetInfo 返回单个密钥的元数据（不含明文）。
+func (v *Vault) GetInfo(name string) (Info, bool) {
+	name = NormalizeHandle(name)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	r := v.recs[name]
+	if r == nil {
+		return Info{}, false
+	}
+	cp := r.Info
+	cp.Scope.Tools = append([]string(nil), r.Scope.Tools...)
+	cp.Scope.Domains = append([]string(nil), r.Scope.Domains...)
+	return cp, true
+}
+
+// AddWhitelistDomain 将域名永久加入指定密钥的白名单并落盘。
+func (v *Vault) AddWhitelistDomain(name, domain string) error {
+	name = NormalizeHandle(name)
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return errors.New("白名单域名不能为空")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	r := v.recs[name]
+	if r == nil {
+		return fmt.Errorf("密钥 %s 不存在", name)
+	}
+	for _, existing := range r.Scope.Domains {
+		if strings.EqualFold(existing, domain) {
+			return nil
+		}
+	}
+	prev := append([]string(nil), r.Scope.Domains...)
+	r.Scope.Domains = append(r.Scope.Domains, domain)
+	r.UpdatedAt = v.now()
+	if err := v.save(); err != nil {
+		r.Scope.Domains = prev
+		return err
+	}
+	return nil
+}
+
+// DomainAllowed 判断某个域名是否已被指定密钥的白名单覆盖。
+func (v *Vault) DomainAllowed(name, host string) bool {
+	name = NormalizeHandle(name)
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	r := v.recs[name]
+	if r == nil || len(r.Scope.Domains) == 0 {
+		return false
+	}
+	return domainOK(host, r.Scope.Domains)
 }
 
 // Delete 删除一个密钥。
@@ -394,36 +484,122 @@ func (v *Vault) RedactBytes(b []byte) []byte {
 	return []byte(r.Replace(string(b)))
 }
 
+// Scrub 是 V2 增强版输出脱敏：把密钥原文、多编码（URL/Base64/Hex/JSON）及高熵首尾片段替换为 [REDACTED:secret://name]。
+func (v *Vault) Scrub(s string) string {
+	v.mu.Lock()
+	r := v.scrubRepl
+	v.mu.Unlock()
+	if r == nil || s == "" {
+		return s
+	}
+	return r.Replace(s)
+}
+
+// ScrubBytes 同 Scrub，作用于字节切片。
+func (v *Vault) ScrubBytes(b []byte) []byte {
+	v.mu.Lock()
+	r := v.scrubRepl
+	v.mu.Unlock()
+	if r == nil {
+		return b
+	}
+	return []byte(r.Replace(string(b)))
+}
+
 // rebuild 重新生成脱敏替换表，调用方持锁。
 func (v *Vault) rebuild() {
 	type pair struct{ from, to string }
 	var pairs []pair
+	var scrubPairs []pair
 	seen := map[string]bool{}
+	scrubSeen := map[string]bool{}
 	for name, val := range v.plain {
 		tag := "[secret:" + name + "]"
+		v2Tag := "[REDACTED:secret://" + name + "]"
 		for _, f := range Variants(val) {
 			if !seen[f] {
 				seen[f] = true
 				pairs = append(pairs, pair{f, tag})
 			}
+			if !scrubSeen[f] {
+				scrubSeen[f] = true
+				scrubPairs = append(scrubPairs, pair{f, v2Tag})
+			}
+		}
+		for _, seg := range HighEntropyEdgeSegments(val) {
+			if !scrubSeen[seg] {
+				scrubSeen[seg] = true
+				scrubPairs = append(scrubPairs, pair{seg, v2Tag})
+			}
 		}
 	}
 	if len(pairs) == 0 {
 		v.repl = nil
+		v.scrubRepl = nil
 		return
 	}
-	// 长的先匹配，避免短变体把长变体切碎
-	sort.Slice(pairs, func(i, j int) bool {
-		if len(pairs[i].from) != len(pairs[j].from) {
-			return len(pairs[i].from) > len(pairs[j].from)
+	sortPairs := func(ps []pair) *strings.Replacer {
+		sort.Slice(ps, func(i, j int) bool {
+			if len(ps[i].from) != len(ps[j].from) {
+				return len(ps[i].from) > len(ps[j].from)
+			}
+			return ps[i].from < ps[j].from
+		})
+		args := make([]string, 0, len(ps)*2)
+		for _, p := range ps {
+			args = append(args, p.from, p.to)
 		}
-		return pairs[i].from < pairs[j].from
-	})
-	args := make([]string, 0, len(pairs)*2)
-	for _, p := range pairs {
-		args = append(args, p.from, p.to)
+		return strings.NewReplacer(args...)
 	}
-	v.repl = strings.NewReplacer(args...)
+	v.repl = sortPairs(pairs)
+	v.scrubRepl = sortPairs(scrubPairs)
+}
+
+// HighEntropyEdgeSegments 提取长密钥的高熵首尾片段（>=8 字符、多字符类），防止只泄露前缀或后缀。
+func HighEntropyEdgeSegments(val string) []string {
+	if len(val) < 16 {
+		return nil
+	}
+	var out []string
+	segLen := 8
+	if len(val) >= 24 {
+		segLen = 10
+	}
+	for _, cand := range []string{val[:segLen], val[len(val)-segLen:]} {
+		if looksHighEntropy(cand) {
+			out = append(out, cand)
+		}
+	}
+	return out
+}
+
+func looksHighEntropy(s string) bool {
+	if len(s) < 8 {
+		return false
+	}
+	seen := map[byte]bool{}
+	var hasLower, hasUpper, hasDigit, hasSym bool
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		seen[c] = true
+		switch {
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		default:
+			hasSym = true
+		}
+	}
+	classes := 0
+	for _, b := range []bool{hasLower, hasUpper, hasDigit, hasSym} {
+		if b {
+			classes++
+		}
+	}
+	return len(seen) >= 6 && classes >= 2
 }
 
 // Variants 返回一个密钥值需要被抹掉的各种形式：原文、JSON 转义、URL 编码、hex、

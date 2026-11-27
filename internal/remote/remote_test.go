@@ -257,6 +257,143 @@ func TestP2PUDPTunnelEndToEnd(t *testing.T) {
 	}
 }
 
+func TestP2PRelayFallbackAndSignalingEndToEnd(t *testing.T) {
+	relayToken := "test-relay-secret-token-123456"
+	relay, err := StartRelayServer("127.0.0.1:0", relayToken)
+	if err != nil {
+		t.Fatalf("StartRelayServer: %v", err)
+	}
+	defer relay.Close()
+
+	mgr, err := NewManager(t.TempDir(), newMockFrogApp())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	st, err := mgr.UpdateConfig(SaveInput{
+		Mode:       ModeP2P,
+		P2PListen:  "127.0.0.1:0",
+		RelayAddr:  relay.Addr(),
+		RelayToken: relayToken,
+		PublicHost: "127.0.0.1",
+		ServerName: "内网Mac",
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig p2p+relay: %v", err)
+	}
+	if !st.Ready {
+		t.Fatalf("expected Ready=true, got %+v", st)
+	}
+
+	// 等待主机连上中继注册完成
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if mgr.Status().RelayConnected {
+			break
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	if !mgr.Status().RelayConnected {
+		t.Fatalf("host failed to register with relay: %+v", mgr.Status())
+	}
+
+	pair, err := mgr.CreatePair()
+	if err != nil {
+		t.Fatalf("CreatePair: %v", err)
+	}
+	if !strings.Contains(pair.PairCode, "r=") || !strings.Contains(pair.PairCode, "rt=") {
+		t.Fatalf("expected relay params in URI, got %s", pair.PairCode)
+	}
+	if len(pair.PairCode) > 360 {
+		t.Fatalf("URI too long for QR v12: %d bytes: %s", len(pair.PairCode), pair.PairCode)
+	}
+
+	// 场景 1：仅靠中继信令（不提供任何主机静态地址），通过双向打洞直连成功
+	parsed, err := ParseP2PURI(pair.PairCode)
+	if err != nil {
+		t.Fatalf("ParseP2PURI: %v", err)
+	}
+	parsed.Candidates = nil // 强制清空静态地址，全靠中继信令下发与对射打洞
+	signalOnlyURI := BuildP2PURI(parsed)
+	tun1, err := StartClientTunnel(signalOnlyURI, "iPhone 5G Direct")
+	if err != nil {
+		t.Fatalf("StartClientTunnel signaling: %v", err)
+	}
+	defer tun1.Close()
+
+	resp1, err := httpClientViaTunnel(tun1).Get("http://frog.internal/api/devices")
+	if err != nil {
+		t.Fatalf("signaling GET devices: %v", err)
+	}
+	raw1, _ := io.ReadAll(resp1.Body)
+	resp1.Body.Close()
+	if resp1.StatusCode != http.StatusOK || !strings.Contains(string(raw1), "蛙蛙服务器") {
+		t.Fatalf("unexpected signaling response: %d %s", resp1.StatusCode, string(raw1))
+	}
+
+	// 场景 2：模拟对称 NAT / 防火墙完全阻断 UDP（让主机上报不可达端口），验证 1.2s 后自动经 TLS 1.3 中继兜底加密连通
+	pair2, err := mgr.CreatePair()
+	if err != nil {
+		t.Fatalf("CreatePair 2: %v", err)
+	}
+	// 清空主机上报的 UDP 地址，强制 UDP 打洞失败并走中继加密转发
+	relay.mu.RLock()
+	for _, h := range relay.hosts {
+		h.mu.Lock()
+		h.endpoints = nil
+		h.mu.Unlock()
+	}
+	relay.mu.RUnlock()
+
+	p2, _ := ParseP2PURI(pair2.PairCode)
+	p2.Candidates = []string{"192.0.2.1:51820"} // RFC 5737 不可达黑洞地址，迫使触发 1.2s 中继兜底
+	fallbackURI := BuildP2PURI(p2)
+	tun2, err := StartClientTunnel(fallbackURI, "iPhone 5G Relay")
+	if err != nil {
+		t.Fatalf("StartClientTunnel relay fallback: %v", err)
+	}
+	defer tun2.Close()
+
+	cli2 := httpClientViaTunnel(tun2)
+	cli2.Timeout = 10 * time.Second
+	resp2, err := cli2.Get("http://frog.internal/api/devices")
+	if err != nil {
+		t.Fatalf("relay fallback GET devices: %v", err)
+	}
+	raw2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK || !strings.Contains(string(raw2), "蛙蛙服务器") {
+		t.Fatalf("unexpected relay fallback response: %d %s", resp2.StatusCode, string(raw2))
+	}
+
+	// 验证 SSE 流在加密中继通道下也畅通无阻
+	sseResp, err := cli2.Get("http://frog.internal/api/bots/main/stream")
+	if err != nil {
+		t.Fatalf("relay fallback SSE: %v", err)
+	}
+	sseData, _ := io.ReadAll(sseResp.Body)
+	sseResp.Body.Close()
+	if !strings.Contains(string(sseData), `"seq":3`) {
+		t.Fatalf("relay fallback SSE incomplete: %s", string(sseData))
+	}
+
+	// 验证错误中继令牌被拒绝
+	badOpts := p2
+	badOpts.RelayToken = "wrong-token"
+	badOpts.Candidates = nil
+	badTun, err := StartClientTunnel(BuildP2PURI(badOpts), "Bad Token")
+	if err == nil {
+		defer badTun.Close()
+		if r, gerr := httpClientViaTunnel(badTun).Get("http://frog.internal/api/devices"); gerr == nil {
+			r.Body.Close()
+			if r.StatusCode == http.StatusOK {
+				t.Fatalf("expected bad relay token to be rejected")
+			}
+		}
+	}
+}
+
 func checkSOCKS5Request(proxyPort int, targetHostPort string) error {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort), 3*time.Second)
 	if err != nil {

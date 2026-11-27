@@ -1,24 +1,54 @@
 import Foundation
 import UniformTypeIdentifiers
 
-/// 一台 frog 服务器的连接设置（保存在本机）。不保存密码。
+/// 一台 frog 服务器的连接设置（保存在本机）。支持常规 HTTP/HTTPS 与零配置 E2EE 盲中继 (`froge2ee://`)。
 struct ServerConfig: Codable, Hashable, Identifiable {
     var id: UUID
     var name: String
     var url: String
     var username: String
+    var tunnelURI: String? = nil
+
+    var isTunneled: Bool {
+        !(tunnelURI ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var tunnelBadge: String? {
+        guard let raw = tunnelURI?.lowercased() else { return nil }
+        if raw.hasPrefix("froge2ee://") { return raw.contains("relay=") ? "E2EE·WSS" : "E2EE·局域网" }
+        return "加密隧道"
+    }
 
     var baseURL: URL? { URL(string: url) }
 
     /// 明文 HTTP 且不是本机地址：密码和聊天内容在网络上不加密。
     var isInsecure: Bool {
+        if isTunneled { return false }
         guard let u = baseURL else { return false }
         return u.scheme?.lowercased() == "http" && !ServerConfig.isLoopback(u.host ?? "")
     }
 
+    static func extractTunnelURI(_ raw: String) -> (uri: String, serverName: String?)? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let r = trimmed.range(of: "froge2ee://", options: [.caseInsensitive]) {
+            let tail = trimmed[r.lowerBound...]
+            let candidate = String(tail.prefix { !$0.isWhitespace })
+            var srvName: String? = nil
+            if let hashIdx = candidate.firstIndex(of: "#") {
+                let frag = String(candidate[candidate.index(after: hashIdx)...])
+                let decoded = frag.removingPercentEncoding ?? frag
+                if !decoded.trimmingCharacters(in: .whitespaces).isEmpty {
+                    srvName = decoded.trimmingCharacters(in: .whitespaces)
+                }
+            }
+            return (candidate, srvName)
+        }
+        return nil
+    }
+
     static func isLoopback(_ host: String) -> Bool {
         let h = host.lowercased()
-        return h == "localhost" || h.hasSuffix(".localhost") || h.hasPrefix("127.") || h == "::1" || h == "[::1]"
+        return h == "localhost" || h.hasSuffix(".localhost") || h.hasPrefix("127.") || h == "::1" || h == "[::1]" || h == "frog.internal"
     }
 
     /// 把用户输入的地址整理成完整 URL：没写协议时，IP、带端口或本机地址默认 http，域名默认 https。
@@ -102,6 +132,8 @@ final class ServerClient {
 
     private(set) var config: ServerConfig
     private(set) var cookie: String?
+    private let tunnelBootError: String?
+    let e2eeTunnel: E2EETunnel?
     let session: URLSession
     /// 每个 Bot 的 SSE 事件流各占一条长连接。URLSession 默认每台主机最多 6 条连接，
     /// 和普通请求共用的话，Bot 一多，发消息、刷新列表就会排队到超时，界面显示「离线」。
@@ -111,6 +143,19 @@ final class ServerClient {
     init(config: ServerConfig) {
         self.config = config
         self.cookie = SessionVault.get(config.id)
+        var bootErr: String? = nil
+        var e2ee: E2EETunnel? = nil
+        if let uri = config.tunnelURI?.trimmingCharacters(in: .whitespacesAndNewlines), !uri.isEmpty {
+            do {
+                let parsed = try E2EEConfig.parse(uri)
+                e2ee = E2EETunnel(config: parsed, deviceName: E2EETunnel.defaultDeviceName())
+            } catch {
+                bootErr = error.localizedDescription
+            }
+        }
+        self.tunnelBootError = bootErr
+        self.e2eeTunnel = e2ee
+
         let c = URLSessionConfiguration.default
         c.httpCookieStorage = nil
         c.httpShouldSetCookies = false
@@ -125,7 +170,13 @@ final class ServerClient {
         streamSession = URLSession(configuration: sc)
     }
 
-    var hasSession: Bool { cookie != nil }
+    var hasSession: Bool { config.isTunneled || cookie != nil }
+
+    func close() {
+        if let e2ee = e2eeTunnel {
+            Task { await e2ee.close() }
+        }
+    }
 
     func update(config: ServerConfig) { self.config = config }
 
@@ -154,8 +205,41 @@ final class ServerClient {
         return r
     }
 
+    private static func relativePathAndQuery(from url: URL?) -> String {
+        guard let url, let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "/" }
+        let path = comps.percentEncodedPath.isEmpty ? "/" : comps.percentEncodedPath
+        if let q = comps.percentEncodedQuery, !q.isEmpty {
+            return "\(path)?\(q)"
+        }
+        return path
+    }
+
     /// 发请求，检查状态码；返回响应体。401 抛 `.unauthorized`，其他错误带上服务器给的说明。
     func send(_ req: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if let tunnelBootError {
+            throw APIError.invalid(tunnelBootError)
+        }
+        if let e2eeTunnel {
+            let path = Self.relativePathAndQuery(from: req.url)
+            let method = req.httpMethod ?? "GET"
+            let headers = req.allHTTPHeaderFields ?? [:]
+            let timeout = req.timeoutInterval > 0 ? req.timeoutInterval : 30
+            let (status, respHeaders, data) = try await e2eeTunnel.request(
+                method: method,
+                path: path,
+                headers: headers,
+                body: req.httpBody,
+                timeout: timeout
+            )
+            let targetURL = req.url ?? URL(string: "http://frog.internal")!
+            let http = HTTPURLResponse(url: targetURL, statusCode: status, httpVersion: "HTTP/1.1", headerFields: respHeaders)
+                ?? HTTPURLResponse(url: targetURL, statusCode: status, httpVersion: nil, headerFields: nil)!
+            if http.statusCode == 401 { throw APIError.unauthorized }
+            guard (200..<300).contains(http.statusCode) else {
+                throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
+            }
+            return (data, http)
+        }
         let data: Data, resp: URLResponse
         do {
             (data, resp) = try await session.data(for: req)
@@ -169,6 +253,34 @@ final class ServerClient {
             throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
         }
         return (data, http)
+    }
+
+    /// 统一 SSE 行流接口：自动适配 E2EE WSS 隧道与常规 HTTP/HTTPS。
+    func streamLines(for req: URLRequest) async throws -> (Int, AsyncThrowingStream<String, Error>) {
+        if let tunnelBootError {
+            throw APIError.invalid(tunnelBootError)
+        }
+        if let e2eeTunnel {
+            let path = Self.relativePathAndQuery(from: req.url)
+            let headers = req.allHTTPHeaderFields ?? [:]
+            return try await e2eeTunnel.streamSSE(path: path, headers: headers)
+        }
+        let (bytes, resp) = try await streamSession.bytes(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有正常响应") }
+        let stream = AsyncThrowingStream<String, Error> { continuation in
+            let task = Task {
+                do {
+                    for try await line in bytes.lines {
+                        continuation.yield(line)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+        return (http.statusCode, stream)
     }
 
     func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], as type: T.Type = T.self) async throws -> T {

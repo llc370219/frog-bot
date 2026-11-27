@@ -1,6 +1,7 @@
 import { ArrowLeft, Check, CircleAlert, Download, Eye, EyeOff, FlaskConical, KeyRound, Loader2, Plug, Plus, Search, Trash2, Undo2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { APIChannel, APISettings, ChannelUse, DeviceSettingsAPI } from '../api';
+import ProxyGatewayPanel from './ProxyGatewayPanel';
 
 const message = (e: unknown) => e instanceof TypeError ? '无法连接 frog 后端，请确认服务已启动'
   : e instanceof Error ? e.message : '请求失败，请重试';
@@ -137,6 +138,7 @@ export default function ChannelsPage({ target, deviceName, saving, setSaving, on
       <ul className="settings-channel-grid">{channels.map(p => <li key={p.id} className="settings-channel-card"><div className="settings-channel-card-head"><Plug size={18} /><h4>{p.name}</h4><span className="settings-agent-status">{p.enabled ? '已启用' : '已停用'}</span></div><p title={p.base_url}>{p.base_url || '尚未配置接口地址'}</p><small>{visible(p).length} 个可选模型 · {p.auth_required ? (p.has_api_key || p.api_key ? 'API Key' : '缺少 API Key') : '无需密钥'}</small>
           <div className="channel-users">{users(p.id).length ? users(p.id).map(u => <span key={u}>{u}</span>) : <em>暂无 Bot 使用</em>}</div><div className="settings-agent-actions"><button role="switch" aria-checked={p.enabled} aria-label={`启用渠道 ${p.name}`} className={`settings-agent-switch${p.enabled ? ' is-on' : ''}`} disabled={busy} onClick={() => { setChannels(rows => rows.map(c => c.id === p.id ? { ...c, enabled: !c.enabled } : c)); changed(); }}><span /></button><button className="settings-button" disabled={busy} onClick={() => edit(p.id)}>设置</button></div></li>)}
         {!channels.length && <li className="settings-channels-empty"><Plug size={26} /><h4>还没有 API 渠道</h4><p>添加服务商或本地模型接口，所有 Bot 都能使用；再到「模型与 Agent」为每个 Bot 选择模型。<br />只用官方订阅 CLI 的话，可以不添加渠道。</p><button className="settings-button" onClick={add}><Plus size={14} />添加第一个渠道</button></li>}</ul>
+      {target.local && <ProxyGatewayPanel onChannelSynced={() => { setAttempt(n => n + 1); onSaved(); }} />}
     </>}
       <footer className="settings-channels-footer">
       <span className={dirty && !valid ? 'is-warn' : undefined}>{dirty && !valid ? <CircleAlert size={13} /> : <KeyRound size={13} />}{dirty ? (valid ? '有未保存的修改' : '每个渠道都需要名称和接口地址') : '已保存 · 所有 Bot 共用 · 密钥加密存储'}</span>

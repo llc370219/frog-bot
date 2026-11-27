@@ -13,17 +13,38 @@ struct ServerConfig: Codable, Hashable, Identifiable {
         !(tunnelURI ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var isE2EE: Bool {
+        (tunnelURI ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("froge2ee://")
+    }
+
     var tunnelBadge: String? {
         guard let raw = tunnelURI?.lowercased() else { return nil }
+        if raw.hasPrefix("froge2ee://") { return raw.contains("relay=") ? "E2EE·WSS" : "E2EE·局域网" }
         if raw.hasPrefix("vless://") { return "VLESS-Reality" }
-        if raw.hasPrefix("frogp2p://") { return "P2P" }
+        if raw.hasPrefix("frogp2p://") { return raw.contains("r=") ? "P2P·中继" : "P2P" }
         return "加密隧道"
     }
 
     var displayEndpoint: String {
-        if let raw = tunnelURI, let u = URL(string: raw), let h = u.host, !h.isEmpty {
-            if let p = u.port { return "\(h):\(p)" }
-            return h
+        if let raw = tunnelURI, let u = URL(string: raw) {
+            if let comps = URLComponents(url: u, resolvingAgainstBaseURL: false) {
+                if raw.lowercased().hasPrefix("froge2ee://") {
+                    if let relay = comps.queryItems?.first(where: { $0.name == "relay" })?.value,
+                       let ru = URL(string: relay), let h = ru.host, !h.isEmpty {
+                        return h
+                    }
+                    if let lan = comps.queryItems?.first(where: { $0.name == "lan" })?.value, !lan.isEmpty {
+                        return lan
+                    }
+                }
+                if let r = comps.queryItems?.first(where: { $0.name == "r" })?.value, !r.isEmpty {
+                    return r
+                }
+            }
+            if let h = u.host, !h.isEmpty {
+                if let p = u.port { return "\(h):\(p)" }
+                return h
+            }
         }
         return baseURL?.host ?? url
     }
@@ -39,7 +60,7 @@ struct ServerConfig: Codable, Hashable, Identifiable {
 
     static func extractTunnelURI(_ raw: String) -> (uri: String, serverName: String?)? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        for prefix in ["vless://", "frogp2p://"] {
+        for prefix in ["froge2ee://", "vless://", "frogp2p://"] {
             if let r = trimmed.range(of: prefix, options: [.caseInsensitive]) {
                 let tail = trimmed[r.lowerBound...]
                 let candidate = String(tail.prefix { !$0.isWhitespace })
@@ -141,6 +162,7 @@ final class ServerClient {
     private(set) var config: ServerConfig
     private(set) var cookie: String?
     private let tunnelBootError: String?
+    let e2eeTunnel: E2EETunnel?
     let session: URLSession
     let streamSession: URLSession
 
@@ -158,27 +180,44 @@ final class ServerClient {
         c.waitsForConnectivity = false
 
         var bootErr: String? = nil
+        var e2ee: E2EETunnel? = nil
         if let uri = config.tunnelURI?.trimmingCharacters(in: .whitespacesAndNewlines), !uri.isEmpty {
-            do {
-                let tun = try FrogBoxManager.shared.acquire(uri: uri)
-                c.connectionProxyDictionary = [
-                    "HTTPEnable": 1,
-                    "HTTPProxy": "127.0.0.1",
-                    "HTTPPort": tun.port,
-                    "HTTPSEnable": 1,
-                    "HTTPSProxy": "127.0.0.1",
-                    "HTTPSPort": tun.port,
-                ]
-            } catch {
-                bootErr = error.localizedDescription
+            if uri.lowercased().hasPrefix("froge2ee://") {
+                do {
+                    let parsed = try E2EEConfig.parse(uri)
+                    e2ee = E2EETunnel(config: parsed, deviceName: E2EETunnel.defaultDeviceName())
+                } catch {
+                    bootErr = error.localizedDescription
+                }
+            } else {
+                do {
+                    let tun = try FrogBoxManager.shared.acquire(uri: uri)
+                    c.connectionProxyDictionary = [
+                        "HTTPEnable": 1,
+                        "HTTPProxy": "127.0.0.1",
+                        "HTTPPort": tun.port,
+                        "HTTPSEnable": 1,
+                        "HTTPSProxy": "127.0.0.1",
+                        "HTTPSPort": tun.port,
+                    ]
+                } catch {
+                    bootErr = error.localizedDescription
+                }
             }
         }
         self.tunnelBootError = bootErr
+        self.e2eeTunnel = e2ee
 
         session = URLSession(configuration: c)
         let sc = c.copy() as! URLSessionConfiguration
         sc.httpMaximumConnectionsPerHost = 64
         streamSession = URLSession(configuration: sc)
+    }
+
+    func close() {
+        if let e2ee = e2eeTunnel {
+            Task { await e2ee.close() }
+        }
     }
 
     var hasSession: Bool { config.isTunneled || cookie != nil }
@@ -210,9 +249,39 @@ final class ServerClient {
         return r
     }
 
+    private static func relativePathAndQuery(from url: URL?) -> String {
+        guard let url, let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "/" }
+        let path = comps.percentEncodedPath.isEmpty ? "/" : comps.percentEncodedPath
+        if let q = comps.percentEncodedQuery, !q.isEmpty {
+            return "\(path)?\(q)"
+        }
+        return path
+    }
+
     func send(_ req: URLRequest) async throws -> (Data, HTTPURLResponse) {
         if let tunnelBootError {
             throw APIError.invalid(tunnelBootError)
+        }
+        if let e2eeTunnel {
+            let path = Self.relativePathAndQuery(from: req.url)
+            let method = req.httpMethod ?? "GET"
+            let headers = req.allHTTPHeaderFields ?? [:]
+            let timeout = req.timeoutInterval > 0 ? req.timeoutInterval : 30
+            let (status, respHeaders, data) = try await e2eeTunnel.request(
+                method: method,
+                path: path,
+                headers: headers,
+                body: req.httpBody,
+                timeout: timeout
+            )
+            let targetURL = req.url ?? URL(string: "http://frog.internal")!
+            let http = HTTPURLResponse(url: targetURL, statusCode: status, httpVersion: "HTTP/1.1", headerFields: respHeaders)
+                ?? HTTPURLResponse(url: targetURL, statusCode: status, httpVersion: nil, headerFields: nil)!
+            if http.statusCode == 401 { throw APIError.unauthorized }
+            guard (200..<300).contains(http.statusCode) else {
+                throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
+            }
+            return (data, http)
         }
         let data: Data, resp: URLResponse
         do {
@@ -227,6 +296,34 @@ final class ServerClient {
             throw APIError.server(status: http.statusCode, message: Self.message(from: data, status: http.statusCode))
         }
         return (data, http)
+    }
+
+    /// 统一 SSE 行流接口：自动适配原生 E2EE WSS 隧道、内置 FrogBox 隧道与常规 HTTP/HTTPS。
+    func streamLines(for req: URLRequest) async throws -> (Int, AsyncThrowingStream<String, Error>) {
+        if let tunnelBootError {
+            throw APIError.invalid(tunnelBootError)
+        }
+        if let e2eeTunnel {
+            let path = Self.relativePathAndQuery(from: req.url)
+            let headers = req.allHTTPHeaderFields ?? [:]
+            return try await e2eeTunnel.streamSSE(path: path, headers: headers)
+        }
+        let (bytes, resp) = try await streamSession.bytes(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.network("服务器没有响应") }
+        let stream = AsyncThrowingStream<String, Error> { continuation in
+            let task = Task {
+                do {
+                    for try await line in bytes.lines {
+                        continuation.yield(line)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+        return (http.statusCode, stream)
     }
 
     func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], as type: T.Type = T.self) async throws -> T {

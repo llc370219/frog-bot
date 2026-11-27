@@ -10,6 +10,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okio.Buffer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -19,21 +20,60 @@ import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
 
-/** 一台 frog 服务器的连接设置（保存在手机上）。不保存密码。 */
-data class ServerConfig(val id: String, val name: String, val url: String, val username: String) {
+/** 一台 frog 服务器的连接设置（保存在手机上）。支持常规 HTTP/HTTPS 与零配置 E2EE 盲中继 (`froge2ee://`)。 */
+data class ServerConfig(
+    val id: String,
+    val name: String,
+    val url: String,
+    val username: String,
+    val tunnelUri: String? = null,
+) {
+    val isTunneled: Boolean get() = !tunnelUri.isNullOrBlank()
+
+    val tunnelBadge: String?
+        get() {
+            val raw = tunnelUri?.trim()?.lowercase() ?: return null
+            if (raw.startsWith("froge2ee://")) return if (raw.contains("relay=")) "E2EE·WSS" else "E2EE·局域网"
+            return "加密隧道"
+        }
+
     val baseUrl: HttpUrl? get() = url.toHttpUrlOrNull()
 
     /** 明文 HTTP 且不是本机地址：密码和聊天内容在网络上不加密 */
-    val insecure: Boolean get() = baseUrl?.let { it.scheme == "http" && !isLoopback(it.host) } ?: false
+    val insecure: Boolean get() = if (isTunneled) false else (baseUrl?.let { it.scheme == "http" && !isLoopback(it.host) } ?: false)
 
-    fun json(): JSONObject = JSONObject().put("id", id).put("name", name).put("url", url).put("username", username)
+    fun json(): JSONObject = JSONObject()
+        .put("id", id)
+        .put("name", name)
+        .put("url", url)
+        .put("username", username)
+        .apply { if (!tunnelUri.isNullOrBlank()) put("tunnelUri", tunnelUri) }
 
     companion object {
-        fun from(j: JSONObject) = ServerConfig(j.str("id"), j.str("name"), j.str("url"), j.str("username"))
+        fun from(j: JSONObject) = ServerConfig(
+            j.str("id"),
+            j.str("name"),
+            j.str("url"),
+            j.str("username"),
+            j.strOrNull("tunnelUri"),
+        )
+
+        fun extractTunnelUri(raw: String): Pair<String, String?>? {
+            val trimmed = raw.trim()
+            val idx = trimmed.indexOf("froge2ee://", ignoreCase = true)
+            if (idx < 0) return null
+            val candidate = trimmed.substring(idx).takeWhile { !it.isWhitespace() }
+            val hash = candidate.indexOf('#')
+            val name = if (hash >= 0 && hash + 1 < candidate.length) {
+                runCatching { java.net.URLDecoder.decode(candidate.substring(hash + 1), "UTF-8") }
+                    .getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+            } else null
+            return candidate to name
+        }
 
         fun isLoopback(host: String): Boolean {
             val h = host.lowercase()
-            return h == "localhost" || h.endsWith(".localhost") || h.startsWith("127.") || h == "::1"
+            return h == "localhost" || h.endsWith(".localhost") || h.startsWith("127.") || h == "::1" || h == "frog.internal"
         }
 
         /** 没写协议时：IP、带端口或本机地址按 http，域名按 https */
@@ -57,9 +97,30 @@ class ApiException(message: String, val status: Int = 0) : Exception(message) {
     val unauthorized: Boolean get() = status == 401
 }
 
-/** 和一台服务器说话：普通请求、登录、上传、事件流。登录靠服务器发的会话 Cookie，手动放进请求头。 */
+/** 和一台服务器说话：普通请求、登录、上传、事件流。支持原生 E2EE WSS 盲中继与常规 HTTP/HTTPS。 */
 class ServerClient(config: ServerConfig, var cookie: String?) {
     @Volatile var config: ServerConfig = config
+    val e2eeTunnel: E2EETunnel?
+    private val tunnelBootError: String?
+
+    init {
+        var tun: E2EETunnel? = null
+        var err: String? = null
+        val uri = config.tunnelUri?.trim()
+        if (!uri.isNullOrEmpty() && uri.startsWith("froge2ee://", ignoreCase = true)) {
+            try {
+                tun = E2EETunnel(E2EEConfig.parse(uri))
+            } catch (e: Exception) {
+                err = e.message ?: "E2EE 连接码无效"
+            }
+        }
+        e2eeTunnel = tun
+        tunnelBootError = err
+    }
+
+    fun close() {
+        e2eeTunnel?.close()
+    }
 
     companion object {
         const val COOKIE = "frogbot_session"
@@ -125,7 +186,34 @@ class ServerClient(config: ServerConfig, var cookie: String?) {
         }
     }
 
+    fun relativePath(path: String, query: Map<String, String> = emptyMap()): String {
+        val u = url(path, query)
+        val q = u.encodedQuery
+        return if (q.isNullOrEmpty()) u.encodedPath else "${u.encodedPath}?$q"
+    }
+
+    private fun checkE2EE(resp: E2EEResponse): String {
+        val body = String(resp.body, Charsets.UTF_8)
+        if (resp.status == 401) throw ApiException("登录已过期，请重新登录", 401)
+        if (resp.status !in 200..299) throw ApiException(message(body, resp.status), resp.status)
+        return body
+    }
+
     private suspend fun exec(r: Request, client: OkHttpClient = http): String = withContext(Dispatchers.IO) {
+        if (tunnelBootError != null) throw ApiException(tunnelBootError)
+        val tun = e2eeTunnel
+        if (tun != null) {
+            val u = r.url
+            val rel = if (u.encodedQuery.isNullOrEmpty()) u.encodedPath else "${u.encodedPath}?${u.encodedQuery}"
+            val hdrs = LinkedHashMap<String, String>()
+            for (i in 0 until r.headers.size) hdrs[r.headers.name(i)] = r.headers.value(i)
+            val bodyBytes = r.body?.let { rb ->
+                rb.contentType()?.let { hdrs["Content-Type"] = it.toString() }
+                Buffer().also { rb.writeTo(it) }.readByteArray()
+            }
+            val timeoutMs = maxOf(client.readTimeoutMillis.toLong(), 15_000L)
+            return@withContext checkE2EE(tun.request(r.method, rel, hdrs, bodyBytes, timeoutMs))
+        }
         try {
             client.newCall(r).execute().use { check(it) }
         } catch (e: ApiException) {
@@ -154,6 +242,14 @@ class ServerClient(config: ServerConfig, var cookie: String?) {
     }
 
     suspend fun bytes(path: String, query: Map<String, String>): ByteArray = withContext(Dispatchers.IO) {
+        if (tunnelBootError != null) throw ApiException(tunnelBootError)
+        val tun = e2eeTunnel
+        if (tun != null) {
+            val resp = tun.request("GET", relativePath(path, query), mapOf("Accept" to "*/*"))
+            if (resp.status == 401) throw ApiException("登录已过期，请重新登录", 401)
+            if (resp.status !in 200..299) throw ApiException("下载失败（${resp.status}）", resp.status)
+            return@withContext resp.body
+        }
         try {
             http.newCall(request(path, query).header("Accept", "*/*").get().build()).execute().use { resp ->
                 if (resp.code == 401) throw ApiException("登录已过期，请重新登录", 401)
@@ -192,13 +288,23 @@ class ServerClient(config: ServerConfig, var cookie: String?) {
         val form = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("file", name, data.toRequestBody(mime.toMediaType()))
             .build()
-        val r = request(path).post(form).build()
-        val text = try {
-            http.newBuilder().writeTimeout(5, TimeUnit.MINUTES).build().newCall(r).execute().use { check(it) }
-        } catch (e: ApiException) {
-            throw e
-        } catch (e: Exception) {
-            throw ApiException(describe(e))
+        val text = if (e2eeTunnel != null) {
+            if (tunnelBootError != null) throw ApiException(tunnelBootError)
+            val raw = Buffer().also { form.writeTo(it) }.readByteArray()
+            val hdrs = mapOf(
+                "Accept" to "application/json",
+                "Content-Type" to form.contentType().toString(),
+            )
+            checkE2EE(e2eeTunnel.request("POST", relativePath(path), hdrs, raw, timeoutMs = 300_000L))
+        } else {
+            val r = request(path).post(form).build()
+            try {
+                http.newBuilder().writeTimeout(5, TimeUnit.MINUTES).build().newCall(r).execute().use { check(it) }
+            } catch (e: ApiException) {
+                throw e
+            } catch (e: Exception) {
+                throw ApiException(describe(e))
+            }
         }
         errorIn(text)
         val first = runCatching { JSONArray(text).optJSONObject(0) }.getOrNull() ?: throw ApiException("上传失败")

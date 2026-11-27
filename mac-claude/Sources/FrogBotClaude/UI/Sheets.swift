@@ -29,7 +29,12 @@ struct ServerSheet: View {
         }
     }
 
+    private var isTunnelAddress: Bool {
+        ServerConfig.extractTunnelURI(address) != nil
+    }
+
     private var insecure: Bool {
+        if isTunnelAddress { return false }
         guard let u = ServerConfig.normalize(address) else { return false }
         return u.scheme == "http" && !ServerConfig.isLoopback(u.host ?? "")
     }
@@ -39,7 +44,7 @@ struct ServerSheet: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(.system(size: 14, weight: .semibold))
-                    Text(mode == .login ? "会话过期或密码改过了，输入密码重新连接。" : "填写安装时打印的访问地址、用户名和密码。")
+                    Text(mode == .login ? "会话过期或密码改过了，输入密码重新连接。" : "粘贴电脑端生成的 froge2ee:// 连接码，或填写访问地址与账号密码。")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -48,18 +53,23 @@ struct ServerSheet: View {
 
             Form {
                 if mode != .login {
-                    TextField("名称", text: $name, prompt: Text("可选，例如：东京 VPS"))
+                    TextField("名称", text: $name, prompt: Text("可选，例如：家里 Mac / 东京 VPS"))
                         .focused($focused, equals: .name)
-                    TextField("地址", text: $address, prompt: Text("https://bot.example.com 或 1.2.3.4:8080"))
+                    TextField("地址或连接码", text: $address, prompt: Text("froge2ee://... 或 https://bot.example.com"))
                         .focused($focused, equals: .address)
+                        .onSubmit {
+                            if isTunnelAddress { connect() }
+                        }
                 }
-                TextField("用户名", text: $username)
-                    .focused($focused, equals: .username)
-                    .textContentType(.username)
-                SecureField("密码", text: $password, prompt: Text(mode == .edit ? "不改就留空" : "安装时打印的初始密码"))
-                    .focused($focused, equals: .password)
-                    .textContentType(.password)
-                    .onSubmit(connect)
+                if !isTunnelAddress {
+                    TextField("用户名", text: $username)
+                        .focused($focused, equals: .username)
+                        .textContentType(.username)
+                    SecureField("密码", text: $password, prompt: Text(mode == .edit ? "不改就留空" : "安装时打印的初始密码"))
+                        .focused($focused, equals: .password)
+                        .textContentType(.password)
+                        .onSubmit(connect)
+                }
             }
             .formStyle(.columns)
 
@@ -106,7 +116,7 @@ struct ServerSheet: View {
         .onAppear {
             if let s = server {
                 name = s.config.name
-                address = s.config.url
+                address = s.config.tunnelURI ?? s.config.url
                 username = s.config.username
             }
             focused = mode == .add ? .address : .password

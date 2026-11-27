@@ -99,6 +99,7 @@ fun ChatScreen(state: AppState, session: BotSession, nav: Nav) {
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
     var trayOpen by remember { mutableStateOf(false) }
+    var v2Open by remember { mutableStateOf(false) }
     var modelOpen by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<Approval?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -126,6 +127,10 @@ fun ChatScreen(state: AppState, session: BotSession, nav: Nav) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { v2Open = true }) {
+                        val vn = session.server.gateway.attentionCount
+                        BadgedBox(badge = { if (vn > 0) Badge { Text("$vn") } }) { Icon(Icons.Outlined.GppMaybe, "V2 总控中心") }
+                    }
                     IconButton(onClick = { trayOpen = true }) {
                         val n = session.openTasks
                         BadgedBox(badge = { if (n > 0) Badge { Text("$n") } }) { Icon(Icons.Outlined.Checklist, "任务") }
@@ -181,6 +186,7 @@ fun ChatScreen(state: AppState, session: BotSession, nav: Nav) {
     }
 
     if (trayOpen) TraySheet(session) { trayOpen = false }
+    if (v2Open) V2ControlSheet(session.server.gateway) { v2Open = false }
     if (modelOpen) ModelSheet(session, onEdit = {
         modelOpen = false
         if (session.isLocalDevice) nav.push(Screen.BotEditor(session.ref.server, session.ref.device, session.ref))
