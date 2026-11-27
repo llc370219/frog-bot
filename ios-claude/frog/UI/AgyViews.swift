@@ -448,23 +448,39 @@ struct AgyChatView: View {
 
     @ViewBuilder
     private func messageRow(_ m: AgyMessage) -> some View {
+        let isSubsequentUser = m.role == "user" && chat.messages.first?.id != m.id
         if m.role == "user" {
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(m.text)
-                    .font(.system(size: 16))
-                    .foregroundStyle(Theme.onAccent)
-                    .lineSpacing(2)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Theme.accent, in: UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 5, topTrailingRadius: 18, style: .continuous))
-                    .contextMenu {
-                        Button { copy(m.text) } label: { Label("复制", systemImage: "doc.on.doc") }
-                    }
-                    .padding(.leading, 44)
+            VStack(alignment: .leading, spacing: 0) {
+                if isSubsequentUser {
+                    Divider()
+                        .overlay(Theme.line)
+                        .padding(.bottom, 14)
+                }
+                HStack(alignment: .top, spacing: 10) {
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(Theme.accent)
+                        .frame(width: 2.5)
+                    Text(">")
+                        .font(.system(size: 13.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.top, 2)
+                    Text(m.text)
+                        .font(.system(size: 15.5, weight: .medium))
+                        .foregroundStyle(Theme.fg)
+                        .lineSpacing(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .background(Theme.s2.opacity(0.62), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contextMenu {
+                    Button { copy(m.text) } label: { Label("复制指令", systemImage: "doc.on.doc") }
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 if let t = m.thinking, !t.isEmpty {
                     ThinkingBlock(text: t, ms: m.thinkingMs)
                 }
@@ -473,19 +489,24 @@ struct AgyChatView: View {
                 }
                 if !m.text.isEmpty {
                     MarkdownView(text: m.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Theme.s2, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .contextMenu {
-                            Button { copy(m.text) } label: { Label("复制", systemImage: "doc.on.doc") }
+                            Button { copy(m.text) } label: { Label("复制回复", systemImage: "doc.on.doc") }
                         }
                 }
                 if let err = m.error, !err.isEmpty {
-                    Text(err)
-                        .font(.footnote)
-                        .foregroundStyle(Theme.danger)
-                        .padding(10)
-                        .background(Theme.dangerSoft, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    HStack(alignment: .top, spacing: 8) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(Theme.danger)
+                            .frame(width: 2.5)
+                        Text(err)
+                            .font(.footnote)
+                            .foregroundStyle(Theme.danger)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.dangerSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -497,38 +518,46 @@ struct AgyChatView: View {
     }
 
     private func permCard(_ perm: AgyPermission) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("请求操作确认：\(perm.title)", systemImage: "exclamationmark.shield.fill")
-                .font(.system(size: 14.5, weight: .semibold))
-                .foregroundStyle(Theme.warn)
-            if !perm.detail.isEmpty {
-                Text(perm.detail)
-                    .font(.system(size: 12.5, design: .monospaced))
-                    .foregroundStyle(Theme.fg2)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.code, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            FlowLayout(spacing: 8) {
-                ForEach(perm.options) { opt in
-                    let isReject = opt.optionId.contains("reject") || opt.kind.contains("reject")
-                    Button(opt.name) {
-                        Haptics.tap()
-                        Task {
-                            do { try await chat.decide(permID: perm.id, optionID: opt.optionId) }
-                            catch { self.error = error.localizedDescription }
+        HStack(alignment: .top, spacing: 10) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(Theme.warn)
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 10) {
+                Label("请求操作确认：\(perm.title)", systemImage: "exclamationmark.shield.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.warn)
+                if !perm.detail.isEmpty {
+                    Text(perm.detail)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Theme.fg2)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.code, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                FlowLayout(spacing: 8) {
+                    ForEach(perm.options) { opt in
+                        let isReject = opt.optionId.contains("reject") || opt.kind.contains("reject")
+                        Button(opt.name) {
+                            Haptics.tap()
+                            Task {
+                                do { try await chat.decide(permID: perm.id, optionID: opt.optionId) }
+                                catch { self.error = error.localizedDescription }
+                            }
                         }
+                        .buttonStyle(PillButtonStyle(kind: isReject ? .danger : .primary, compact: true))
                     }
-                    .buttonStyle(PillButtonStyle(kind: isReject ? .danger : .primary, compact: true))
                 }
             }
         }
-        .padding(14)
-        .card(fill: Theme.s1, border: Theme.warn.opacity(0.45), radius: 16)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.warnSoft.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.warn.opacity(0.28), lineWidth: 0.7))
     }
 
     private var liveTurnView: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             if !chat.thinking.isEmpty {
                 ThinkingBlock(text: chat.thinking, live: true, startedAt: chat.thinkStart, endedAt: chat.thinkEnd)
             }
@@ -537,9 +566,7 @@ struct AgyChatView: View {
             }
             if !chat.streaming.isEmpty {
                 MarkdownView(text: chat.streaming, streaming: true)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Theme.s2, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else if chat.thinking.isEmpty || chat.thinkEnd > 0 {
                 HStack(spacing: 8) {
                     TypingDots(size: 5)
@@ -548,6 +575,7 @@ struct AgyChatView: View {
                 .padding(.vertical, 4)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var composerBar: some View {
@@ -910,55 +938,83 @@ private struct AgyFilesSheet: View {
     }
 }
 
-/// 可折叠展开查看入参和执行输出的工具调用组
+/// 紧凑垂直连线工具调用时间线（点击条目原地展开入参和输出）
 private struct AgyToolCallGroup: View {
     let tools: [AgyToolCall]
     @State private var expandedIDs: Set<String> = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            FlowLayout(spacing: 6) {
-                ForEach(tools) { tc in
-                    let running = tc.status == "in_progress" || tc.status == "pending"
-                    let failed = tc.status == "failed" || tc.status == "error"
-                    let hasExtra = !tc.detail.isEmpty || !tc.output.isEmpty
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(tools) { tc in
+                let running = tc.status == "in_progress" || tc.status == "pending"
+                let failed = tc.status == "failed" || tc.status == "error"
+                let hasExtra = !tc.detail.isEmpty || !tc.output.isEmpty
+                let isOpen = expandedIDs.contains(tc.id)
+
+                VStack(alignment: .leading, spacing: 5) {
                     Button {
                         if hasExtra {
-                            if expandedIDs.contains(tc.id) { expandedIDs.remove(tc.id) }
-                            else { expandedIDs.insert(tc.id) }
+                            withAnimation(.easeInOut(duration: 0.16)) {
+                                if isOpen { expandedIDs.remove(tc.id) }
+                                else { expandedIDs.insert(tc.id) }
+                            }
                         }
                     } label: {
-                        Chip(
-                            text: tc.title.isEmpty ? tc.name : tc.title,
-                            systemImage: running ? "hourglass" : failed ? "xmark.circle.fill" : "checkmark.circle.fill",
-                            tint: failed ? Theme.danger : running ? Theme.accent : Theme.fg3
-                        )
+                        HStack(spacing: 7) {
+                            Image(systemName: running ? "clock.arrow.circlepath" : failed ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(failed ? Theme.danger : running ? Theme.accent : Theme.ok)
+                            Text(tc.title.isEmpty ? tc.name : tc.title)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(failed ? Theme.danger : Theme.fg2)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            if hasExtra {
+                                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Theme.fg4)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                }
-            }
-            ForEach(tools.filter { expandedIDs.contains($0.id) && (!$0.detail.isEmpty || !$0.output.isEmpty) }) { tc in
-                VStack(alignment: .leading, spacing: 4) {
-                    if !tc.detail.isEmpty {
-                        Text(tc.detail)
-                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Theme.fg2)
-                            .lineLimit(3)
-                    }
-                    if !tc.output.isEmpty {
-                        ScrollView(.vertical) {
-                            Text(tc.output)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Theme.fg3)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if isOpen && hasExtra {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if !tc.detail.isEmpty {
+                                Text(tc.detail)
+                                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(Theme.fg2)
+                                    .lineLimit(3)
+                            }
+                            if !tc.output.isEmpty {
+                                ScrollView(.vertical) {
+                                    Text(tc.output)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(Theme.fg3)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .frame(maxHeight: 150)
+                            }
                         }
-                        .frame(maxHeight: 140)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.code, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.line, lineWidth: 0.6))
+                        .padding(.leading, 6)
+                        .padding(.bottom, 4)
                     }
                 }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.code, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
+        }
+        .padding(.leading, 10)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Theme.line2)
+                .frame(width: 1.5)
+                .padding(.vertical, 4)
         }
     }
 }

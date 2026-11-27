@@ -103,7 +103,6 @@ struct PillButtonStyle: ButtonStyle {
         let kind: Kind
         let compact: Bool
         @Environment(\.isEnabled) private var enabled
-        @State private var hover = false
 
         var body: some View {
             configuration.label
@@ -121,7 +120,6 @@ struct PillButtonStyle: ButtonStyle {
                 .shadow(color: kind == .quiet ? .clear : Theme.shadow.opacity(0.6), radius: 0.75, y: 0.5)
                 .opacity(enabled ? (configuration.isPressed ? 0.75 : 1) : 0.45)
                 .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .onHover { hover = $0 }
         }
 
         private var foreground: Color {
@@ -129,21 +127,21 @@ struct PillButtonStyle: ButtonStyle {
             case .primary: return Theme.onAccent
             case .secondary: return Theme.fg
             case .danger: return Theme.danger
-            case .quiet: return hover ? Theme.fg : Theme.fg3
+            case .quiet: return configuration.isPressed ? Theme.fg : Theme.fg3
             }
         }
 
         private var background: Color {
             switch kind {
-            case .primary: return hover ? Theme.accentHover : Theme.accent
+            case .primary: return configuration.isPressed ? Theme.accentHover : Theme.accent
             case .secondary, .danger: return Theme.button
-            case .quiet: return hover ? Theme.hover : .clear
+            case .quiet: return configuration.isPressed ? Theme.hover : .clear
             }
         }
     }
 }
 
-/// 只有图标的小按钮（悬停时出现浅底）。
+/// 只有图标的小按钮
 struct IconButtonStyle: ButtonStyle {
     var size: CGFloat = 26
     var tint: Color = Theme.fg3
@@ -156,18 +154,16 @@ struct IconButtonStyle: ButtonStyle {
         let configuration: ButtonStyleConfiguration
         let size: CGFloat
         let tint: Color
-        @State private var hover = false
         @Environment(\.isEnabled) private var enabled
 
         var body: some View {
             configuration.label
                 .font(.system(size: size * 0.5, weight: .regular))
-                .foregroundStyle(hover ? Theme.fg : tint)
+                .foregroundStyle(configuration.isPressed ? Theme.fg : tint)
                 .frame(width: size, height: size)
-                .background(hover ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(configuration.isPressed ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .opacity(enabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
                 .contentShape(Rectangle())
-                .onHover { hover = $0 }
         }
     }
 }

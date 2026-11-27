@@ -18,11 +18,13 @@ const {
   ConfigStore,
   normalizeServerURL,
   isInsecureURL,
+  isLoopback,
   defaultServerName,
   relayServerKey,
 } = require('./store');
 const { RelayManager } = require('./relay');
 const { LocalServer } = require('./local-server');
+const { E2EEBridge, extractTunnelURI, parseE2EEURI } = require('./e2ee-bridge');
 
 const TITLEBAR_HEIGHT = 42;
 const RAIL_WIDTH = 62;
@@ -44,6 +46,31 @@ let modalActive = false;
 
 // serverId -> { view: WebContentsView, session: Session, online: boolean, authRequired: boolean, authenticated: boolean, username: string, version: string, devices: [], bots: [], badge: { unread: number, waiting: boolean, working: boolean }, lastError: string }
 const serverRuntime = new Map();
+// serverId -> E2EEBridge (froge2ee:// 本地零依赖代理桥)
+const e2eeBridges = new Map();
+let detectedLocalHost = null;
+let scanningLocalHost = false;
+
+async function ensureServerBaseURL(srv) {
+  if (srv?.tunnelUri) {
+    let bridge = e2eeBridges.get(srv.id);
+    if (!bridge || bridge.cfg.uri !== srv.tunnelUri) {
+      if (bridge) bridge.close();
+      bridge = new E2EEBridge(srv.tunnelUri);
+      e2eeBridges.set(srv.id, bridge);
+    }
+    return await bridge.start();
+  }
+  return srv.url;
+}
+
+function closeE2EEBridge(serverId) {
+  const b = e2eeBridges.get(serverId);
+  if (b) {
+    b.close();
+    e2eeBridges.delete(serverId);
+  }
+}
 
 let updateInfo = {
   current: app.getVersion(),
@@ -64,8 +91,8 @@ function isDarkEffective() {
 function themeColors() {
   const dark = isDarkEffective();
   return dark
-    ? { bg: '#1b1b1b', canvas: '#232323', symbol: '#f2f2f2', overlayBg: '#00000000' }
-    : { bg: '#f3f3f3', canvas: '#ffffff', symbol: '#171717', overlayBg: '#00000000' };
+    ? { bg: '#161618', canvas: '#1c1c1e', symbol: '#f5f5f7', overlayBg: '#00000000' }
+    : { bg: '#f4f4f6', canvas: '#ffffff', symbol: '#1d1d1f', overlayBg: '#00000000' };
 }
 
 function getServerPartition(serverId) {
@@ -80,7 +107,8 @@ async function fetchServerJSON(serverId, apiPath, opts = {}) {
   const srv = store.data.servers.find((s) => s.id === serverId);
   if (!srv) throw new Error('找不到这台服务器');
   const ses = getServerSession(serverId);
-  const url = `${srv.url}${apiPath}`;
+  const base = await ensureServerBaseURL(srv);
+  const url = `${base}${apiPath}`;
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), opts.timeoutMs || 15_000);
   if (opts.signal) {
@@ -395,7 +423,11 @@ function ensureServerView(server) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.contentView.addChildView(view);
   }
-  view.webContents.loadURL(server.url).catch(() => {});
+  ensureServerBaseURL(server)
+    .then((targetUrl) => {
+      if (!view.webContents.isDestroyed()) view.webContents.loadURL(targetUrl).catch(() => {});
+    })
+    .catch(() => {});
   return view;
 }
 
@@ -479,12 +511,19 @@ function serializeState() {
   const servers = store.data.servers.map((s) => {
     const rt = ensureRuntime(s);
     const relayState = relay ? relay.getState(s.id) : { status: 'off' };
+    const isTunnel = Boolean(s.tunnelUri);
+    const tunnelBadge = isTunnel
+      ? (String(s.tunnelUri).toLowerCase().includes('relay=') ? 'E2EE·WSS' : 'E2EE·局域网')
+      : '';
     return {
       id: s.id,
       name: s.name,
       url: s.url,
+      tunnelUri: s.tunnelUri || '',
+      tunnelBadge,
+      local: Boolean(s.local) || (!isTunnel && isLoopback((() => { try { return new URL(s.url).hostname; } catch { return ''; } })())),
       username: rt.username || s.username || '',
-      insecure: isInsecureURL(s.url),
+      insecure: isTunnel ? false : isInsecureURL(s.url),
       online: rt.online,
       authRequired: rt.authRequired,
       authenticated: rt.authenticated,
@@ -513,6 +552,8 @@ function serializeState() {
     clientUpdateChannel: store.data.clientUpdateChannel || 'stable',
     activeServerId: store.data.activeServerId,
     servers,
+    detectedLocal: detectedLocalHost,
+    scanningLocal: scanningLocalHost,
     relay: {
       enabled: store.data.relay.enabled,
       clientId: store.data.relay.clientId,
@@ -543,42 +584,61 @@ function selectServer(serverId) {
 }
 
 async function addOrLoginServer({ id, name, url, username, password }) {
-  const normalized = normalizeServerURL(url);
-  if (!normalized) throw new Error('服务器地址格式不正确');
+  const extractedTunnel = extractTunnelURI(url);
+  let normalized = null;
+  let parsedTunnel = null;
+  if (extractedTunnel) {
+    parsedTunnel = parseE2EEURI(extractedTunnel.uri);
+    normalized = 'http://frog.internal';
+  } else {
+    normalized = normalizeServerURL(url);
+    if (!normalized) throw new Error('地址格式不正确，支持 froge2ee:// 连接码、https:// 域名或 http://IP:端口');
+  }
 
   let srv = id ? store.data.servers.find((s) => s.id === id) : null;
   const isNew = !srv;
   const serverId = srv ? srv.id : crypto.randomUUID();
+  const isLocalAddr = !parsedTunnel && isLoopback((() => { try { return new URL(normalized).hostname; } catch { return ''; } })());
+  const resolvedName = String(name || '').trim() || (parsedTunnel ? parsedTunnel.serverName : defaultServerName(normalized));
 
   if (!srv) {
     srv = {
       id: serverId,
-      name: String(name || '').trim() || defaultServerName(normalized),
+      name: resolvedName,
       url: normalized,
-      username: String(username || '').trim(),
+      tunnelUri: parsedTunnel ? parsedTunnel.uri : '',
+      local: isLocalAddr,
+      username: parsedTunnel ? 'e2ee' : String(username || '').trim(),
     };
-    store.data.servers.push(srv);
+    if (isLocalAddr) store.data.servers.unshift(srv);
+    else store.data.servers.push(srv);
   } else {
-    srv.name = String(name || '').trim() || defaultServerName(normalized);
+    srv.name = resolvedName;
     srv.url = normalized;
-    if (username !== undefined) srv.username = String(username || '').trim();
+    srv.tunnelUri = parsedTunnel ? parsedTunnel.uri : '';
+    srv.local = Boolean(srv.local || isLocalAddr);
+    if (!parsedTunnel) closeE2EEBridge(srv.id);
+    if (parsedTunnel) srv.username = 'e2ee';
+    else if (username !== undefined) srv.username = String(username || '').trim();
   }
   store.data.activeServerId = srv.id;
   store.save();
 
   try {
-    // Check health and auth mode
-    const health = await fetchServerJSON(srv.id, '/api/health', { timeoutMs: 10_000 });
+    // Check health and auth mode (works seamlessly for both direct HTTP/HTTPS and froge2ee:// E2EE bridge!)
+    const health = await fetchServerJSON(srv.id, '/api/health', { timeoutMs: 12_000 });
     if (!health?.ok) throw new Error('地址没有返回有效的 frog 健康状态');
 
     let me = { enabled: false, authenticated: true };
-    try {
-      me = await fetchServerJSON(srv.id, '/api/auth/me', { timeoutMs: 8000 });
-    } catch (e) {
-      if (e.status !== 404) throw e;
+    if (!parsedTunnel) {
+      try {
+        me = await fetchServerJSON(srv.id, '/api/auth/me', { timeoutMs: 8000 });
+      } catch (e) {
+        if (e.status !== 404) throw e;
+      }
     }
 
-    if (me.enabled && (!me.authenticated || password)) {
+    if (!parsedTunnel && me.enabled && (!me.authenticated || password)) {
       const u = String(username || srv.username || '').trim();
       const p = String(password || '');
       if (!u || !p) {
@@ -596,17 +656,84 @@ async function addOrLoginServer({ id, name, url, username, password }) {
 
     await probeServer(srv.id);
     const view = ensureServerView(srv);
-    view.webContents.loadURL(srv.url).catch(() => {});
+    const loadTarget = await ensureServerBaseURL(srv);
+    view.webContents.loadURL(loadTarget).catch(() => {});
     broadcastState();
     return serializeState();
   } catch (err) {
     if (isNew && !password) {
-      // Still keep the server entry if it's reachable and just needs login, otherwise remove if totally invalid
+      // Keep entry so user can retry or supply credentials if reachable
     }
     await probeServer(srv.id).catch(() => {});
     broadcastState();
     throw err;
   }
+}
+
+/** 自动扫描本机 8080–8099 上运行的 Frog Bot（无论是否由客户端拉起、无论免密或带登录模式） */
+async function discoverLocalServer({ manual = false } = {}) {
+  if (scanningLocalHost) return serializeState();
+  scanningLocalHost = true;
+  if (manual) {
+    store.data.dismissedLocal = false;
+    store.save();
+  }
+  broadcastState();
+  try {
+    const found = await localServer.findAnyRunning();
+    detectedLocalHost = found;
+    if (!found) return serializeState();
+
+    const existing = store.data.servers.find((s) => {
+      if (s.tunnelUri) return false;
+      try {
+        const u = new URL(s.url);
+        const port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+        return isLoopback(u.hostname) && port === found.port;
+      } catch {
+        return false;
+      }
+    });
+
+    if (existing) {
+      if (!existing.local) {
+        existing.local = true;
+        store.save();
+      }
+      await probeServer(existing.id).catch(() => {});
+      if (manual) {
+        selectServer(existing.id);
+      }
+      return serializeState();
+    }
+
+    if (!manual && store.data.dismissedLocal) {
+      return serializeState();
+    }
+
+    const srv = {
+      id: crypto.randomUUID(),
+      name: '本机',
+      url: found.url,
+      tunnelUri: '',
+      local: true,
+      externalLocal: true,
+      username: found.username || (found.authRequired ? 'admin' : 'local'),
+    };
+    store.data.servers.unshift(srv);
+    if (!store.data.activeServerId || manual) {
+      store.data.activeServerId = srv.id;
+    }
+    store.save();
+    await probeServer(srv.id).catch(() => {});
+    if (store.data.activeServerId === srv.id) {
+      ensureServerView(srv);
+    }
+  } finally {
+    scanningLocalHost = false;
+    broadcastState();
+  }
+  return serializeState();
 }
 
 // ---------- 本机使用：安装并运行本机版 frog ----------
@@ -674,7 +801,12 @@ async function setupLocalServer() {
 async function removeServer(serverId) {
   const idx = store.data.servers.findIndex((s) => s.id === serverId);
   if (idx === -1) return;
-  if (store.data.servers[idx].local) localServer.stop();
+  const removing = store.data.servers[idx];
+  if (removing.local) {
+    store.data.dismissedLocal = true;
+    if (!removing.externalLocal && localServer.isRunning()) localServer.stop();
+  }
+  closeE2EEBridge(serverId);
   relay?.forget(serverId);
   const rt = serverRuntime.get(serverId);
   if (rt?.view && !rt.view.webContents.isDestroyed()) {
@@ -1046,6 +1178,7 @@ function registerIPC() {
     return serializeState();
   });
   ipcMain.handle('frog:local-setup', () => setupLocalServer());
+  ipcMain.handle('frog:discover-local', () => discoverLocalServer({ manual: true }));
   ipcMain.handle('frog:check-updates', () => checkClientUpdates(true));
   ipcMain.handle('frog:server-check-update', async (_e, { serverId, channel }) => {
     const q = channel ? `?channel=${encodeURIComponent(channel)}` : '';
@@ -1119,16 +1252,22 @@ if (!gotSingleInstance) {
       }
     });
 
-    // Probe all configured servers on startup and every 15s
+    // Probe all configured servers & auto-discover local Frog Bot on startup and every 15s
     const probeAll = () => {
       for (const s of store.data.servers) {
         probeServer(s.id).catch(() => {});
+      }
+      if (!store.data.dismissedLocal) {
+        const hasOnlineLocal = store.data.servers.some((s) => s.local && serverRuntime.get(s.id)?.online);
+        if (!hasOnlineLocal) {
+          discoverLocalServer({ manual: false }).catch(() => {});
+        }
       }
     };
     probeAll();
     setInterval(probeAll, 15_000);
     for (const s of store.data.servers) {
-      if (s.local) startLocalForServer(s).catch(() => {});
+      if (s.local && !s.externalLocal) startLocalForServer(s).catch(() => {});
     }
 
     if (store.data.autoCheckUpdates) {
@@ -1197,10 +1336,15 @@ if (!gotSingleInstance) {
     }
   });
 
-  // 本机 frog 随客户端退出
-  process.on('exit', () => localServer?.stop());
+  // 本机 frog & E2EE 隧道随客户端退出
+  process.on('exit', () => {
+    localServer?.stop();
+    for (const b of e2eeBridges.values()) b.close();
+  });
   app.on('before-quit', async (e) => {
     localServer?.stop();
+    for (const b of e2eeBridges.values()) b.close();
+    e2eeBridges.clear();
     if (!isQuitting) {
       isQuitting = true;
       e.preventDefault();

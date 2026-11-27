@@ -90,6 +90,71 @@ struct V2MeshPeer: Codable, Identifiable, Hashable {
     }
 }
 
+private struct V2StatusResponse: Decodable {
+    let nodeID: String?
+    let pendingApprovals: [V2ApprovalCard]?
+    let pendingVerifications: [V2VerifySession]?
+    let cliTasks: [V2CLITask]?
+    let peers: [V2MeshPeer]?
+
+    enum CodingKeys: String, CodingKey {
+        case peers
+        case nodeID = "node_id"
+        case pendingApprovals = "pending_approvals"
+        case pendingVerifications = "pending_verifications"
+        case cliTasks = "cli_tasks"
+    }
+}
+
+private struct V2FrameTypeOnly: Decodable {
+    let type: String
+}
+
+private struct V2FrameEnvelope<Payload: Decodable>: Decodable {
+    let type: String
+    let payload: Payload?
+}
+
+private struct V2HelloPayload: Decodable {
+    let nodeID: String?
+    let pendingApprovals: [V2ApprovalCard]?
+    let pendingVerifications: [V2VerifySession]?
+
+    enum CodingKeys: String, CodingKey {
+        case nodeID = "node_id"
+        case pendingApprovals = "pending_approvals"
+        case pendingVerifications = "pending_verifications"
+    }
+}
+
+private struct V2VerifyFramePayload: Decodable {
+    let dataBase64: String?
+
+    enum CodingKeys: String, CodingKey {
+        case dataBase64 = "data_base64"
+    }
+}
+
+private struct V2CLILogSnapshotPayload: Decodable {
+    let taskID: String?
+    let content: String?
+
+    enum CodingKeys: String, CodingKey {
+        case taskID = "task_id"
+        case content
+    }
+}
+
+private struct V2CLILogChunkPayload: Decodable {
+    let taskID: String?
+    let chunk: String?
+
+    enum CodingKeys: String, CodingKey {
+        case taskID = "task_id"
+        case chunk
+    }
+}
+
 private struct WSOutboundFrame: Encodable {
     let type: String
     let reqID: String?
@@ -176,6 +241,7 @@ final class GatewayClient {
         }
 
         let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
         let task = session.webSocketTask(with: req)
         wsTask = task
         task.resume()
@@ -200,6 +266,7 @@ final class GatewayClient {
             }
         }
         task.cancel(with: .goingAway, reason: nil)
+        if wsTask === task { wsTask = nil }
     }
 
     func refreshStatusREST(_ server: ServerEntry) async {
@@ -208,84 +275,59 @@ final class GatewayClient {
         if let cookie = SessionVault.get(server.id), !cookie.isEmpty {
             req.setValue("frogbot_session=\(cookie)", forHTTPHeaderField: "Cookie")
         }
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+        guard let (data, resp) = try? await server.client.session.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+              let status = try? JSONDecoder().decode(V2StatusResponse.self, from: data) else { return }
 
-        let dec = JSONDecoder()
-        if let nid = obj["node_id"] as? String { nodeID = nid }
-        if let raw = obj["pending_approvals"], let d = try? JSONSerialization.data(withJSONObject: raw),
-           let list = try? dec.decode([V2ApprovalCard].self, from: d) {
-            pendingApprovals = list
-        }
-        if let raw = obj["pending_verifications"], let d = try? JSONSerialization.data(withJSONObject: raw),
-           let list = try? dec.decode([V2VerifySession].self, from: d) {
-            verifySessions = list
-        }
-        if let raw = obj["cli_tasks"], let d = try? JSONSerialization.data(withJSONObject: raw),
-           let list = try? dec.decode([V2CLITask].self, from: d) {
-            cliTasks = list
-        }
-        if let raw = obj["peers"], let d = try? JSONSerialization.data(withJSONObject: raw),
-           let list = try? dec.decode([V2MeshPeer].self, from: d) {
-            meshPeers = list
-        }
+        if let nid = status.nodeID { nodeID = nid }
+        pendingApprovals = status.pendingApprovals ?? []
+        verifySessions = status.pendingVerifications ?? []
+        cliTasks = status.cliTasks ?? []
+        meshPeers = status.peers ?? []
     }
 
     private func handleFrame(_ data: Data) {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = root["type"] as? String else { return }
         let dec = JSONDecoder()
+        guard let header = try? dec.decode(V2FrameTypeOnly.self, from: data) else { return }
 
-        switch type {
+        switch header.type {
         case "hello":
-            if let p = root["payload"] as? [String: Any] {
-                if let nid = p["node_id"] as? String { nodeID = nid }
-                if let raw = p["pending_approvals"], let d = try? JSONSerialization.data(withJSONObject: raw),
-                   let list = try? dec.decode([V2ApprovalCard].self, from: d) {
-                    pendingApprovals = list
-                }
-                if let raw = p["pending_verifications"], let d = try? JSONSerialization.data(withJSONObject: raw),
-                   let list = try? dec.decode([V2VerifySession].self, from: d) {
-                    verifySessions = list
-                }
+            if let p = (try? dec.decode(V2FrameEnvelope<V2HelloPayload>.self, from: data))?.payload {
+                if let nid = p.nodeID { nodeID = nid }
+                pendingApprovals = p.pendingApprovals ?? []
+                verifySessions = p.pendingVerifications ?? []
             }
         case "approval.pending":
-            if let raw = root["payload"], let d = try? JSONSerialization.data(withJSONObject: raw),
-               let card = try? dec.decode(V2ApprovalCard.self, from: d) {
+            if let card = (try? dec.decode(V2FrameEnvelope<V2ApprovalCard>.self, from: data))?.payload {
                 if !pendingApprovals.contains(where: { $0.id == card.id }) {
                     pendingApprovals.insert(card, at: 0)
                 }
             }
         case "verify.waiting":
-            if let raw = root["payload"], let d = try? JSONSerialization.data(withJSONObject: raw),
-               let sess = try? dec.decode(V2VerifySession.self, from: d) {
+            if let sess = (try? dec.decode(V2FrameEnvelope<V2VerifySession>.self, from: data))?.payload {
                 verifySessions.removeAll { $0.id == sess.id }
                 verifySessions.insert(sess, at: 0)
             }
         case "verify.frame":
-            if let p = root["payload"] as? [String: Any],
-               let b64 = p["data_base64"] as? String,
+            if let b64 = (try? dec.decode(V2FrameEnvelope<V2VerifyFramePayload>.self, from: data))?.payload?.dataBase64,
                let imgData = Data(base64Encoded: b64),
                let img = NSImage(data: imgData) {
                 latestFrame = img
             }
         case "cli.log.snapshot":
-            if let p = root["payload"] as? [String: Any],
-               let tid = p["task_id"] as? String,
-               let content = p["content"] as? String {
+            if let p = (try? dec.decode(V2FrameEnvelope<V2CLILogSnapshotPayload>.self, from: data))?.payload,
+               let tid = p.taskID, let content = p.content {
                 cliLogs[tid] = content
             }
         case "cli.log.chunk":
-            if let p = root["payload"] as? [String: Any],
-               let tid = p["task_id"] as? String,
-               let chunk = p["chunk"] as? String {
+            if let p = (try? dec.decode(V2FrameEnvelope<V2CLILogChunkPayload>.self, from: data))?.payload,
+               let tid = p.taskID, let chunk = p.chunk {
                 cliLogs[tid, default: ""] += chunk
             }
         case "alert.security", "alert.budget":
-            if let raw = root["payload"], let d = try? JSONSerialization.data(withJSONObject: raw),
-               let txt = String(data: d, encoding: .utf8) {
-                lastAlert = txt
+            if let parsed = JSON.parse(data) {
+                let txt = parsed["payload"].pretty
+                if !txt.isEmpty { lastAlert = txt }
             }
         default:
             break

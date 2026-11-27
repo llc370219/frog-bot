@@ -44,6 +44,29 @@ final class ServerEntry: Identifiable {
 
 enum Route: Equatable { case chat, scheduler }
 
+enum WorkspaceMode: String, Equatable {
+    case bot
+    case coding
+}
+
+struct CodingSelection: Hashable {
+    var server: UUID
+    var projectID: String
+    var sessionID: String
+    var title: String
+
+    var key: String { "\(server.uuidString)|\(sessionID)" }
+}
+
+struct LocalHostDiscovery: Equatable {
+    var port: Int
+    var url: String
+    var version: String
+    var authRequired: Bool
+    var authenticated: Bool
+    var username: String?
+}
+
 /// 偏好设置（「设置 › 通用 / 通知」）
 enum Prefs {
     static let keepRunning = "pref.keepRunning"
@@ -78,6 +101,10 @@ enum ActiveSheet: Identifiable, Equatable {
     case editServer(UUID)
     case newBot(server: UUID, device: String)
     case editBot(BotRef)
+    case cliAuth(UUID)
+    case proxyGateway(UUID)
+    case newProject(UUID)
+    case projectFiles(server: UUID, project: AgyProject)
 
     var id: String {
         switch self {
@@ -86,11 +113,15 @@ enum ActiveSheet: Identifiable, Equatable {
         case .editServer(let id): return "edit-\(id)"
         case .newBot(let s, let d): return "new-\(s)-\(d)"
         case .editBot(let r): return "bot-\(r.key)"
+        case .cliAuth(let id): return "cliauth-\(id)"
+        case .proxyGateway(let id): return "proxy-\(id)"
+        case .newProject(let id): return "newproj-\(id)"
+        case .projectFiles(let s, let p): return "files-\(s)-\(p.id)"
         }
     }
 }
 
-/// 整个面板的状态：服务器列表、当前选中的 Bot、每个 Bot 的实时会话、未读计数。
+/// 整个面板的状态：服务器列表、本机自动发现、Bot / Coding 双核模式、实时会话与未读计数。
 @MainActor
 @Observable
 final class AppModel {
@@ -101,10 +132,28 @@ final class AppModel {
         didSet {
             if let selection {
                 unread[selection] = nil
+                activeServerID = selection.server
                 UserDefaults.standard.set(selection.key, forKey: Self.selectionKey)
             }
         }
     }
+    var workspaceMode: WorkspaceMode = .bot {
+        didSet {
+            UserDefaults.standard.set(workspaceMode.rawValue, forKey: Self.modeKey)
+        }
+    }
+    var activeServerID: UUID? {
+        didSet {
+            if let activeServerID {
+                UserDefaults.standard.set(activeServerID.uuidString, forKey: Self.activeServerKey)
+            }
+        }
+    }
+    var codingSelection: CodingSelection?
+    var detectedLocal: LocalHostDiscovery?
+    var scanningLocal = false
+    var localScanMessage: String?
+
     var sheet: ActiveSheet?
     var unread: [BotRef: Int] = [:]
     var route: Route = .chat
@@ -113,16 +162,27 @@ final class AppModel {
     /// 客户端互联（设置 › 互联）
     let relay = RelayManager()
 
-    /// 会话：一旦打开就一直连着（后台任务的进展和审批都能及时提醒）
+    /// Bot 实时会话
     @ObservationIgnored private(set) var sessions: [BotRef: BotSession] = [:]
+    /// Coding 项目仓库与实时 SSE 会话
+    @ObservationIgnored private var agyStores: [UUID: AgyStore] = [:]
+    @ObservationIgnored private var agyChatSessions: [String: AgyChatSession] = [:]
+    @ObservationIgnored private var localDiscoveryTask: Task<Void, Never>?
     /// 最多同时保持的事件流连接数
     private let maxSessions = 48
 
     private static let serversKey = "frogbotclaude.servers"
     private static let selectionKey = "frogbotclaude.selection"
+    private static let modeKey = "frogbotclaude.workspaceMode"
+    private static let activeServerKey = "frogbotclaude.activeServer"
+    private static let dismissedLocalKey = "frogbotclaude.dismissedLocal"
 
     private init() {
         Prefs.registerDefaults()
+        if let rawMode = UserDefaults.standard.string(forKey: Self.modeKey),
+           let m = WorkspaceMode(rawValue: rawMode) {
+            workspaceMode = m
+        }
         if let data = UserDefaults.standard.data(forKey: Self.serversKey),
            let configs = try? JSONDecoder().decode([ServerConfig].self, from: data) {
             servers = configs.map(ServerEntry.init)
@@ -130,15 +190,238 @@ final class AppModel {
         if let key = UserDefaults.standard.string(forKey: Self.selectionKey) {
             selection = BotRef(key: key)
         }
+        if let sid = UserDefaults.standard.string(forKey: Self.activeServerKey),
+           let uuid = UUID(uuidString: sid),
+           servers.contains(where: { $0.id == uuid }) {
+            activeServerID = uuid
+        } else {
+            activeServerID = selection?.server ?? servers.first?.id
+        }
         for s in servers { wire(s) }
         relay.attach(self)
+        startLocalDiscoveryLoop()
     }
 
     var totalUnread: Int { unread.values.reduce(0, +) }
 
+    var activeServer: ServerEntry? {
+        if let id = activeServerID, let s = server(id) { return s }
+        if let sid = selection?.server, let s = server(sid) { return s }
+        return servers.first(where: \.isOnline) ?? servers.first
+    }
+
+    var hasLocalServer: Bool {
+        servers.contains { $0.config.isLocalHost || $0.config.isLoopbackEndpoint }
+    }
+
     func server(_ id: UUID) -> ServerEntry? { servers.first { $0.id == id } }
 
     func session(_ ref: BotRef) -> BotSession? { sessions[ref] }
+
+    func agyStore(for server: ServerEntry) -> AgyStore {
+        if let existing = agyStores[server.id] { return existing }
+        let store = AgyStore(server: server)
+        agyStores[server.id] = store
+        return store
+    }
+
+    func agySession(for sel: CodingSelection) -> AgyChatSession? {
+        guard let srv = server(sel.server) else { return nil }
+        if let existing = agyChatSessions[sel.key] {
+            existing.start()
+            return existing
+        }
+        let s = AgyChatSession(server: srv, sessionID: sel.sessionID, projectID: sel.projectID, initialTitle: sel.title)
+        agyChatSessions[sel.key] = s
+        s.start()
+        return s
+    }
+
+    func selectServer(_ s: ServerEntry) {
+        activeServerID = s.id
+        if workspaceMode == .coding {
+            if codingSelection?.server != s.id {
+                codingSelection = nil
+            }
+            if !s.isOnline && s.status != .needsLogin {
+                Task { await refresh(s) }
+            }
+            Task { await agyStore(for: s).loadAll() }
+        } else {
+            route = .chat
+            if let g = s.devices.first(where: { !$0.bots.isEmpty }), let b = g.bots.first {
+                selection = BotRef(server: s.id, device: g.id, bot: b.id)
+            } else {
+                selection = nil
+            }
+            if !s.isOnline && s.status != .needsLogin {
+                Task { await refresh(s) }
+            }
+        }
+    }
+
+    func selectCodingSession(server: ServerEntry, summary: AgySessionSummary) {
+        let sel = CodingSelection(
+            server: server.id,
+            projectID: summary.project_id,
+            sessionID: summary.id,
+            title: summary.title.isEmpty ? "新对话" : summary.title
+        )
+        activeServerID = server.id
+        codingSelection = sel
+        workspaceMode = .coding
+        _ = agySession(for: sel)
+    }
+
+    // MARK: 本机 Frog Bot 自动识别
+
+    private func startLocalDiscoveryLoop() {
+        localDiscoveryTask?.cancel()
+        localDiscoveryTask = Task { [weak self] in
+            // 启动立即探测一次本机 127.0.0.1:8080..8089
+            await self?.discoverLocalHost(manual: false)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard let self else { return }
+                // 若还没注册本机或本机处于离线状态，持续静默扫描
+                let dismissed = UserDefaults.standard.bool(forKey: Self.dismissedLocalKey)
+                if !dismissed && (!self.hasLocalServer || self.servers.contains(where: { ($0.config.isLocalHost || $0.config.isLoopbackEndpoint) && !$0.isOnline })) {
+                    await self.discoverLocalHost(manual: false)
+                }
+            }
+        }
+    }
+
+    /// 自动探测本机运行的 Frog Bot（8080..8089），同时兼容免密本机模式和带认证服务端模式。
+    func discoverLocalHost(manual: Bool = false) async {
+        if scanningLocal { return }
+        scanningLocal = true
+        if manual {
+            localScanMessage = nil
+            UserDefaults.standard.set(false, forKey: Self.dismissedLocalKey)
+        }
+        defer { scanningLocal = false }
+
+        let found = await Self.probeLoopbackPorts(8080...8089)
+        detectedLocal = found
+
+        guard let found else {
+            if manual { localScanMessage = "未检测到本机运行的 Frog Bot（端口 8080–8089）" }
+            return
+        }
+
+        // 若列表里已经存在同端口本机条目，补标 isLocalHost 并唤醒刷新
+        if let existing = servers.first(where: { entry in
+            guard entry.config.isLoopbackEndpoint, let u = entry.config.baseURL else { return false }
+            let port = u.port ?? (u.scheme == "https" ? 443 : 80)
+            return port == found.port
+        }) {
+            if !existing.config.isLocalHost {
+                existing.config.isLocalHost = true
+                existing.client.update(config: existing.config)
+                persist()
+            }
+            existing.authEnabled = found.authRequired
+            if !existing.isOnline {
+                if found.authRequired && !found.authenticated && !existing.client.hasSession {
+                    existing.markNeedsLogin()
+                } else {
+                    await refresh(existing)
+                }
+            }
+            if manual {
+                activeServerID = existing.id
+                localScanMessage = "已连接本机 Frog Bot（\(found.url)）"
+            }
+            return
+        }
+
+        let dismissed = UserDefaults.standard.bool(forKey: Self.dismissedLocalKey)
+        guard manual || !dismissed else { return }
+
+        let config = ServerConfig(
+            id: UUID(),
+            name: "本机",
+            url: found.url,
+            username: found.username?.isEmpty == false ? found.username! : (found.authRequired ? "admin" : "local"),
+            tunnelURI: nil,
+            isLocalHost: true
+        )
+        let entry = ServerEntry(config: config)
+        entry.authEnabled = found.authRequired
+        servers.insert(entry, at: 0)
+        persist()
+        wire(entry)
+        if activeServerID == nil || manual {
+            activeServerID = entry.id
+        }
+        if found.authRequired && !found.authenticated {
+            entry.markNeedsLogin()
+            if manual {
+                sheet = .login(entry.id)
+                localScanMessage = "发现本机 Frog Bot（\(found.url)），请登录后使用"
+            }
+        } else {
+            await refresh(entry)
+            if manual {
+                localScanMessage = "已自动接入本机 Frog Bot（\(found.url)）"
+            }
+        }
+    }
+
+    private static func probeLoopbackPorts(_ range: ClosedRange<Int>) async -> LocalHostDiscovery? {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 0.75
+        cfg.timeoutIntervalForResource = 1.2
+        cfg.httpCookieStorage = nil
+        cfg.urlCache = nil
+        let probeSession = URLSession(configuration: cfg)
+        defer { probeSession.invalidateAndCancel() }
+
+        return await withTaskGroup(of: LocalHostDiscovery?.self) { group in
+            for port in range {
+                group.addTask {
+                    guard let healthURL = URL(string: "http://127.0.0.1:\(port)/api/health") else { return nil }
+                    do {
+                        let (data, resp) = try await probeSession.data(from: healthURL)
+                        guard let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                              let j = JSON.parse(data) else { return nil }
+                        // 确认是 Frog Bot 自己的健康检查接口（返回 {"ok":true,...} 或带 version/status 字段）
+                        let ok = j["ok"].bool || j["status"].str == "ok" || !j["version"].str.isEmpty
+                        guard ok else { return nil }
+                        let version = j["version"].str
+
+                        var authRequired = false
+                        var authenticated = true
+                        var username: String? = nil
+                        if let meURL = URL(string: "http://127.0.0.1:\(port)/api/auth/me"),
+                           let (meData, meResp) = try? await probeSession.data(from: meURL),
+                           let meHTTP = meResp as? HTTPURLResponse, meHTTP.statusCode == 200,
+                           let me = try? JSONDecoder().decode(AuthInfo.self, from: meData) {
+                            authRequired = me.enabled
+                            authenticated = !me.enabled || (me.authenticated ?? false)
+                            username = me.username
+                        }
+                        return LocalHostDiscovery(
+                            port: port,
+                            url: "http://127.0.0.1:\(port)",
+                            version: version,
+                            authRequired: authRequired,
+                            authenticated: authenticated,
+                            username: username
+                        )
+                    } catch {
+                        return nil
+                    }
+                }
+            }
+            var hits: [LocalHostDiscovery] = []
+            for await hit in group {
+                if let hit { hits.append(hit) }
+            }
+            return hits.min(by: { $0.port < $1.port })
+        }
+    }
 
     // MARK: 服务器
 
@@ -181,11 +464,18 @@ final class AppModel {
             s.devices = groups
             s.status = .online
             syncSessions(s)
-            // 选中的 Bot 不在了（或者还没选过）才换一个；别的服务器还没刷新时不要误判
+            // 如果当前激活主机还不在线，自动切到刚连上的在线主机（例如本机）
+            if activeServer == nil || activeServer?.isOnline != true {
+                activeServerID = s.id
+            }
+            // 选中的 Bot 不在了（或者属于离线主机而当前主机在线）才换一个
             if let sel = selection {
-                if sel.server == s.id && !exists(sel) || server(sel.server) == nil { selectFirst() }
+                let selServerOnline = server(sel.server)?.isOnline == true
+                if sel.server == s.id && !exists(sel) || server(sel.server) == nil || (!selServerOnline && activeServerID == s.id) {
+                    selectFirst(preferring: activeServer)
+                }
             } else {
-                selectFirst()
+                selectFirst(preferring: activeServer)
             }
         } catch APIError.unauthorized {
             s.markNeedsLogin()
@@ -199,8 +489,17 @@ final class AppModel {
         return s.devices.contains { $0.id == ref.device && $0.bots.contains { $0.id == ref.bot } }
     }
 
-    private func selectFirst() {
-        for s in servers {
+    private func selectFirst(preferring preferred: ServerEntry? = nil) {
+        if let preferred {
+            for g in preferred.devices {
+                if let b = g.bots.first {
+                    selection = BotRef(server: preferred.id, device: g.id, bot: b.id)
+                    return
+                }
+            }
+        }
+        let ordered = servers.filter(\.isOnline) + servers.filter { !$0.isOnline }
+        for s in ordered {
             for g in s.devices {
                 if let b = g.bots.first {
                     selection = BotRef(server: s.id, device: g.id, bot: b.id)
@@ -337,12 +636,24 @@ final class AppModel {
     }
 
     func remove(_ s: ServerEntry) {
+        if s.config.isLocalHost || s.config.isLoopbackEndpoint {
+            UserDefaults.standard.set(true, forKey: Self.dismissedLocalKey)
+        }
         relay.forget(s)
         s.pollTask?.cancel()
+        s.gateway.disconnect()
         stopSessions(of: s)
         for ref in sessions.keys where ref.server == s.id {
             sessions[ref] = nil
             unread[ref] = nil
+        }
+        agyStores[s.id] = nil
+        for (k, cs) in agyChatSessions where cs.server.id == s.id {
+            cs.stop()
+            agyChatSessions[k] = nil
+        }
+        if codingSelection?.server == s.id {
+            codingSelection = nil
         }
         let client = s.client
         Task {
@@ -354,6 +665,9 @@ final class AppModel {
         client.forgetSession()
         servers.removeAll { $0.id == s.id }
         persist()
+        if activeServerID == s.id {
+            activeServerID = servers.first?.id
+        }
         if selection?.server == s.id {
             selection = nil
             selectFirst()

@@ -7,7 +7,7 @@ import {
   agyAPI, type AgyChatMessage, type AgyCommandOption, type AgyFileEntry, type AgyModeOption, type AgyModelOption,
   type AgyPermission, type AgyProject, type AgyQueuedPrompt, type AgySessionSummary, type AgySnapshot, type AgyStatus, type AgyToolCall,
 } from '../api';
-import { AssistantBubbles } from './Markdown';
+import Markdown, { CopyButton } from './Markdown';
 import ThinkingBlock from './ThinkingBlock';
 
 const ACTIVE_PROJ_KEY = 'frogbot-agy-project';
@@ -518,7 +518,7 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
       <div ref={scroller}
         onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}
         className="flex-1 overflow-y-auto">
-        <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pb-8 pt-6">
+        <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pb-10 pt-6">
           {(!sessionId || (live.ready && live.messages.length === 0 && !busy)) && (
             <div className="flex flex-col items-center px-2 pt-[12vh] text-center">
               <div className="grid size-14 place-items-center rounded-2xl bg-s2 text-accent">
@@ -540,8 +540,8 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
             <div className="flex justify-center pt-[18vh]"><span className="typing"><i /><i /><i /></span></div>
           )}
 
-          {live.messages.map((m) => (
-            <AgyMessageItem key={m.id} m={m} />
+          {live.messages.map((m, idx) => (
+            <AgyMessageItem key={m.id} m={m} divider={idx > 0 && m.role === 'user'} />
           ))}
 
           {live.permissions.filter((p) => p.status === 'pending').map((p) => (
@@ -551,17 +551,20 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
           ))}
 
           {busy && (
-            <div className="rise flex flex-col gap-2 rounded-2xl border border-line bg-s1/60 p-4">
+            <div className="rise flex flex-col gap-3">
               {live.thinking && (
                 <ThinkingBlock live text={live.thinking} startedAt={live.thinkStart} endedAt={live.thinkEnd || undefined} />
               )}
               {live.liveTools.length > 0 && <ToolCallList tools={live.liveTools} />}
               {live.streaming ? (
-                <AssistantBubbles text={live.streaming} streaming />
+                <div className="md">
+                  <Markdown text={live.streaming} />
+                  <span className="caret-inline" />
+                </div>
               ) : (
-                <div className="flex items-center gap-2 text-xs text-fg4">
+                <div className="flex items-center gap-2 py-1 text-xs text-fg4">
                   <Loader2 size={13} className="animate-spin text-accent" />
-                  <span>Agent 正在执行…</span>
+                  <span className="shimmer-text">Agent 正在执行…</span>
                 </div>
               )}
             </div>
@@ -674,23 +677,38 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
   );
 }
 
-function AgyMessageItem({ m }: { m: AgyChatMessage }) {
+function AgyMessageItem({ m, divider }: { m: AgyChatMessage; divider?: boolean }) {
   if (m.role === 'user') {
     return (
-      <div className="rise flex justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-[20px] rounded-br-md bg-bubble px-4 py-2.5 text-[15px] leading-relaxed text-fg">
-          {m.text}
+      <div className={`rise group ${divider ? 'mt-2 border-t border-line/60 pt-5' : ''}`}>
+        <div className="flex items-start gap-2.5 rounded-r-xl border-l-[2.5px] border-accent bg-s2/55 px-3.5 py-2.5">
+          <span className="mt-0.5 select-none font-mono text-xs font-semibold text-accent">&gt;</span>
+          <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[14.5px] font-medium leading-relaxed text-fg">
+            {m.text}
+          </div>
+          <div className="shrink-0 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+            <CopyButton text={m.text} label="复制指令" />
+          </div>
         </div>
       </div>
     );
   }
   return (
-    <div className="rise flex flex-col gap-2">
+    <div className="rise group flex flex-col gap-3">
       {m.thinking && <ThinkingBlock text={m.thinking} ms={m.thinking_ms} />}
       {m.tools && m.tools.length > 0 && <ToolCallList tools={m.tools} />}
-      {m.text && <AssistantBubbles text={m.text} />}
+      {m.text && (
+        <div className="relative">
+          <div className="md">
+            <Markdown text={m.text} />
+          </div>
+          <div className="msg-actions flex items-center gap-1">
+            <CopyButton text={m.text} label="复制回复" />
+          </div>
+        </div>
+      )}
       {m.error && (
-        <div className="rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+        <div className="rounded-r-lg border-l-[2.5px] border-danger bg-danger/10 px-3 py-2 text-xs text-danger">
           {m.error}
         </div>
       )}
@@ -701,51 +719,60 @@ function AgyMessageItem({ m }: { m: AgyChatMessage }) {
 function ToolCallList({ tools }: { tools: AgyToolCall[] }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex flex-wrap gap-1.5">
-        {tools.map((t) => {
-          const running = t.status === 'in_progress' || t.status === 'pending';
-          const failed = t.status === 'failed' || t.status === 'error';
-          const hasExtra = !!(t.detail || t.output);
-          const isOpen = !!expanded[t.id];
-          return (
-            <button key={t.id} type="button"
+    <div className="ml-1 flex flex-col border-l border-line pl-3">
+      {tools.map((t) => {
+        const running = t.status === 'in_progress' || t.status === 'pending';
+        const failed = t.status === 'failed' || t.status === 'error';
+        const hasExtra = !!(t.detail || t.output);
+        const isOpen = !!expanded[t.id];
+        return (
+          <div key={t.id} className="py-1">
+            <button
+              type="button"
               onClick={() => hasExtra && setExpanded((prev) => ({ ...prev, [t.id]: !prev[t.id] }))}
-              className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] transition ${
-                failed ? 'border-danger/40 bg-danger/10 text-danger'
-                  : 'border-line bg-s2 text-fg3' + (hasExtra ? ' cursor-pointer hover:border-line2 hover:text-fg' : ' cursor-default')
-              }`}>
-              {running ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-                : failed ? <X size={11} className="shrink-0 text-danger" />
-                  : <Check size={11} className="shrink-0 text-accent" />}
+              className={`group/tool flex w-full items-center gap-2 rounded-lg px-1.5 py-0.5 text-left text-[12px] transition ${
+                failed ? 'text-danger' : 'text-fg3'
+              } ${hasExtra ? 'cursor-pointer hover:bg-s2/70 hover:text-fg' : 'cursor-default'}`}
+            >
+              {running ? (
+                <Loader2 size={12} className="shrink-0 animate-spin text-accent" />
+              ) : failed ? (
+                <X size={12} className="shrink-0 text-danger" />
+              ) : (
+                <Check size={12} className="shrink-0 text-accent" />
+              )}
               <Wrench size={11} className="shrink-0 text-fg4" />
-              <span className="truncate font-mono">{t.title || t.name}</span>
-              {hasExtra && <ChevronDown size={11} className={`shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />}
+              <span className="min-w-0 truncate font-mono text-[11.5px]">{t.title || t.name}</span>
+              {hasExtra && (
+                <ChevronDown size={11} className={`ml-auto shrink-0 text-fg4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+              )}
             </button>
-          );
-        })}
-      </div>
-      {tools.filter((t) => expanded[t.id] && (t.detail || t.output)).map((t) => (
-        <div key={t.id + '-detail'} className="overflow-hidden rounded-xl border border-line bg-s2/60 p-2.5 font-mono text-[11.5px] text-fg2">
-          {t.detail && <div className="truncate font-semibold text-fg">{t.detail}</div>}
-          {t.output && (
-            <pre className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-relaxed text-fg3">{t.output}</pre>
-          )}
-        </div>
-      ))}
+            {isOpen && hasExtra && (
+              <div className="mt-1.5 overflow-hidden rounded-lg border border-line bg-code p-2.5 font-mono text-[11.5px] text-fg2">
+                {t.detail && <div className="truncate font-semibold text-fg">{t.detail}</div>}
+                {t.output && (
+                  <pre className="mt-1.5 max-h-52 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-relaxed text-fg3">
+                    {t.output}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 function AgyPermCard({ perm, onDecide }: { perm: AgyPermission; onDecide: (optionId: string) => void }) {
   return (
-    <div className="rise rounded-2xl border border-warn/40 bg-s1 p-4 shadow-xs">
+    <div className="rise rounded-r-xl border border-warn/30 border-l-[3px] border-l-warn bg-warn/5 p-3.5">
       <div className="flex items-start gap-2.5">
-        <ShieldAlert size={18} className="mt-0.5 shrink-0 text-warn" />
+        <ShieldAlert size={17} className="mt-0.5 shrink-0 text-warn" />
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-fg">请求操作确认：{perm.title}</div>
+          <div className="text-[13.5px] font-medium text-fg">请求操作确认：{perm.title}</div>
           {perm.detail && (
-            <pre className="mt-1.5 overflow-x-auto rounded-lg bg-s2 p-2 font-mono text-xs text-fg2">{perm.detail}</pre>
+            <pre className="mt-1.5 overflow-x-auto rounded-lg border border-line bg-code p-2 font-mono text-xs text-fg2">{perm.detail}</pre>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
             {perm.options.map((opt) => {

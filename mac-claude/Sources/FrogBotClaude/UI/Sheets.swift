@@ -96,6 +96,21 @@ struct ServerSheet: View {
             }
 
             HStack {
+                if mode == .add {
+                    Button {
+                        Task {
+                            await model.discoverLocalHost(manual: true)
+                            if model.hasLocalServer { dismiss() }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if model.scanningLocal { ProgressView().controlSize(.mini) }
+                            Image(systemName: "desktopcomputer")
+                            Text("自动识别本机")
+                        }
+                    }
+                    .disabled(busy || model.scanningLocal)
+                }
                 Spacer()
                 Button("取消") { dismiss() }
                     .keyboardShortcut(.cancelAction)

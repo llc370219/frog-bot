@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('frogDesktop', {
   navServer: (payload) => ipcRenderer.invoke('frog:nav-server', payload),
   toggleRelay: (payload) => ipcRenderer.invoke('frog:relay-toggle', payload),
   setupLocal: () => ipcRenderer.invoke('frog:local-setup'),
+  discoverLocal: () => ipcRenderer.invoke('frog:discover-local'),
   checkUpdates: () => ipcRenderer.invoke('frog:check-updates'),
   checkServerUpdate: (payload) => ipcRenderer.invoke('frog:server-check-update', payload),
   applyServerUpdate: (payload) => ipcRenderer.invoke('frog:server-apply-update', payload),

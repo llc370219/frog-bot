@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
@@ -77,6 +78,7 @@ fun SchedulerScreen(state: AppState, nav: Nav) {
     Scaffold(
         topBar = {
             TopAppBar(
+                navigationIcon = { IconButton(onClick = { nav.pop() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") } },
                 title = { Text("自动调度器") },
                 actions = { IconButton(onClick = { reload++ }) { Icon(Icons.Filled.Refresh, "刷新") } },
             )

@@ -377,7 +377,6 @@ private struct IdeaCard: View {
     let title: String
     let text: String
     let action: () -> Void
-    @State private var hover = false
 
     var body: some View {
         Button(action: action) {
@@ -394,10 +393,10 @@ private struct IdeaCard: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
-            .background(hover ? Theme.s3 : Theme.s2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Theme.s2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.line, lineWidth: 0.5))
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
-        .onHover { hover = $0 }
     }
 }

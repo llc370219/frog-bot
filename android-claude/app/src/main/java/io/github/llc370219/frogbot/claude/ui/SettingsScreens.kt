@@ -20,7 +20,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -33,6 +36,7 @@ import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material3.AlertDialog
@@ -120,14 +124,23 @@ private fun statusText(s: ServerEntry): String = when (val st = s.status) {
 @Composable
 fun SettingsScreen(state: AppState, nav: Nav, updater: ClientUpdater, onInstall: () -> Unit) {
     val context = LocalContext.current
-    Scaffold(topBar = { TopAppBar(title = { Text("设置") }) }, containerColor = MaterialTheme.colorScheme.surface) { pad ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("设置") },
+                navigationIcon = { IconButton(onClick = { nav.pop() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") } },
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())) {
-            SectionLabel("服务器")
+            SectionLabel("主机")
             state.servers.forEach { s ->
                 ListRow(s.name, statusText(s), Icons.Outlined.Dns, chevron = true, onClick = { nav.push(Screen.Server(s.id)) })
             }
-            ListRow("添加服务器", icon = Icons.Filled.Add, titleColor = MaterialTheme.colorScheme.primary, onClick = { nav.push(Screen.AddServer()) })
+            ListRow("添加主机 / 连接码", icon = Icons.Filled.Add, titleColor = MaterialTheme.colorScheme.primary, onClick = { nav.push(Screen.AddServer()) })
             SectionLabel("通用")
+            ListRow("自动调度器", "查看并管理 Bot 定时计划", Icons.Outlined.Schedule, chevron = true, onClick = { nav.push(Screen.Scheduler) })
             SwitchRow(
                 "后台保持连接", "用一条常驻通知保持连接，审批和任务结束能马上提醒你", Icons.Outlined.NotificationsActive, state.keepAlive,
             ) { on ->
@@ -470,6 +483,23 @@ fun ServerScreen(state: AppState, s: ServerEntry, nav: Nav) {
             )
             Note("API 渠道整台设备共用；聊天模型、任务模型和 Agent 每个 Bot 各自选，互不影响。")
         }
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        SectionLabel("官方 CLI 与前置 Bot 反代")
+        ListRow(
+            "官方 Coding CLI 登录",
+            "Codex / Claude Code / Gemini / Grok 无头授权",
+            Icons.Filled.Key,
+            chevron = true,
+            onClick = if (s.online) ({ nav.push(Screen.CliAuth(s.id)) }) else null,
+        )
+        ListRow(
+            "前置 Bot 账号反代网关",
+            "CLIProxyAPI / OpenCodex / Magpie（含免责声明，与自定义 API 并存）",
+            Icons.Filled.SwapHoriz,
+            chevron = true,
+            onClick = if (s.online) ({ nav.push(Screen.ProxyGateway(s.id)) }) else null,
+        )
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionLabel("服务端版本")

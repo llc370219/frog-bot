@@ -31,13 +31,10 @@ struct MessageRow: View {
     var canRegenerate = false
     var onError: (String) -> Void
 
-    @State private var hover = false
-
     var body: some View {
         Group {
             if msg.role == "user" { userBody } else { assistantBody }
         }
-        .onHover { hover = $0 }
         .contextMenu { menu }
     }
 
@@ -124,7 +121,7 @@ struct MessageRow: View {
                     .help("重新生成")
             }
         }
-        .opacity(hover ? 1 : 0)
+        .opacity(0.65)
         .frame(height: 22)
     }
 
@@ -294,7 +291,6 @@ struct FileChip: View {
     let path: String
     var name: String? = nil
     var size: Int? = nil
-    @State private var hover = false
 
     var body: some View {
         Button { FileOpener.open(session: session, path: path, name: name ?? Fmt.base(path)) } label: {
@@ -320,10 +316,9 @@ struct FileChip: View {
             .padding(.trailing, 12)
             .padding(.vertical, 6)
             .frame(maxWidth: 300, alignment: .leading)
-            .background(hover ? Theme.s3 : Theme.s2, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Theme.s2, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
-        .onHover { hover = $0 }
         .help("下载并打开 \(path)")
     }
 

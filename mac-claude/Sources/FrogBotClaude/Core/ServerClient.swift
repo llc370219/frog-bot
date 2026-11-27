@@ -1,16 +1,49 @@
 import Foundation
 import UniformTypeIdentifiers
 
-/// 一台 frog 服务器的连接设置（保存在本机）。支持常规 HTTP/HTTPS 与零配置 E2EE 盲中继 (`froge2ee://`)。
+/// 一台 frog 服务器的连接设置（保存在本机）。支持常规 HTTP/HTTPS、本机自动发现与零配置 E2EE 盲中继 (`froge2ee://`)。
 struct ServerConfig: Codable, Hashable, Identifiable {
     var id: UUID
     var name: String
     var url: String
     var username: String
     var tunnelURI: String? = nil
+    var isLocalHost: Bool = false
+
+    init(id: UUID, name: String, url: String, username: String, tunnelURI: String? = nil, isLocalHost: Bool = false) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.username = username
+        self.tunnelURI = tunnelURI
+        self.isLocalHost = isLocalHost
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, url, username, tunnelURI, isLocalHost
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        url = try c.decode(String.self, forKey: .url)
+        username = try c.decode(String.self, forKey: .username)
+        tunnelURI = try c.decodeIfPresent(String.self, forKey: .tunnelURI)
+        if let saved = try c.decodeIfPresent(Bool.self, forKey: .isLocalHost) {
+            isLocalHost = saved
+        } else {
+            let isTunnel = !(tunnelURI ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            isLocalHost = !isTunnel && Self.isLoopback(URL(string: url)?.host ?? "")
+        }
+    }
 
     var isTunneled: Bool {
         !(tunnelURI ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var isLoopbackEndpoint: Bool {
+        !isTunneled && Self.isLoopback(baseURL?.host ?? "")
     }
 
     var tunnelBadge: String? {

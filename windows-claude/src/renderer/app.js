@@ -107,16 +107,22 @@ function renderTitlebar(st) {
   const active = st.servers.find((s) => s.id === st.activeServerId);
   const ctx = el('titlebar-context');
   if (!active) {
-    ctx.innerHTML = `<span class="tb-ctx-dot"></span><span class="tb-ctx-name">未连接服务器</span>`;
+    ctx.innerHTML = `<span class="tb-ctx-dot"></span><span class="tb-ctx-name">未连接主机</span>`;
   } else {
     const status = serverStatus(active);
     const title =
       active.online && active.authenticated && active.currentTitle && active.currentTitle !== active.name
         ? active.currentTitle
         : status.text;
+    const badge = active.local
+      ? '<span class="tag ok" style="font-size:10px;padding:1px 6px">本机</span>'
+      : active.tunnelBadge
+        ? `<span class="tag" style="font-size:10px;padding:1px 6px;background:var(--accent-soft);color:var(--accent)">${escapeHTML(active.tunnelBadge)}</span>`
+        : '';
     ctx.innerHTML = `
       <span class="tb-ctx-dot ${status.cls}"></span>
       <span class="tb-ctx-name">${escapeHTML(active.name)}</span>
+      ${badge}
       <span class="tb-ctx-title">${escapeHTML(title)}</span>
     `;
   }
@@ -213,9 +219,11 @@ function renderServersTab(st, body) {
             <div class="srv-meta">
               <div class="srv-name">
                 <span>${escapeHTML(s.name)}</span>
+                ${s.local ? '<span class="tag ok">本机</span>' : ''}
+                ${s.tunnelBadge ? `<span class="tag" style="background:var(--accent-soft);color:var(--accent)">${escapeHTML(s.tunnelBadge)}</span>` : ''}
                 ${isCurrent ? '<span class="tag plain ok">当前</span>' : ''}
               </div>
-              <div class="srv-url" title="${escapeHTML(s.url)}">${escapeHTML(s.url.replace(/^https?:\/\//, ''))}${s.version ? ` · ${escapeHTML(s.version)}` : ''}</div>
+              <div class="srv-url" title="${escapeHTML(s.tunnelUri || s.url)}">${escapeHTML(s.tunnelBadge ? '零配置端到端加密隧道' : s.url.replace(/^https?:\/\//, ''))}${s.version ? ` · ${escapeHTML(s.version)}` : ''}</div>
             </div>
             <span class="tag ${status.tag}">${escapeHTML(tagText)}</span>
           </div>
@@ -241,16 +249,20 @@ function renderServersTab(st, body) {
 
   body.innerHTML = `
     <div class="section-label">
-      <span>已连接 ${st.servers.length} 台服务器</span>
-      <button class="btn btn-sm btn-ghost" id="drawer-add-srv">${ICONS.plus}添加</button>
+      <span>已连接 ${st.servers.length} 台主机</span>
+      <div style="display:flex;gap:4px">
+        <button class="btn btn-sm btn-ghost" id="drawer-discover-local">${st.scanningLocal ? '扫描中…' : '识别本机'}</button>
+        <button class="btn btn-sm btn-ghost" id="drawer-add-srv">${ICONS.plus}添加</button>
+      </div>
     </div>
     ${
       st.servers.length === 0
-        ? `<div class="empty-card">还没有添加服务器。<br/>连接一台运行 frog 的 Linux 服务器即可开始。<br/><button class="btn btn-sm btn-primary" id="drawer-add-srv-2">${ICONS.plus}添加服务器</button></div>`
+        ? `<div class="empty-card">还没有连接主机。<br/>本机运行的 Frog Bot 会自动识别，也可点击上方识别本机或粘贴 froge2ee:// 连接码。<br/><button class="btn btn-sm btn-primary" id="drawer-add-srv-2">${ICONS.plus}添加主机</button></div>`
         : cards
     }
   `;
 
+  el('drawer-discover-local')?.addEventListener('click', () => frogDesktop.discoverLocal());
   el('drawer-add-srv')?.addEventListener('click', () => openServerModal());
   el('drawer-add-srv-2')?.addEventListener('click', () => openServerModal());
   body.querySelectorAll('[data-act]').forEach((btn) => {
@@ -476,34 +488,40 @@ function renderStage(st) {
   const active = st.servers.find((s) => s.id === st.activeServerId);
 
   if (!active) {
+    const localHint = st.detectedLocal
+      ? `<div class="banner" style="max-width:420px;margin:16px auto 0;background:var(--accent-soft);color:var(--accent);justify-content:space-between">
+           <span>已检测到本机 Frog Bot（${escapeHTML(st.detectedLocal.url)}）</span>
+           <button class="btn btn-sm btn-primary" id="hero-connect-local">立即接入</button>
+         </div>`
+      : '';
     box.innerHTML = `
       <div class="hero">
         <div class="hero-mark"><img src="./frog.png" alt="frog" /></div>
-        <div class="hero-eyebrow">FROG FOR WINDOWS</div>
-        <h1 class="hero-title">连接你的第一台 frog 服务器</h1>
-        <p class="hero-desc">自托管的多 Bot AI 助理。在这里同时管理多台服务器，聊天、派发后台任务、审批高危命令。</p>
+        <div class="hero-eyebrow">FROG BOT FOR WINDOWS</div>
+        <h1 class="hero-title">双核个人 AI 与无气泡 Coding 工作台</h1>
+        <p class="hero-desc">自动识别本机运行的 Frog Bot，也支持粘贴 froge2ee:// 端到端加密连接码或接入远端 VPS。</p>
+        ${localHint}
         <div class="hero-actions">
-          <button class="btn btn-primary btn-lg" id="hero-add-btn">${ICONS.plus}添加服务器</button>
-          <button class="btn btn-secondary btn-lg" id="hero-doc-btn">部署文档</button>
+          <button class="btn btn-primary btn-lg" id="hero-add-btn">${ICONS.plus}连接主机 / 粘贴连接码</button>
+          <button class="btn btn-secondary btn-lg" id="hero-discover-btn">${ICONS.refresh}扫描本机 Frog Bot</button>
         </div>
         <div class="feature-grid">
-          <div class="feature"><span class="feature-icon">${ICONS.server}</span><div><b>多服务器</b><span>左侧栏一键切换，各自保存 7 天登录会话。</span></div></div>
-          <div class="feature"><span class="feature-icon">${ICONS.link}</span><div><b>Bot 互联</b><span>不同服务器上的 Bot 互相提问、协作完成跨机任务。</span></div></div>
-          <div class="feature"><span class="feature-icon">${ICONS.bell}</span><div><b>实时通知</b><span>驻留托盘，有待批准命令或新消息时弹出 Windows 通知。</span></div></div>
-          <div class="feature"><span class="feature-icon">${ICONS.shield}</span><div><b>密钥不落地</b><span>模型 API Key 与 CLI 登录只保存在服务端。</span></div></div>
+          <div class="feature"><span class="feature-icon">${ICONS.server}</span><div><b>本机自动识别</b><span>同一台电脑运行 Frog Bot 时自动发现并置顶直连。</span></div></div>
+          <div class="feature"><span class="feature-icon">${ICONS.shield}</span><div><b>零配置 E2EE 穿透</b><span>支持 froge2ee:// 加密连接码，无需公网 IP 或 VPN。</span></div></div>
+          <div class="feature"><span class="feature-icon">${ICONS.bot}</span><div><b>Bot / Coding 双核</b><span>Bot 聊天气泡调度任务，Coding 无气泡沉浸写代码。</span></div></div>
+          <div class="feature"><span class="feature-icon">${ICONS.bell}</span><div><b>实时托盘提醒</b><span>驻留托盘，审批高危命令或任务完成时原生弹窗。</span></div></div>
         </div>
       </div>
       <div class="local-entry">
         <span id="local-status" class="local-status"></span>
-        <button type="button" class="link-btn" id="hero-local-btn">本机使用</button>
+        <button type="button" class="link-btn" id="hero-local-btn">一键下载并启动本机 Frog Bot</button>
       </div>
     `;
     el('hero-local-btn')?.addEventListener('click', startLocalSetup);
+    el('hero-connect-local')?.addEventListener('click', () => frogDesktop.discoverLocal());
+    el('hero-discover-btn')?.addEventListener('click', () => frogDesktop.discoverLocal());
     renderLocalStatus(st);
     el('hero-add-btn')?.addEventListener('click', () => openServerModal());
-    el('hero-doc-btn')?.addEventListener('click', () =>
-      frogDesktop.openExternal('https://github.com/llc370219/frog-bot#readme')
-    );
     return;
   }
 
@@ -594,7 +612,7 @@ async function startLocalSetup() {
 let lastStageKey = '';
 function stageKey(st) {
   const a = st.servers.find((s) => s.id === st.activeServerId);
-  if (!a) return 'none';
+  if (!a) return 'none|' + (st.detectedLocal?.url || '');
   return [a.id, a.name, a.url, a.online, a.authenticated, a.lastError].join('|');
 }
 
@@ -618,7 +636,20 @@ function render(st) {
 function checkUrlInsecureInput() {
   const raw = el('f-url').value.trim();
   const warn = el('f-insecure-warn');
-  if (!raw) {
+  const e2eeNote = el('f-e2ee-note');
+  const userWrap = el('f-user-wrap');
+  const passWrap = el('f-pass-wrap');
+  const submitBtn = el('btn-modal-submit');
+  const isE2EE = raw.toLowerCase().includes('froge2ee://');
+
+  if (e2eeNote) e2eeNote.classList.toggle('hidden', !isE2EE);
+  if (userWrap) userWrap.classList.toggle('hidden', isE2EE);
+  if (passWrap) passWrap.classList.toggle('hidden', isE2EE);
+  if (submitBtn && !submitBtn.disabled) {
+    submitBtn.textContent = isE2EE ? '建立加密连接' : (el('f-id').value ? '保存并登录' : '连接并登录');
+  }
+
+  if (!raw || isE2EE) {
     warn.classList.add('hidden');
     return;
   }
@@ -642,12 +673,12 @@ function openServerModal(srv = null) {
   el('modal-backdrop').classList.remove('hidden');
   el('f-error').classList.add('hidden');
   el('f-id').value = srv?.id || '';
-  el('f-url').value = srv?.url || '';
+  el('f-url').value = srv?.tunnelUri || srv?.url || '';
   el('f-name').value = srv?.name || '';
   el('f-user').value = srv?.username || 'admin';
   el('f-pass').value = '';
   setPassVisible(false);
-  el('modal-title').textContent = srv ? `连接「${srv.name}」` : '添加 frog 服务器';
+  el('modal-title').textContent = srv ? `连接「${srv.name}」` : '连接 Frog Bot 主机';
   el('btn-modal-submit').textContent = srv ? '保存并登录' : '连接并登录';
   checkUrlInsecureInput();
   setTimeout(() => {
@@ -818,6 +849,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   el('btn-add-server').addEventListener('click', () => openServerModal());
   el('btn-modal-close').addEventListener('click', closeServerModal);
   el('btn-modal-cancel').addEventListener('click', closeServerModal);
+  el('btn-modal-discover')?.addEventListener('click', async () => {
+    const next = await frogDesktop.discoverLocal();
+    render(next);
+    if (next?.servers?.some((s) => s.local)) closeServerModal();
+  });
   el('f-url').addEventListener('input', checkUrlInsecureInput);
   el('btn-toggle-pass').addEventListener('click', () => setPassVisible(el('f-pass').type === 'password'));
 

@@ -82,6 +82,12 @@ class AppState(private val context: Context) {
     val servers = mutableStateListOf<ServerEntry>()
     val sessions = mutableStateMapOf<String, BotSession>()
     val unread = mutableStateMapOf<String, Int>()
+    private val agyStores = HashMap<String, AgyStore>()
+    private val agySessions = HashMap<String, AgyChatSession>()
+
+    /** 首页双核模式：false = Bot 聊天气泡，true = Coding 无气泡工作台 */
+    var codingMode by mutableStateOf(false)
+    var activeCodingServerId by mutableStateOf<String?>(null)
 
     /** 正在看的 Bot（在聊天页里）；不在聊天页时为 null */
     var viewing by mutableStateOf<BotRef?>(null)
@@ -109,6 +115,21 @@ class AppState(private val context: Context) {
 
     fun server(id: String) = servers.firstOrNull { it.id == id }
     fun session(ref: BotRef) = sessions[ref.key]
+
+    fun activeCodingServer(): ServerEntry? {
+        activeCodingServerId?.let { id -> server(id)?.let { return it } }
+        return servers.firstOrNull { it.online } ?: servers.firstOrNull()
+    }
+
+    fun agyStore(server: ServerEntry): AgyStore =
+        agyStores.getOrPut(server.id) { AgyStore(server) }
+
+    fun agySession(server: ServerEntry, sessionId: String, projectId: String, title: String): AgyChatSession {
+        val key = "${server.id}|$sessionId"
+        return agySessions.getOrPut(key) {
+            AgyChatSession(server, sessionId, projectId, title, scope)
+        }
+    }
 
     val allRefs: List<BotRef>
         get() = servers.flatMap { s -> s.devices.flatMap { g -> g.bots.map { BotRef(s.id, g.id, it.id) } } }
@@ -266,6 +287,12 @@ class AppState(private val context: Context) {
         s.poll?.cancel()
         stopSessions(s)
         sessions.keys.filter { it.startsWith(s.id + "|") }.forEach { sessions.remove(it); unread.remove(it) }
+        agyStores.remove(s.id)
+        agySessions.keys.filter { it.startsWith(s.id + "|") }.forEach {
+            agySessions[it]?.stop()
+            agySessions.remove(it)
+        }
+        if (activeCodingServerId == s.id) activeCodingServerId = null
         val client = s.client
         scope.launch {
             if (!s.config.isTunneled) {

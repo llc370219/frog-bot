@@ -73,31 +73,61 @@ class LocalServer {
     };
   }
 
-  /** 本机端口上是否有免登录（本机模式）的 frog 在响应 */
-  async health(port, timeoutMs = 1500) {
+  /** 探测本机端口上是否有 Frog Bot（同时支持本机免登录模式与带登录认证模式） */
+  async probePort(port, timeoutMs = 1200) {
     const get = async (p) => {
       const resp = await fetch(`http://127.0.0.1:${port}${p}`, { signal: AbortSignal.timeout(timeoutMs) });
       return { status: resp.status, data: await resp.json().catch(() => null) };
     };
     try {
       const h = await get('/api/health');
-      if (h.status !== 200 || !h.data?.ok) return null;
-      const me = await get('/api/auth/me');
-      // 服务器模式（要登录）的 frog 不算本机版
-      if (me.status === 200 && me.data?.enabled) return null;
-      return h.data;
+      if (h.status !== 200 || (!h.data?.ok && h.data?.status !== 'ok' && !h.data?.version)) return null;
+      let authRequired = false;
+      let authenticated = true;
+      let username = '';
+      try {
+        const me = await get('/api/auth/me');
+        if (me.status === 200 && me.data) {
+          authRequired = Boolean(me.data.enabled);
+          authenticated = !authRequired || Boolean(me.data.authenticated);
+          username = String(me.data.username || '');
+        }
+      } catch {}
+      return {
+        port,
+        url: `http://127.0.0.1:${port}`,
+        version: String(h.data?.version || ''),
+        authRequired,
+        authenticated,
+        username,
+      };
     } catch {
       return null;
     }
   }
 
-  /** 找出 8080-8099 里已经在运行的 frog（例如用户自己双击运行的 frogbot.exe） */
+  /** 本机端口上是否有免登录（本机模式）的 frog 在响应 */
+  async health(port, timeoutMs = 1500) {
+    const info = await this.probePort(port, timeoutMs);
+    if (!info || info.authRequired) return null;
+    return info;
+  }
+
+  /** 找出 8080-8099 里已经在运行的免登录本机 frog */
   async findRunning() {
     const ports = [];
     for (let p = PORT_FROM; p <= PORT_TO; p++) ports.push(p);
-    const results = await Promise.all(ports.map((p) => this.health(p, 1200)));
+    const results = await Promise.all(ports.map((p) => this.health(p, 1000)));
     const idx = results.findIndex(Boolean);
     return idx === -1 ? null : ports[idx];
+  }
+
+  /** 找出 8080-8099 里任意运行中的本机 frog（无论是免登录模式还是带密码模式） */
+  async findAnyRunning() {
+    const ports = [];
+    for (let p = PORT_FROM; p <= PORT_TO; p++) ports.push(p);
+    const results = await Promise.all(ports.map((p) => this.probePort(p, 900)));
+    return results.find(Boolean) || null;
   }
 
   portFree(port) {

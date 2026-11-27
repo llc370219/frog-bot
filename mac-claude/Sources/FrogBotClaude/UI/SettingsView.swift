@@ -12,10 +12,12 @@ enum SettingsPane: Hashable {
     case channels(BotRef)
     case agents(BotRef)
     case account(UUID)
+    case cliAuth(UUID)
+    case proxyGateway(UUID)
 
     var serverID: UUID? {
         switch self {
-        case .server(let id), .account(let id): return id
+        case .server(let id), .account(let id), .cliAuth(let id), .proxyGateway(let id): return id
         case .channels(let r), .agents(let r): return r.server
         default: return nil
         }
@@ -125,7 +127,7 @@ struct SettingsView: View {
     private var parent: SettingsPane? {
         switch pane {
         case .channels(let r), .agents(let r): return .server(r.server)
-        case .account(let id): return .server(id)
+        case .account(let id), .cliAuth(let id), .proxyGateway(let id): return .server(id)
         default: return nil
         }
     }
@@ -138,6 +140,8 @@ struct SettingsView: View {
         case .server(let id): return model.server(id)?.name ?? "服务器"
         case .channels(let r), .agents(let r): return botName(r)
         case .account: return "账号与登录"
+        case .cliAuth: return "官方 CLI 登录"
+        case .proxyGateway: return "前置 Bot 账号反代网关"
         }
     }
 
@@ -174,6 +178,10 @@ struct SettingsView: View {
             }
         case .account(let id):
             if let s = model.server(id) { AccountPane(server: s) }
+        case .cliAuth(let id):
+            if let s = model.server(id) { CLIAuthPane(server: s) }
+        case .proxyGateway(let id):
+            if let s = model.server(id) { ProxyGatewayPane(server: s) }
         }
     }
 
@@ -502,6 +510,24 @@ private struct ServerPane: View {
                 }
                 Caption(text: "API 渠道整台设备共用；聊天模型、任务模型和 Agent 每个 Bot 各自选，互不影响。也可以在聊天窗口顶部直接换聊天模型。")
             }
+
+            GroupHeader(text: "官方 CLI 与前置 Bot 反代")
+            FormGroup {
+                FormRow(title: "官方 Coding CLI 账号登录") {
+                    Text("Codex / Claude / Gemini / Grok").foregroundStyle(Theme.fg3)
+                    Button("管理…") { go(.cliAuth(server.id)) }
+                        .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
+                        .disabled(!server.isOnline)
+                }
+                RowDivider()
+                FormRow(title: "前置 Bot 账号反代网关") {
+                    Text("CLIProxyAPI / OpenCodex / Magpie").foregroundStyle(Theme.fg3)
+                    Button("配置…") { go(.proxyGateway(server.id)) }
+                        .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
+                        .disabled(!server.isOnline)
+                }
+            }
+            Caption(text: "官方 CLI 登录与前置 Bot 反代完全解耦；反代渠道与自定义 API 并存，开启前需阅读并同意免责声明。")
 
             GroupHeader(text: "服务端版本")
             FormGroup {
