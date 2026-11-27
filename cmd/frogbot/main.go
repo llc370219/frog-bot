@@ -174,6 +174,7 @@ func main() {
 		InitialBaseURL: baseURL,
 		InitialKey:     key,
 		Devices:        deviceCfg,
+		AutoRemote:     env("", "FROGBOT_DEMO") == "" && env("1", "FROGBOT_AUTO_REMOTE") != "0",
 	})
 	if err != nil {
 		fatal("%v", err)
@@ -256,7 +257,8 @@ func main() {
 			fmt.Printf("  后台 agent 能在这台机器上执行命令（沙箱不可用：%s），请用专门的服务器。\n\n", sandboxStatus.Reason)
 		}
 	} else {
-		fmt.Printf("\n  只在本机使用，没有登录功能。要从别的电脑访问请用 frogbot -server。按 Ctrl+C 退出。\n\n")
+		fmt.Printf("  远程连接： 已默认开启加密穿透（点页面右上角「手机连接」即可获取二维码与连接码）\n")
+		fmt.Printf("\n  只在本机管理界面免登录运行（外网设备仅凭扫码/连接码端到端加密接入）。按 Ctrl+C 退出。\n\n")
 	}
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {

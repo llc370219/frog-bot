@@ -1,0 +1,7 @@
+# Frog Bot 官方/私有 E2EE 零知识盲中继 Caddy 配置
+# 仅转发密文 WebSocket 帧，Caddy 自动申请并续期 Let's Encrypt HTTPS 证书（443 端口）。
+relay.632219.xyz {
+    reverse_proxy 127.0.0.1:18443 {
+        flush_interval -1
+    }
+}

@@ -17,7 +17,7 @@ import Scheduler from './components/Scheduler';
 import ThinkingBlock from './components/ThinkingBlock';
 import WorkingCard from './components/WorkingCard';
 import Sidebar, { type UIMode } from './components/Sidebar';
-import SettingsDialog from './components/SettingsDialog';
+import SettingsDialog, { type SettingsTab } from './components/SettingsDialog';
 import TopActions from './components/TopActions';
 
 const NOTIFY_KEY = 'frogbot-notify';
@@ -37,7 +37,10 @@ export default function App() {
     return localStorage.getItem(MODE_KEY) === 'coding' ? 'coding' : 'bot';
   });
   const [schedulerOpen, setSchedulerOpen] = useState(launchAction === 'scheduler');
-  const [settingsOpen, setSettingsOpen] = useState(launchAction === 'settings');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(() => (
+    launchAction === 'settings' ? 'models' : launchAction === 'remote' ? 'remote' : null
+  ));
+  const settingsOpen = settingsTab !== null;
   const [v2Open, setV2Open] = useState(false);
   const [activeBotId, setActiveBotId] = useState(() => launchBot ? botKey(launchDevice, launchBot) : localStorage.getItem('frogbot-active-bot'));
   const devices = directory.length ? directory : [{ id: 'local', name: '本机', online: true, bots: [] }];
@@ -79,18 +82,19 @@ export default function App() {
         devices={devices} activeBotId={activeKey} schedulerActive={schedulerOpen} coding={coding}
         onSelectBot={handleSelectBot}
         onOpenScheduler={() => { handleChangeMode('bot'); setSchedulerOpen(true); }}
-        onOpenSettings={() => setSettingsOpen(true)} onCreateBot={device => setEditor({ device })}
+        onOpenSettings={() => setSettingsTab('models')} onCreateBot={device => setEditor({ device })}
         onEditBot={profile => setEditor({ device: local, profile })} />
       {mode === 'coding' ? (
         <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-          <TopActions />
+          <TopActions onOpenRemote={() => setSettingsTab('remote')} />
           <AgyWorkspace coding={coding} />
         </div>
       ) : activeBot ? (
         <BotView key={activeKey} bot={activeBot} device={device}
           schedulerOpen={schedulerOpen}
           settingsOpen={settingsOpen}
-          modalOpen={editor !== null} />
+          modalOpen={editor !== null}
+          onOpenRemote={() => setSettingsTab('remote')} />
       ) : (
         <main className="grid flex-1 place-content-center gap-3 px-4 text-center text-sm text-fg3" role="status">
           {loadError || '正在加载 Bot…'}
@@ -102,12 +106,13 @@ export default function App() {
         className="fixed bottom-4 left-4 z-30 flex items-center gap-1.5 rounded-full border border-line bg-s1/90 px-3 py-1.5 text-xs font-medium text-fg shadow backdrop-blur hover:bg-s2">
         <Shield size={13} />V2 总控
       </button>
-      {settingsOpen && (
+      {settingsTab && (
         <SettingsDialog
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => setSettingsTab(null)}
           devices={devices}
           initialDevice={device.id}
           initialBot={activeBot?.id ?? 'main'}
+          initialTab={settingsTab}
           onSettingsSaved={() => { setAttempt(n => n + 1); }}
         />
       )}
@@ -134,14 +139,14 @@ export default function App() {
 }
 
 function BotView({ bot, device, ...props }: {
-  bot: BotProfile; device: DeviceGroup; schedulerOpen: boolean; settingsOpen: boolean; modalOpen: boolean;
+  bot: BotProfile; device: DeviceGroup; schedulerOpen: boolean; settingsOpen: boolean; modalOpen: boolean; onOpenRemote: () => void;
 }) {
   const botAPI = useMemo(() => createBotAPI(bot.id, device.id), [bot.id, device.id]);
   return <BotContext.Provider value={{ bot, device, api: botAPI }}><ChatView {...props} /></BotContext.Provider>;
 }
 
-function ChatView({ schedulerOpen, settingsOpen, modalOpen }: {
-  schedulerOpen: boolean; settingsOpen: boolean; modalOpen: boolean;
+function ChatView({ schedulerOpen, settingsOpen, modalOpen, onOpenRemote }: {
+  schedulerOpen: boolean; settingsOpen: boolean; modalOpen: boolean; onOpenRemote: () => void;
 }) {
   const { bot, device, api } = useActiveBot();
   const activeBotName = bot.name;
@@ -231,7 +236,7 @@ function ChatView({ schedulerOpen, settingsOpen, modalOpen }: {
     <>
       {/* 右侧主工作区：删除了上面的状态栏，只有右上角黑白切换与通知图标 */}
       <div className="flex flex-1 flex-col h-full min-w-0 overflow-hidden relative">
-        <TopActions notify={notify} onNotify={toggleNotify} />
+        <TopActions notify={notify} onNotify={toggleNotify} onOpenRemote={onOpenRemote} />
 
         {!s.connected && (s.ready || !device.online) && (
           <div className="flex items-center justify-center gap-2 border-b border-line bg-s2 px-4 py-1.5 text-[12.5px] text-fg3" role="status">

@@ -98,13 +98,15 @@ func OpenBots(cfg Config) (*Bots, error) {
 		bs.Close()
 		return nil, fmt.Errorf("初始化 agy 工作台: %w", err)
 	}
-	if bs.remote, err = remote.NewManager(cfg.DataDir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	if bs.remote, err = remote.NewManagerWithOptions(cfg.DataDir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p := bs.remoteApp.Load(); p != nil {
 			(*p).ServeHTTP(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
-	})); err != nil {
+	}), remote.Options{
+		AutoEnableE2EE: cfg.AutoRemote,
+	}); err != nil {
 		bs.Close()
 		return nil, fmt.Errorf("初始化远程访问网关: %w", err)
 	}

@@ -23,12 +23,40 @@ import (
 
 const (
 	ModeOff     = "off"
-	ModeE2EE    = "e2ee"    // 标准 HTTPS/WSS 443 盲中继 + 局域网直连（X25519+AES-256-GCM 端到端加密，全端原生零 CGO，免费 CF Workers 兼容）
+	ModeE2EE    = "e2ee"    // 标准 HTTPS/WSS 443 盲中继 + 局域网直连（X25519+AES-256-GCM 端到端加密，全端原生零 CGO）
 	ModeReality = "reality" // sing-box VLESS-Reality 隐身直连（云服务器 / 公网 IPv4 / IPv6）
 	ModeP2P     = "p2p"     // WireGuard 式 UDP P2P 打洞穿透（家庭内网无公网端口）
 
+	E2EERelayOffSentinel = "off"
+
 	pairTTL = 10 * time.Minute
 )
+
+// DefaultE2EERelayURL 是内置的开箱即用公网零知识盲中继地址。
+// 可在编译时通过 -ldflags "-X frogbot/internal/remote.DefaultE2EERelayURL=..."
+// 或运行时通过环境变量 FROGBOT_DEFAULT_RELAY_URL 覆盖。
+var DefaultE2EERelayURL = "wss://relay.632219.xyz/ws"
+
+// ResolveDefaultE2EERelayURL 返回当前生效的内置默认盲中继地址。
+func ResolveDefaultE2EERelayURL(override string) string {
+	if v := strings.TrimSpace(override); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("FROGBOT_DEFAULT_RELAY_URL")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(DefaultE2EERelayURL)
+}
+
+// Options 控制远程连接管理器的初始化行为。
+type Options struct {
+	// AutoEnableE2EE 为 true 时，首次启动（尚无 remote.json）自动开启 E2EE 远程连接并接入内置中继，实现到手即用。
+	AutoEnableE2EE bool
+	// DefaultRelayURL 可选覆盖内置默认中继地址（用于定制构建或单测）。
+	DefaultRelayURL string
+	// E2EEDialer 可选自定义 WebSocket Dialer（用于离线单测）。
+	E2EEDialer *websocket.Dialer
+}
 
 type devIDCtxKey struct{}
 
@@ -90,26 +118,29 @@ type SaveInput struct {
 }
 
 type StatusView struct {
-	Mode           string         `json:"mode"`
-	Ready          bool           `json:"ready"`
-	StatusText     string         `json:"status_text"`
-	Error          string         `json:"error,omitempty"`
-	RealityListen  string         `json:"reality_listen"`
-	P2PListen      string         `json:"p2p_listen"`
-	RelayAddr      string         `json:"relay_addr"`
-	RelayToken     string         `json:"relay_token"`
-	E2EERelayURL   string         `json:"e2ee_relay_url"`
-	E2EERelayToken string         `json:"e2ee_relay_token"`
-	E2EELANListen  string         `json:"e2ee_lan_listen"`
-	E2EELANAddr    string         `json:"e2ee_lan_addr,omitempty"`
-	RelayConnected bool           `json:"relay_connected"`
-	RelayError     string         `json:"relay_error,omitempty"`
-	PublicHost     string         `json:"public_host"`
-	SNI            string         `json:"sni"`
-	ServerName     string         `json:"server_name"`
-	DetectedIP     string         `json:"detected_ip"`
-	Candidates     []string       `json:"candidates,omitempty"`
-	Devices        []PublicDevice `json:"devices"`
+	Mode              string         `json:"mode"`
+	Ready             bool           `json:"ready"`
+	StatusText        string         `json:"status_text"`
+	Error             string         `json:"error,omitempty"`
+	RealityListen     string         `json:"reality_listen"`
+	P2PListen         string         `json:"p2p_listen"`
+	RelayAddr         string         `json:"relay_addr"`
+	RelayToken        string         `json:"relay_token"`
+	E2EERelayURL      string         `json:"e2ee_relay_url"`
+	E2EERelayToken    string         `json:"e2ee_relay_token"`
+	DefaultRelayURL   string         `json:"default_relay_url"`
+	EffectiveRelayURL string         `json:"effective_relay_url,omitempty"`
+	UsingDefaultRelay bool           `json:"using_default_relay"`
+	E2EELANListen     string         `json:"e2ee_lan_listen"`
+	E2EELANAddr       string         `json:"e2ee_lan_addr,omitempty"`
+	RelayConnected    bool           `json:"relay_connected"`
+	RelayError        string         `json:"relay_error,omitempty"`
+	PublicHost        string         `json:"public_host"`
+	SNI               string         `json:"sni"`
+	ServerName        string         `json:"server_name"`
+	DetectedIP        string         `json:"detected_ip"`
+	Candidates        []string       `json:"candidates,omitempty"`
+	Devices           []PublicDevice `json:"devices"`
 }
 
 type PairResponse struct {
@@ -121,6 +152,7 @@ type PairResponse struct {
 type Manager struct {
 	dataDir string
 	app     http.Handler
+	opts    Options
 
 	internalLn   *chanListener
 	internalHTTP *http.Server
@@ -137,9 +169,15 @@ type Manager struct {
 }
 
 func NewManager(dataDir string, app http.Handler) (*Manager, error) {
+	return NewManagerWithOptions(dataDir, app, Options{})
+}
+
+func NewManagerWithOptions(dataDir string, app http.Handler, opts Options) (*Manager, error) {
 	m := &Manager{
 		dataDir:    dataDir,
 		app:        app,
+		opts:       opts,
+		e2eeDialer: opts.E2EEDialer,
 		internalLn: newChanListener(),
 	}
 	m.internalHTTP = &http.Server{
@@ -168,15 +206,22 @@ func (m *Manager) cfgPath() string {
 
 func (m *Manager) loadConfig() {
 	var cfg Config
+	isFirstRun := false
 	if raw, err := os.ReadFile(m.cfgPath()); err == nil {
 		_ = json.Unmarshal(raw, &cfg)
+	} else if os.IsNotExist(err) {
+		isFirstRun = true
 	}
 	switch cfg.Mode {
 	case ModeOff, ModeE2EE, ModeReality, ModeP2P:
 	case "direct":
 		cfg.Mode = ModeReality
 	default:
-		cfg.Mode = ModeOff
+		if isFirstRun && m.opts.AutoEnableE2EE {
+			cfg.Mode = ModeE2EE
+		} else {
+			cfg.Mode = ModeOff
+		}
 	}
 	if cfg.E2EELANListen == "" {
 		cfg.E2EELANListen = ":8089"
@@ -297,6 +342,22 @@ func (m *Manager) SetE2EEDialer(d *websocket.Dialer) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) effectiveE2EERelayLocked() (relayURL, relayToken string, usingDefault bool) {
+	raw := strings.TrimSpace(m.cfg.E2EERelayURL)
+	if strings.EqualFold(raw, E2EERelayOffSentinel) {
+		return "", "", false
+	}
+	def := ResolveDefaultE2EERelayURL(m.opts.DefaultRelayURL)
+	if raw != "" {
+		tok := strings.TrimSpace(m.cfg.E2EERelayToken)
+		return raw, tok, strings.EqualFold(raw, def) && tok == ""
+	}
+	if def != "" {
+		return def, "", true
+	}
+	return "", "", false
+}
+
 func (m *Manager) applyRuntimeLocked() error {
 	m.stopRuntimeLocked()
 	switch m.cfg.Mode {
@@ -304,11 +365,12 @@ func (m *Manager) applyRuntimeLocked() error {
 		return nil
 
 	case ModeE2EE:
+		effRelayURL, effRelayToken, _ := m.effectiveE2EERelayLocked()
 		inb, err := startE2EEInbound(
 			m.cfg.P2PPrivKey,
 			m.cfg.P2PPubKey,
-			m.cfg.E2EERelayURL,
-			m.cfg.E2EERelayToken,
+			effRelayURL,
+			effRelayToken,
 			m.cfg.E2EELANListen,
 			m.tunnelHTTPHandler(),
 			m.e2eeDialer,
@@ -474,20 +536,25 @@ func (m *Manager) statusLocked() StatusView {
 			LastSeenAt: d.LastSeenAt,
 		})
 	}
+	defaultRelay := ResolveDefaultE2EERelayURL(m.opts.DefaultRelayURL)
+	effRelayURL, _, usingDefault := m.effectiveE2EERelayLocked()
 	view := StatusView{
-		Mode:           m.cfg.Mode,
-		RealityListen:  m.cfg.RealityListen,
-		P2PListen:      m.cfg.P2PListen,
-		RelayAddr:      m.cfg.RelayAddr,
-		RelayToken:     m.cfg.RelayToken,
-		E2EERelayURL:   m.cfg.E2EERelayURL,
-		E2EERelayToken: m.cfg.E2EERelayToken,
-		E2EELANListen:  m.cfg.E2EELANListen,
-		PublicHost:     m.cfg.PublicHost,
-		SNI:            m.cfg.SNI,
-		ServerName:     m.cfg.ServerName,
-		DetectedIP:     detected,
-		Devices:        devs,
+		Mode:              m.cfg.Mode,
+		RealityListen:     m.cfg.RealityListen,
+		P2PListen:         m.cfg.P2PListen,
+		RelayAddr:         m.cfg.RelayAddr,
+		RelayToken:        m.cfg.RelayToken,
+		E2EERelayURL:      m.cfg.E2EERelayURL,
+		E2EERelayToken:    m.cfg.E2EERelayToken,
+		DefaultRelayURL:   defaultRelay,
+		EffectiveRelayURL: effRelayURL,
+		UsingDefaultRelay: usingDefault,
+		E2EELANListen:     m.cfg.E2EELANListen,
+		PublicHost:        m.cfg.PublicHost,
+		SNI:               m.cfg.SNI,
+		ServerName:        m.cfg.ServerName,
+		DetectedIP:        detected,
+		Devices:           devs,
 	}
 
 	switch m.cfg.Mode {
@@ -508,20 +575,26 @@ func (m *Manager) statusLocked() StatusView {
 			if lanPort > 0 && detected != "" {
 				view.E2EELANAddr = net.JoinHostPort(detected, fmt.Sprintf("%d", lanPort))
 			}
+			relayLabel := "官方加密中继"
+			if !usingDefault {
+				relayLabel = "私有加密中继"
+			}
 			switch {
 			case hasRelay && relayOK && view.E2EELANAddr != "":
-				view.StatusText = fmt.Sprintf("E2EE 盲中继已连 · 局域网直连 %s", view.E2EELANAddr)
+				view.StatusText = fmt.Sprintf("公网已就绪（%s）· 同 Wi-Fi 自动局域网直连", relayLabel)
 			case hasRelay && relayOK:
-				view.StatusText = "E2EE 盲中继已连（外网 4G/5G 端到端加密就绪）"
+				view.StatusText = fmt.Sprintf("公网已就绪（%s · 端到端加密）", relayLabel)
+			case hasRelay && relayErr != "" && view.E2EELANAddr != "":
+				view.StatusText = fmt.Sprintf("局域网已就绪 · 公网中继重连中（%s）", relayErr)
 			case hasRelay && relayErr != "":
-				view.StatusText = fmt.Sprintf("E2EE 盲中继重连中 (%s)", relayErr)
+				view.StatusText = fmt.Sprintf("正在重连公网中继（%s）", relayErr)
 			case hasRelay:
-				view.StatusText = "正在连接 E2EE 盲中继…"
+				view.StatusText = fmt.Sprintf("正在连接%s…", relayLabel)
 			case view.E2EELANAddr != "":
-				view.StatusText = fmt.Sprintf("E2EE 仅局域网直连 · %s", view.E2EELANAddr)
+				view.StatusText = fmt.Sprintf("仅局域网直连 · %s", view.E2EELANAddr)
 			default:
 				view.Ready = false
-				view.StatusText = "请填写免费盲中继 WSS 地址或开启局域网直连"
+				view.StatusText = "请开启公网中继或局域网直连"
 			}
 		}
 
@@ -599,8 +672,9 @@ func (m *Manager) CreatePair() (PairResponse, error) {
 	switch m.cfg.Mode {
 	case ModeE2EE:
 		if m.e2eeInb == nil {
-			return PairResponse{}, errors.New("E2EE 盲中继尚未就绪")
+			return PairResponse{}, errors.New("E2EE 远程连接尚未就绪")
 		}
+		effRelayURL, effRelayToken, _ := m.effectiveE2EERelayLocked()
 		_, _, _, lanPort := m.e2eeInb.Status()
 		lanAddr := ""
 		if lanPort > 0 {
@@ -617,8 +691,8 @@ func (m *Manager) CreatePair() (PairResponse, error) {
 			PeerPSKHex:   dev.PeerPSK,
 			HostID:       m.e2eeInb.hostID,
 			ServerPubB64: m.cfg.P2PPubKey,
-			RelayURL:     m.cfg.E2EERelayURL,
-			RelayToken:   m.cfg.E2EERelayToken,
+			RelayURL:     effRelayURL,
+			RelayToken:   effRelayToken,
 			LANAddr:      lanAddr,
 			ServerName:   m.cfg.ServerName,
 		})
@@ -662,6 +736,18 @@ func (m *Manager) CreatePair() (PairResponse, error) {
 	svg, err := EncodeQRSVG(uri)
 	if err != nil {
 		return PairResponse{}, err
+	}
+
+	// 限制未激活的临时配对凭证数量，避免重复打开弹窗导致 remote.json 堆积
+	const maxPendingPairs = 8
+	pendingCount := 0
+	for i := len(m.cfg.Devices) - 1; i >= 0; i-- {
+		if !m.cfg.Devices[i].Activated {
+			pendingCount++
+			if pendingCount >= maxPendingPairs {
+				m.cfg.Devices = append(m.cfg.Devices[:i], m.cfg.Devices[i+1:]...)
+			}
+		}
 	}
 
 	m.cfg.Devices = append(m.cfg.Devices, dev)

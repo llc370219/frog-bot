@@ -20,16 +20,27 @@ import (
 func v2RelayWSMain(args []string) {
 	fs := flag.NewFlagSet("relay-ws", flag.ExitOnError)
 	listen := fs.String("listen", env(":18443", "RELAY_LISTEN"), "监听地址（建议挂在 Caddy/Nginx 443 反代后）")
-	token := fs.String("token", env("", "RELAY_TOKEN", "FROGBOT_RELAY_TOKEN"), "可选访问令牌")
+	token := fs.String("token", env("", "RELAY_TOKEN", "FROGBOT_RELAY_TOKEN"), "可选访问令牌（公网开箱即用中继留空即可）")
+	maxConnsPerIP := fs.Int("max-conns-per-ip", 64, "单 IP 最大并发连接数")
+	maxMBPerMin := fs.Int64("max-mb-per-min", 64, "单连接每分钟最大转发流量（MB）")
 	_ = fs.Parse(args)
+
+	limits := remote.DefaultWSSRelayLimits()
+	if *maxConnsPerIP > 0 {
+		limits.MaxConnsPerIP = *maxConnsPerIP
+	}
+	if *maxMBPerMin > 0 {
+		limits.MaxBytesPerMin = *maxMBPerMin << 20
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	srv, err := remote.StartWSRelayServer(ctx, *listen, *token)
+	srv, err := remote.StartWSRelayServerWithLimits(ctx, *listen, *token, limits)
 	if err != nil {
 		fatal("启动 E2EE WSS 盲中继失败: %v", err)
 	}
-	fmt.Printf("🐸 Frog Bot E2EE WSS 盲中继已启动：%s/ws（零知识盲盒转发，适配 Caddy/Nginx/Cloudflare 443）\n", *listen)
+	fmt.Printf("🐸 Frog Bot E2EE WSS 盲中继已启动：%s/ws（零知识密文转发，单IP上限=%d，单连接限速=%dMB/min）\n",
+		*listen, limits.MaxConnsPerIP, limits.MaxBytesPerMin>>20)
 	if err := srv.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
 		log.Fatalf("relay-ws: %v", err)
 	}

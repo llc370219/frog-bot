@@ -515,6 +515,9 @@ export type RemoteStatus = {
   relay_token: string;
   e2ee_relay_url?: string;
   e2ee_relay_token?: string;
+  default_relay_url?: string;
+  effective_relay_url?: string;
+  using_default_relay?: boolean;
   e2ee_lan_listen?: string;
   e2ee_lan_addr?: string;
   relay_connected?: boolean;

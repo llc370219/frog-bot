@@ -148,6 +148,151 @@ func TestE2EEBlindRelayEndToEndAndZeroKnowledgeAndRevocation(t *testing.T) {
 	}
 }
 
+func TestE2EEAutoEnableOutOfBoxAndOptOut(t *testing.T) {
+	if DefaultE2EERelayURL != "wss://relay.632219.xyz/ws" {
+		t.Fatalf("unexpected DefaultE2EERelayURL: %q", DefaultE2EERelayURL)
+	}
+	dir := t.TempDir()
+	relay := NewWSSBlindRelay("")
+	ln := newPipeListener()
+	defer ln.Close()
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ws":
+			relay.ServeWS(w, r)
+		case "/health":
+			writeJSON(w, http.StatusOK, relay.Stats())
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	pipeDialer := &websocket.Dialer{
+		NetDialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		NetDialTLSContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+	}
+	app := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	// 1. Fresh home PC start with AutoEnableE2EE=true -> automatically enters ModeE2EE using built-in relay
+	mgr, err := NewManagerWithOptions(dir, app, Options{
+		AutoEnableE2EE:  true,
+		DefaultRelayURL: DefaultE2EERelayURL,
+		E2EEDialer:      pipeDialer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgrClosed := false
+	defer func() {
+		if !mgrClosed {
+			mgr.Close()
+		}
+	}()
+	st := mgr.Status()
+	if st.Mode != ModeE2EE || !st.UsingDefaultRelay || st.EffectiveRelayURL != "wss://relay.632219.xyz/ws" {
+		t.Fatalf("expected auto-enabled ModeE2EE with built-in default relay immediately on first launch, got %+v", st)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if mgr.Status().RelayConnected {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !mgr.Status().RelayConnected {
+		t.Fatalf("expected auto-connected default relay, got %+v", mgr.Status())
+	}
+	if stats := relay.Stats(); stats.Hosts != 1 || stats.Rooms != 1 {
+		t.Fatalf("expected relay stats hosts=1 rooms=1, got %+v", stats)
+	}
+
+	// Generated pairing code embeds effective default relay URL so existing clients connect zero-config
+	pair, err := mgr.CreatePair()
+	if err != nil {
+		t.Fatalf("CreatePair: %v", err)
+	}
+	opts, err := ParseE2EEURI(pair.PairCode)
+	if err != nil {
+		t.Fatalf("ParseE2EEURI: %v", err)
+	}
+	if opts.RelayURL != "wss://relay.632219.xyz/ws" {
+		t.Fatalf("expected pairing URI relay=wss://relay.632219.xyz/ws, got %q", opts.RelayURL)
+	}
+
+	// 2. Explicit opt-out (`mode: "off"`) MUST persist across restarts even when AutoEnableE2EE=true
+	if _, err := mgr.UpdateConfig(SaveInput{Mode: ModeOff}); err != nil {
+		t.Fatalf("opt-out UpdateConfig: %v", err)
+	}
+	mgr.Close()
+	mgrClosed = true
+
+	mgr2, err := NewManagerWithOptions(dir, app, Options{
+		AutoEnableE2EE:  true,
+		DefaultRelayURL: DefaultE2EERelayURL,
+		E2EEDialer:      pipeDialer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr2.Close()
+	if got := mgr2.Status().Mode; got != ModeOff {
+		t.Fatalf("expected explicit ModeOff to persist on restart, got %q", got)
+	}
+}
+
+type fixedAddrConn struct {
+	net.Conn
+	raddr net.Addr
+}
+
+func (c *fixedAddrConn) RemoteAddr() net.Addr { return c.raddr }
+
+func TestWSSBlindRelayPerIPLimit(t *testing.T) {
+	limits := DefaultWSSRelayLimits()
+	limits.MaxConnsPerIP = 1
+	relay := NewWSSBlindRelayWithLimits("", limits)
+
+	ln := newPipeListener()
+	defer ln.Close()
+	srv := &http.Server{Handler: http.HandlerFunc(relay.ServeWS)}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	dialFromIP := func(ip string) *websocket.Dialer {
+		return &websocket.Dialer{
+			NetDialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				c1, c2 := net.Pipe()
+				ln.ch <- &fixedAddrConn{Conn: c2, raddr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 54321}}
+				return c1, nil
+			},
+		}
+	}
+
+	d := dialFromIP("203.0.113.9")
+	ws1, _, err := d.Dial("ws://relay.local/ws?role=host&room=room1", nil)
+	if err != nil {
+		t.Fatalf("first dial failed: %v", err)
+	}
+	defer ws1.Close()
+
+	_, resp, err := d.Dial("ws://relay.local/ws?role=host&room=room2", nil)
+	if err == nil {
+		t.Fatal("expected second connection from same IP to be rejected")
+	}
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests, got resp=%v err=%v", resp, err)
+	}
+}
+
 type pipeListener struct {
 	ch     chan net.Conn
 	closed chan struct{}

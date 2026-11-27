@@ -1,4 +1,4 @@
-import { Bell, BellOff, Monitor, Moon, Sun } from 'lucide-react';
+import { Bell, BellOff, Monitor, Moon, QrCode, Sun } from 'lucide-react';
 import { useState } from 'react';
 
 type Pref = 'system' | 'light' | 'dark';
@@ -18,16 +18,29 @@ function applyTheme(p: Pref) {
 export default function TopActions({
   notify = false,
   onNotify,
+  onOpenRemote,
 }: {
   notify?: boolean;
   onNotify?: () => void;
+  onOpenRemote?: () => void;
 }) {
   const [pref, setPref] = useState<Pref>(() => (localStorage.getItem(KEY) as Pref) || 'system');
   const next: Record<Pref, Pref> = { system: 'light', light: 'dark', dark: 'system' };
   const Icon = pref === 'light' ? Sun : pref === 'dark' ? Moon : Monitor;
 
   return (
-    <div className="fixed top-3 right-4 z-40 flex items-center gap-1.5 rounded-full border border-line bg-canvas/80 px-2 py-1 shadow-xs backdrop-blur-md">
+    <div className="fixed top-3 right-4 z-40 flex items-center gap-1 rounded-full border border-line bg-canvas/80 px-2 py-1 shadow-xs backdrop-blur-md">
+      {onOpenRemote && (
+        <button
+          onClick={onOpenRemote}
+          className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-fg2 transition hover:bg-s2 hover:text-fg"
+          title="获取二维码与连接码，用手机或另一台电脑公网直连本机"
+          aria-label="手机连接"
+        >
+          <QrCode size={15} className="text-accent" />
+          <span className="hidden sm:inline">手机连接</span>
+        </button>
+      )}
       {onNotify && (
         <button
           onClick={onNotify}

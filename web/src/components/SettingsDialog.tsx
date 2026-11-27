@@ -1,4 +1,4 @@
-import { ArrowUpRight, Check, ChevronDown, CircleAlert, Cpu, Download, KeyRound, Loader2, LogOut, Monitor, Plug, RefreshCw, ShieldCheck, Terminal, X } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronDown, CircleAlert, Cpu, Download, KeyRound, Loader2, LogOut, Monitor, Plug, QrCode, RefreshCw, Terminal, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, createDeviceSettingsAPI, type AuthInfo, type DeviceGroup, type DeviceSettingsAPI, type UpdateChannel, type UpdateStatus } from '../api';
 import BotModelSettings from './BotModelSettings';
@@ -10,19 +10,21 @@ const releasesPage = 'https://github.com/llc370219/frog-bot/releases';
 const message = (err: unknown) => err instanceof TypeError ? '无法连接后端服务'
   : err instanceof Error ? err.message : '请求失败';
 
-type Tab = 'models' | 'api' | 'cli' | 'remote' | 'update' | 'account';
+export type SettingsTab = 'models' | 'api' | 'cli' | 'remote' | 'update' | 'account';
+type Tab = SettingsTab;
 type Feedback = { error: boolean; text: string };
 
-export default function SettingsDialog({ onClose, devices, initialDevice, initialBot, onSettingsSaved }: {
+export default function SettingsDialog({ onClose, devices, initialDevice, initialBot, initialTab = 'models', onSettingsSaved }: {
   onClose: () => void;
   devices: DeviceGroup[];
   initialDevice: string;
   initialBot: string;
+  initialTab?: SettingsTab;
   onSettingsSaved: (device: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
-  const [tab, setTab] = useState<Tab>('models');
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [auth, setAuth] = useState<AuthInfo>();
@@ -81,7 +83,7 @@ export default function SettingsDialog({ onClose, devices, initialDevice, initia
           {navButton('models', <Cpu size={16} aria-hidden="true" />, '模型与 Agent')}
           {navButton('api', <Plug size={16} aria-hidden="true" />, 'API 渠道 / 反代')}
           {device.id === 'local' && navButton('cli', <Terminal size={15} aria-hidden="true" />, '官方 CLI 登录')}
-          {device.id === 'local' && navButton('remote', <ShieldCheck size={15} aria-hidden="true" />, '加密隧道')}
+          {device.id === 'local' && navButton('remote', <QrCode size={15} aria-hidden="true" />, '手机 / 远程连接')}
           {navButton('update', <RefreshCw size={15} aria-hidden="true" />, '软件版本')}
           {showAccount && navButton('account', <KeyRound size={15} aria-hidden="true" />, '账号')}
         </nav>

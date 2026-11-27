@@ -324,7 +324,7 @@ fun AddServerScreen(state: AppState, existing: ServerEntry?, nav: Nav) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Outlined.Info, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
-                    "家用 Windows/Mac 请在电脑端「设置 › 远程访问」选择「E2EE 盲中继」，复制 froge2ee:// 连接码粘贴到此处即可跨网安全直连。",
+                    "家用电脑装好后打开右上角「手机连接」（或「设置 › 手机 / 远程连接」），复制 froge2ee:// 连接码粘贴到此处即可跨网安全直连。",
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

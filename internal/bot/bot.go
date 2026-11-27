@@ -43,6 +43,7 @@ type Config struct {
 	InitialBaseURL string
 	InitialKey     string
 	Devices        *DeviceConfig
+	AutoRemote     bool // 首次启动自动开启开箱即用 E2EE 远程连接（测试默认为 false，避免单测外连）
 }
 
 type Bot struct {
