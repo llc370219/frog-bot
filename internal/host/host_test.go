@@ -111,6 +111,7 @@ func TestBudgetGuardRateLimitAndCircuitBreaker(t *testing.T) {
 	}
 	now := time.Date(2026, 11, 27, 8, 0, 0, 0, time.UTC)
 	g.Now = func() time.Time { return now }
+	g.bucket.lastRefill = now
 
 	// Token bucket: 2 burst allowed, 3rd blocked until time passes
 	if ok, _ := g.AllowBackgroundEvent("imap"); !ok {

@@ -52,7 +52,9 @@ func newTokenBucket(perMin, burst int, now time.Time) *tokenBucket {
 }
 
 func (tb *tokenBucket) allow(now time.Time) (bool, float64) {
-	if now.After(tb.lastRefill) {
+	if now.Before(tb.lastRefill) {
+		tb.lastRefill = now
+	} else if now.After(tb.lastRefill) {
 		elapsed := now.Sub(tb.lastRefill).Seconds()
 		tb.tokens += elapsed * tb.ratePerSec
 		if tb.tokens > tb.burst {
