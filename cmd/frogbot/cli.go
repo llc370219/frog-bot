@@ -210,8 +210,15 @@ func runCmdPassthrough(name string, args ...string) error {
 // ---------- CLI 帮助与主分发 ----------
 
 func printCLIHelp() {
-	fmt.Printf(`🐸 frog %s — 极简全平台服务端 CLI（同时兼容 frogbot 命令）
-
+	fmt.Println()
+	fmt.Print(renderFrogBanner([]string{
+		fmt.Sprintf("frog %s  (%s/%s)", version, runtime.GOOS, runtime.GOARCH),
+		"全平台极简服务端 CLI（兼容 frogbot 命令）",
+		"",
+		"直接运行 frog       打开交互式状态面板",
+		"直接运行 frog pair  终端打印二维码给手机扫码",
+	}, useANSIColor()))
+	fmt.Print(`
 用法：
   frog                     打开交互式状态面板与快捷菜单
   frog <命令> [参数]       直接执行对应管理操作
@@ -241,7 +248,7 @@ func printCLIHelp() {
   frog backup / restore / gc   加密备份、恢复与日志清理
   frog version             显示版本号
 
-`, version)
+`)
 }
 
 func dispatchCLI(args []string) bool {
@@ -641,40 +648,51 @@ func printStatus(env cliEnv, asJSON bool) {
 	fmt.Println()
 	if live != nil {
 		up := formatDurationBrief(time.Since(live.StartedAt))
-		fmt.Printf("  🐸 frog %s   ● 运行中（PID %d · 运行 %s · %s）\n", live.Version, live.PID, up, modeLabel(live.Mode))
-		fmt.Printf("  管理页面： %s\n", live.URL)
+		info := []string{
+			fmt.Sprintf("frog %s   ● 运行中（PID %d · 运行 %s · %s）", live.Version, live.PID, up, modeLabel(live.Mode)),
+			fmt.Sprintf("管理页面：%s", live.URL),
+		}
+		if live.Remote != nil && live.Remote.StatusText != "" {
+			info = append(info, fmt.Sprintf("远程穿透：%s（已配对 %d 台）", live.Remote.StatusText, len(live.Remote.Devices)))
+		}
+		if names := installedAgentNames(live.Agents); len(names) > 0 {
+			info = append(info, fmt.Sprintf("Coding CLI：%s", strings.Join(names, ", ")))
+		}
+		info = append(info, fmt.Sprintf("开机自启：%s", svcDetail))
+		fmt.Print(renderFrogBanner(info, useANSIColor()))
+		fmt.Println()
 		fmt.Printf("  数据目录： %s\n", live.DataDir)
 		fmt.Printf("  工作区：   %s\n", live.Workspace)
 		if live.LogFile != "" {
 			fmt.Printf("  日志文件： %s\n", live.LogFile)
 		}
 		if live.Remote != nil {
-			fmt.Printf("  远程穿透： %s\n", live.Remote.StatusText)
 			if live.Remote.EffectiveRelayURL != "" {
 				fmt.Printf("  中继地址： %s\n", live.Remote.EffectiveRelayURL)
 			}
 			if live.Remote.E2EELANAddr != "" {
 				fmt.Printf("  局域网直连：%s\n", live.Remote.E2EELANAddr)
 			}
-			fmt.Printf("  已配对设备：%d 台\n", len(live.Remote.Devices))
 		}
-		if names := installedAgentNames(live.Agents); len(names) > 0 {
-			fmt.Printf("  Coding CLI：%s\n", strings.Join(names, ", "))
-		}
+		fmt.Println()
 	} else {
 		cfg := loadCLIConfig(env)
+		title := fmt.Sprintf("frog %s   ○ 未运行（%s）", version, modeLabel(cfg.Mode))
 		if errors.Is(err, os.ErrPermission) {
-			fmt.Printf("  🐸 frog %s   ● 运行中（无权读取 %s，请用 sudo frog status 查看实时详情）\n", version, runtimeStatePath(env.dataDir))
-		} else {
-			fmt.Printf("  🐸 frog %s   ○ 未运行（配置模式：%s）\n", version, modeLabel(cfg.Mode))
+			title = fmt.Sprintf("frog %s   ● 运行中（请用 sudo frog status 查看实时详情）", version)
 		}
-		fmt.Printf("  数据目录： %s\n", env.dataDir)
-		fmt.Printf("  日志文件： %s\n", env.logFile)
+		info := []string{
+			title,
+			fmt.Sprintf("数据目录：%s", env.dataDir),
+			fmt.Sprintf("日志文件：%s", env.logFile),
+		}
 		if names := installedAgentNames(agy.DiscoverAgents()); len(names) > 0 {
-			fmt.Printf("  Coding CLI：%s\n", strings.Join(names, ", "))
+			info = append(info, fmt.Sprintf("Coding CLI：%s", strings.Join(names, ", ")))
 		}
+		info = append(info, fmt.Sprintf("开机自启：%s", svcDetail))
+		fmt.Print(renderFrogBanner(info, useANSIColor()))
+		fmt.Println()
 	}
-	fmt.Printf("  开机自启： %s\n\n", svcDetail)
 }
 
 func installedAgentNames(agents []agy.AgentCLIView) []string {
@@ -1444,19 +1462,29 @@ func cliMenuMain() {
 		installedSvc, _ := serviceStatusSummary(env)
 
 		fmt.Println()
-		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		if live != nil {
-			fmt.Printf("  🐸 frog %s   ● 运行中（PID %d · %s）\n", live.Version, live.PID, modeLabel(live.Mode))
-			fmt.Printf("  网页管理：%s\n", live.URL)
-			if live.Remote != nil && live.Remote.StatusText != "" {
-				fmt.Printf("  远程穿透：%s（已配对 %d 台）\n", live.Remote.StatusText, len(live.Remote.Devices))
+			info := []string{
+				fmt.Sprintf("frog %s   ● 运行中（PID %d · %s）", live.Version, live.PID, modeLabel(live.Mode)),
+				fmt.Sprintf("网页管理：%s", live.URL),
 			}
+			if live.Remote != nil && live.Remote.StatusText != "" {
+				info = append(info, fmt.Sprintf("远程穿透：%s（已配对 %d 台）", live.Remote.StatusText, len(live.Remote.Devices)))
+			}
+			if names := installedAgentNames(live.Agents); len(names) > 0 {
+				info = append(info, fmt.Sprintf("Coding CLI：%s", strings.Join(names, ", ")))
+			}
+			fmt.Print(renderFrogBanner(info, useANSIColor()))
 		} else {
 			cfg := loadCLIConfig(env)
-			fmt.Printf("  🐸 frog %s   ○ 未运行（%s）\n", version, modeLabel(cfg.Mode))
-			fmt.Printf("  数据目录：%s\n", env.dataDir)
+			info := []string{
+				fmt.Sprintf("frog %s   ○ 未运行（%s）", version, modeLabel(cfg.Mode)),
+				fmt.Sprintf("数据目录：%s", env.dataDir),
+				"输入 1 后台启动，或输入 2 直接启动并扫码配对",
+			}
+			fmt.Print(renderFrogBanner(info, useANSIColor()))
 		}
-		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 		if live != nil {
 			fmt.Println("  [1] 重启服务              [2] 手机扫码配对（二维码）")

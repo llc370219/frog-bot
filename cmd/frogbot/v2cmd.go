@@ -39,7 +39,7 @@ func v2RelayWSMain(args []string) {
 	if err != nil {
 		fatal("启动 E2EE WSS 盲中继失败: %v", err)
 	}
-	fmt.Printf("🐸 Frog Bot E2EE WSS 盲中继已启动：%s/ws（零知识密文转发，单IP上限=%d，单连接限速=%dMB/min）\n",
+	fmt.Printf("  [frog relay] E2EE WSS 盲中继已启动：%s/ws（零知识密文转发，单IP上限=%d，单连接限速=%dMB/min）\n",
 		*listen, limits.MaxConnsPerIP, limits.MaxBytesPerMin>>20)
 	if err := srv.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
 		log.Fatalf("relay-ws: %v", err)

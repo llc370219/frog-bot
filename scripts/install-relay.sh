@@ -227,7 +227,7 @@ main() {
 
   cat <<DONE
 
-  🐸 Frog Bot E2EE 盲中继已启动！
+  [frog relay] E2EE 盲中继已启动！
 
   中继地址： wss://$DOMAIN/ws
   健康检查： https://$DOMAIN/health

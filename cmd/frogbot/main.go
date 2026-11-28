@@ -52,6 +52,7 @@ func env(def string, keys ...string) string {
 }
 
 func main() {
+	enableVirtualTerminal()
 	if dispatchCLI(os.Args[1:]) {
 		return
 	}
@@ -237,8 +238,14 @@ func serveMain(args []string) {
 		defer ctlSrv.Close()
 	}
 
-	fmt.Printf("\n  🐸 frog %s 已启动（%s）\n\n", version, map[bool]string{true: "服务器模式", false: "本机模式"}[server])
-	fmt.Printf("  管理页面： %s\n  数据目录： %s\n  工作区：   %s\n", page, absPath(dataDir), absPath(workspace))
+	fmt.Println()
+	fmt.Print(renderFrogBanner([]string{
+		fmt.Sprintf("frog %s  已启动（%s）", version, map[bool]string{true: "服务器模式", false: "本机模式"}[server]),
+		fmt.Sprintf("管理页面：%s", page),
+		fmt.Sprintf("数据目录：%s", absPath(dataDir)),
+		fmt.Sprintf("工作区：  %s", absPath(workspace)),
+	}, useANSIColor()))
+	fmt.Println()
 	if server {
 		fmt.Printf("  用户名：   %s\n", gate.Username())
 		if firstPassword != "" {
@@ -319,7 +326,7 @@ func relayMain(args []string) {
 	if err != nil {
 		fatal("启动中继服务失败: %v", err)
 	}
-	fmt.Printf("  🐸 frog relay %s 已启动，监听 TCP+UDP %s\n", version, srv.Addr())
+	fmt.Printf("  [frog relay] %s 已启动，监听 TCP+UDP %s\n", version, srv.Addr())
 	if strings.TrimSpace(*token) == "" {
 		fmt.Println("  ⚠ 未设置 -token / RELAY_TOKEN，任何人均可连接该中继。")
 	}

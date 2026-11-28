@@ -194,3 +194,17 @@ func TestDispatchCLILegacyFlagsFallthrough(t *testing.T) {
 		t.Fatalf("expected -addr to fall through to legacy serveMain")
 	}
 }
+
+func TestRenderFrogBannerColorAndPlain(t *testing.T) {
+	colored := renderFrogBanner([]string{"frog v0.1.11", "状态：运行中"}, true)
+	if !strings.Contains(colored, "\x1b[") || !strings.ContainsAny(colored, "█▀▄") {
+		t.Fatalf("expected ANSI half-block pixel frog in colored banner")
+	}
+	if strings.Contains(colored, "🐸") {
+		t.Fatalf("banner must not contain emoji")
+	}
+	plain := renderFrogBanner([]string{"frog v0.1.11"}, false)
+	if strings.Contains(plain, "\x1b[") || !strings.ContainsAny(plain, "█▀▄") {
+		t.Fatalf("expected plain half-block pixel frog without ANSI codes")
+	}
+}

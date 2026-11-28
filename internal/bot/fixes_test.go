@@ -23,7 +23,12 @@ func (askAI) Chat(ctx context.Context, req onefrog.ChatRequest, onText func(stri
 	case last.Role == "tool":
 		reply.Content = "已经去问了，有回复再告诉你。"
 	case strings.Contains(last.Content, "ask:"):
-		to := strings.TrimSpace(last.Content[strings.Index(last.Content, "ask:")+4:])
+		rest := last.Content[strings.Index(last.Content, "ask:")+4:]
+		fields := strings.Fields(rest)
+		to := ""
+		if len(fields) > 0 {
+			to = fields[0]
+		}
 		reply = toolCall("ask_agent", map[string]string{"to_bot_id": to, "question": "你在忙什么？"})
 	default:
 		reply.Content = "好的"

@@ -366,16 +366,16 @@ install_macos() {
   xattr -d com.apple.quarantine "$bin_dir/frogbot" 2>/dev/null || true
   cat <<MACDONE
 
-  🐸 frog CLI $ver 已安装到 $bin_dir/frog（同时兼容 frogbot）
-
-  常用指令：
-    frog                 打开交互式状态面板与快捷菜单
-    frog start           后台启动服务（内置加密穿透，免配公网）
-    frog pair            在终端直接打印二维码给手机扫码
-    frog status          查看运行与远程连接状态
-    frog logs -f         查看实时日志
-    frog service install 开启开机自启（LaunchAgent）
-    frog update          一键升级
+   ▄████▄▄▄▄████▄    frog CLI $ver 已安装到 $bin_dir/frog（兼容 frogbot）
+   █▀▄▀██████▀▄▀█
+  ████████████████   常用指令：
+  ▀███▀▀▀▀▀▀▀▀███▀     frog                 打开交互式状态面板与菜单
+   ▀▀▀        ▀▀▀      frog start           后台启动（内置加密穿透）
+                       frog pair            终端直接打印二维码给手机扫码
+                       frog status          查看运行与远程连接状态
+                       frog logs -f         查看实时日志
+                       frog service install 开启开机自启（LaunchAgent）
+                       frog update          一键升级
 
 MACDONE
   case ":$PATH:" in
@@ -466,10 +466,11 @@ main() {
   shown_user="$(sed -n 's/.*"username": *"\([^"]*\)".*/\1/p' "$DATA_ROOT/data/auth.json" 2>/dev/null | head -n1)"
   cat <<DONE
 
-  🐸 frog $ver 已$( [ -n "$upgrade" ] && echo 升级 || echo 安装 )，服务名 frogbot（宿主用户：$SVC_USER）
-
-  访问地址：$url
-  用户名：  ${shown_user:-$ADMIN_USER}
+   ▄████▄▄▄▄████▄    frog $ver 已$( [ -n "$upgrade" ] && echo 升级 || echo 安装 )，服务名 frogbot（宿主用户：$SVC_USER）
+   █▀▄▀██████▀▄▀█    访问地址：$url
+  ████████████████   用户名：  ${shown_user:-$ADMIN_USER}
+  ▀███▀▀▀▀▀▀▀▀███▀
+   ▀▀▀        ▀▀▀
 DONE
   if [ -n "$password" ]; then
     echo "  初始密码：$password"

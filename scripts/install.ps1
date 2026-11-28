@@ -80,8 +80,11 @@ try {
   }
 
   Write-Host ""
-  Write-Host "  🐸 frog CLI $Tag 已安装完成！" -ForegroundColor Green
-  Write-Host "  安装位置：$FrogExe"
+  Write-Host "   ▄████▄▄▄▄████▄    frog CLI $Tag 已安装完成" -ForegroundColor Green
+  Write-Host "   █▀▄▀██████▀▄▀█    安装位置：$FrogExe" -ForegroundColor Green
+  Write-Host "  ████████████████" -ForegroundColor Green
+  Write-Host "  ▀███▀▀▀▀▀▀▀▀███▀" -ForegroundColor Green
+  Write-Host "   ▀▀▀        ▀▀▀" -ForegroundColor Green
   Write-Host ""
   Write-Host "  常用指令（在任意 PowerShell / CMD 中直接输入）："
   Write-Host "    frog                   打开交互式状态面板与快捷菜单"

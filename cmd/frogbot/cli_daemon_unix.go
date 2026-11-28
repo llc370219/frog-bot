@@ -49,3 +49,5 @@ func isTerminal(f *os.File) bool {
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
 }
+
+func enableVirtualTerminal() {}

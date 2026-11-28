@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"unsafe"
 )
 
 const (
@@ -58,4 +59,20 @@ func isTerminal(f *os.File) bool {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// enableVirtualTerminal 在 Windows 控制台开启 ANSI 转义序列（保证方块青蛙和终端二维码颜色正常显示）。
+func enableVirtualTerminal() {
+	const enableVT = 0x0004
+	k32 := syscall.NewLazyDLL("kernel32.dll")
+	getMode := k32.NewProc("GetConsoleMode")
+	setMode := k32.NewProc("SetConsoleMode")
+	for _, f := range []*os.File{os.Stdout, os.Stderr} {
+		h := f.Fd()
+		var mode uint32
+		r, _, _ := getMode.Call(h, uintptr(unsafe.Pointer(&mode)))
+		if r != 0 && mode&enableVT == 0 {
+			_, _, _ = setMode.Call(h, uintptr(mode|enableVT))
+		}
+	}
 }
