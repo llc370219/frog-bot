@@ -154,6 +154,24 @@ func OpenBots(cfg Config) (*Bots, error) {
 	return bs, nil
 }
 
+// Remote 返回当前实例的加密远程访问网关管理器（供本机控制通道和 CLI 使用）。
+func (bs *Bots) Remote() *remote.Manager {
+	if bs == nil {
+		return nil
+	}
+	return bs.remote
+}
+
+// BotCount 返回当前活跃 Bot 数量。
+func (bs *Bots) BotCount() int {
+	if bs == nil {
+		return 0
+	}
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	return len(bs.profiles)
+}
+
 func validateProfiles(profiles []BotProfile) error {
 	if len(profiles) == 0 || len(profiles) > maxBots || profiles[0].ID != defaultBotID {
 		return errors.New("Bot 列表缺少默认 Bot 或数量超限")

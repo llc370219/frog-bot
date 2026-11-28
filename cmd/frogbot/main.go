@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -51,57 +52,31 @@ func env(def string, keys ...string) string {
 }
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "reset-password":
-			resetPassword(os.Args[2:])
-			return
-		case "sandbox-exec":
-			sandbox.Main(os.Args[2:])
-			return
-		case "sandbox-check":
-			sandbox.CheckMain(os.Args[2:])
-			return
-		case "rootd":
-			rootdMain(os.Args[2:])
-			return
-		case "relay":
-			relayMain(os.Args[2:])
-			return
-		case "relay-ws":
-			v2RelayWSMain(os.Args[2:])
-			return
-		case "doctor":
-			v2DoctorMain(os.Args[2:])
-			return
-		case "backup":
-			v2BackupMain(os.Args[2:])
-			return
-		case "restore":
-			v2RestoreMain(os.Args[2:])
-			return
-		case "gc":
-			v2GCMain(os.Args[2:])
-			return
-		case "exec":
-			v2ExecMain(os.Args[2:])
-			return
-		}
+	if dispatchCLI(os.Args[1:]) {
+		return
 	}
+	serveMain(os.Args[1:])
+}
+
+func sandboxMain(args []string)      { sandbox.Main(args) }
+func sandboxCheckMain(args []string) { sandbox.CheckMain(args) }
+
+func serveMain(args []string) {
 	// 主进程不可调试：Agent 的命令和主进程是同一个系统用户，否则可以 ptrace 主进程、读它的内存和环境变量。
 	if err := sandbox.SetNonDumpable(); err != nil {
 		log.Printf("⚠ 无法把进程设为不可调试：%v", err)
 	}
-	addrFlag := flag.String("addr", "", "监听地址，例如 127.0.0.1:8080（本机模式默认 127.0.0.1:8080，被占用时自动换下一个端口；服务器模式默认 0.0.0.0:8080）；也可用 ADDR")
-	portFlag := flag.Int("port", 0, "只改端口（服务器模式常用）；也可用 PORT")
-	serverFlag := flag.Bool("server", false, "服务器模式：监听所有网卡，必须登录；也可用 FROGBOT_MODE=server")
-	dataFlag := flag.String("data", "", "数据目录（默认见 README）；也可用 DATA_DIR")
-	devicesFlag := flag.String("devices", "", "设备互联配置文件；默认读取数据目录下的 devices.json")
-	noBrowser := flag.Bool("no-browser", false, "启动后不自动打开浏览器；也可用 FROGBOT_NO_BROWSER=1")
-	showVersion := flag.Bool("version", false, "显示版本号")
-	flag.Parse()
+	fl := flag.NewFlagSet("frog", flag.ExitOnError)
+	addrFlag := fl.String("addr", "", "监听地址，例如 127.0.0.1:8080（本机模式默认 127.0.0.1:8080，被占用时自动换下一个端口；服务器模式默认 0.0.0.0:8080）；也可用 ADDR")
+	portFlag := fl.Int("port", 0, "只改端口（服务器模式常用）；也可用 PORT")
+	serverFlag := fl.Bool("server", false, "服务器模式：监听所有网卡，必须登录；也可用 FROGBOT_MODE=server")
+	dataFlag := fl.String("data", "", "数据目录（默认见 README）；也可用 DATA_DIR")
+	devicesFlag := fl.String("devices", "", "设备互联配置文件；默认读取数据目录下的 devices.json")
+	noBrowser := fl.Bool("no-browser", false, "启动后不自动打开浏览器；也可用 FROGBOT_NO_BROWSER=1")
+	showVersion := fl.Bool("version", false, "显示版本号")
+	_ = fl.Parse(args)
 	if *showVersion {
-		fmt.Println("frogbot", version)
+		fmt.Println("frog", version)
 		return
 	}
 	if version != "dev" {
@@ -243,6 +218,25 @@ func main() {
 	}
 
 	page := "http://" + browserHost(addr)
+	modeName := "local"
+	if server {
+		modeName = "server"
+	}
+	ctlSrv, ctlErr := startLocalControlServer(ctx, bots, runtimeState{
+		Version:   version,
+		Mode:      modeName,
+		Addr:      addr,
+		URL:       page,
+		DataDir:   absPath(dataDir),
+		Workspace: absPath(workspace),
+		LogFile:   env(filepath.Join(filepath.Dir(absPath(dataDir)), "frog.log"), "FROGBOT_LOG_FILE"),
+	}, stop)
+	if ctlErr != nil {
+		log.Printf("⚠ 启动本机控制通道失败：%v", ctlErr)
+	} else {
+		defer ctlSrv.Close()
+	}
+
 	fmt.Printf("\n  🐸 frog %s 已启动（%s）\n\n", version, map[bool]string{true: "服务器模式", false: "本机模式"}[server])
 	fmt.Printf("  管理页面： %s\n  数据目录： %s\n  工作区：   %s\n", page, absPath(dataDir), absPath(workspace))
 	if server {
@@ -345,7 +339,8 @@ func resetPassword(args []string) {
 	fromStdin := fl.Bool("password-stdin", false, "从标准输入读新密码（一行），不打印")
 	quiet := fl.Bool("quiet", false, "只输出密码本身（给脚本用）")
 	_ = fl.Parse(args)
-	dataDir, _ := dirs(*data)
+	cenv := resolveCLIEnv(*data)
+	dataDir := cenv.dataDir
 	name := *user
 	if name == "" {
 		if a, err := auth.Open(dataDir); err == nil {
@@ -367,7 +362,13 @@ func resetPassword(args []string) {
 	if err := auth.SetPassword(dataDir, name, pw); err != nil {
 		fatal("%v", err)
 	}
+	fixSystemdDataOwnership(cenv)
 	syncRootdAfterReset(dataDir)
+	if cenv.isSystemd && os.Geteuid() == 0 {
+		if _, err := os.Stat(rootdStateFile); err == nil {
+			_ = exec.Command("systemctl", "try-restart", "frogbot-rootd").Run()
+		}
+	}
 	if *quiet {
 		if !*fromStdin {
 			fmt.Println(pw)

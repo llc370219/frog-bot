@@ -30,6 +30,60 @@ func EncodeQRSVG(text string) (string, error) {
 	return b.String(), nil
 }
 
+// RenderQRTerminal 将文本渲染为可在终端直接扫码的紧凑型 Unicode 半块二维码。
+// color=true 时附加黑字白底 ANSI 转义，确保深色和浅色终端均具备高对比度。
+func RenderQRTerminal(text string, color bool) (string, error) {
+	grid, err := EncodeQRMatrix([]byte(text))
+	if err != nil {
+		return "", err
+	}
+	n := len(grid)
+	const quiet = 2
+	total := n + quiet*2
+	isDark := func(x, y int) bool {
+		gx, gy := x-quiet, y-quiet
+		if gx < 0 || gx >= n || gy < 0 || gy >= n {
+			return false
+		}
+		return grid[gy][gx]
+	}
+	var b bytes.Buffer
+	for y := 0; y < total; y += 2 {
+		b.WriteString("  ")
+		if color {
+			b.WriteString("\x1b[30;47m")
+		}
+		for x := 0; x < total; x++ {
+			top := isDark(x, y)
+			bot := false
+			if y+1 < total {
+				bot = isDark(x, y+1)
+			}
+			// color=true 时前景为黑、背景为白：暗模块用前景像素（█/▀/▄），亮模块用空格
+			// color=false 时按默认深色终端习惯反转（亮模块用 █，暗模块用空格）
+			if !color {
+				top = !top
+				bot = !bot
+			}
+			switch {
+			case top && bot:
+				b.WriteString("█")
+			case top && !bot:
+				b.WriteString("▀")
+			case !top && bot:
+				b.WriteString("▄")
+			default:
+				b.WriteString(" ")
+			}
+		}
+		if color {
+			b.WriteString("\x1b[0m")
+		}
+		b.WriteByte('\n')
+	}
+	return b.String(), nil
+}
+
 type qrVersion struct {
 	ver        int
 	totalData  int

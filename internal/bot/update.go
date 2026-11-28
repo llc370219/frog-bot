@@ -304,6 +304,49 @@ func detectUpgradeCapability() (canApply bool, needPassword bool) {
 	return false, false
 }
 
+type UpdateStatus = updateStatus
+
+// CheckUpdateChannel 查询指定更新通道（stable / beta）的最新版本与发布列表。
+func CheckUpdateChannel(ctx context.Context, current, channel string) (UpdateStatus, error) {
+	ch := normalizeChannel(channel, current)
+	endpoint := listReleasesAPI
+	if ch == "stable" {
+		endpoint = listReleasesAPI
+	}
+	return checkUpdateForChannel(ctx, releaseClient, endpoint, current, ch)
+}
+
+// LoadUpdateChannel 读取保存的更新通道偏好（stable / beta）。
+func LoadUpdateChannel(dataDir, current string) string {
+	raw, err := os.ReadFile(filepath.Join(dataDir, "update.json"))
+	if err == nil {
+		var p updateChannelPref
+		if json.Unmarshal(raw, &p) == nil && (p.Channel == "stable" || p.Channel == "beta") {
+			return p.Channel
+		}
+	}
+	return normalizeChannel("", current)
+}
+
+// SaveUpdateChannel 保存更新通道偏好（stable / beta）。
+func SaveUpdateChannel(dataDir, channel, current string) string {
+	ch := normalizeChannel(channel, current)
+	_ = os.MkdirAll(dataDir, 0o700)
+	raw, _ := json.Marshal(updateChannelPref{Channel: ch})
+	_ = os.WriteFile(filepath.Join(dataDir, "update.json"), raw, 0o600)
+	return ch
+}
+
+// SelfReplaceBinary 下载指定版本发布包、校验 SHA256 并原子替换当前可执行文件（若同目录存在独立副本 frog/frogbot 也会同步更新）。
+func SelfReplaceBinary(ctx context.Context, tag string) (string, error) {
+	return selfReplaceBinary(ctx, tag)
+}
+
+// ValidReleaseTag 检查版本号是否符合 vX.Y.Z[-prerelease] 格式。
+func ValidReleaseTag(tag string) bool {
+	return validTagRe.MatchString(strings.TrimSpace(tag))
+}
+
 func canWriteSelfBinary() bool {
 	exe, err := os.Executable()
 	if err != nil {
@@ -448,12 +491,62 @@ func selfReplaceBinary(ctx context.Context, tag string) (string, error) {
 			_ = os.Rename(oldPath, exe)
 			return "", err
 		}
+		syncSiblingBinary(exe, binBytes)
 		return exe, nil
 	}
 	if err := os.Rename(tmpPath, exe); err != nil {
 		return "", err
 	}
+	syncSiblingBinary(exe, binBytes)
 	return exe, nil
+}
+
+// syncSiblingBinary 同步更新同目录下独立的 frog / frogbot 副本（软链会自动指向新文件，无需覆盖）。
+func syncSiblingBinary(exe string, binBytes []byte) {
+	base := strings.ToLower(filepath.Base(exe))
+	var siblingName string
+	switch base {
+	case "frogbot":
+		siblingName = "frog"
+	case "frog":
+		siblingName = "frogbot"
+	case "frogbot.exe":
+		siblingName = "frog.exe"
+	case "frog.exe":
+		siblingName = "frogbot.exe"
+	default:
+		return
+	}
+	sib := filepath.Join(filepath.Dir(exe), siblingName)
+	fi, err := os.Lstat(sib)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || fi.IsDir() {
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(sib), ".frog-sib-*")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(binBytes); err != nil {
+		_ = tmp.Close()
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		return
+	}
+	_ = os.Chmod(tmpPath, 0o755)
+	if runtime.GOOS == "windows" {
+		old := sib + ".old"
+		_ = os.Remove(old)
+		if os.Rename(sib, old) == nil {
+			if os.Rename(tmpPath, sib) != nil {
+				_ = os.Rename(old, sib)
+			}
+		}
+		return
+	}
+	_ = os.Rename(tmpPath, sib)
 }
 
 func httpFetchBytes(ctx context.Context, rawURL string, limit int64) ([]byte, error) {

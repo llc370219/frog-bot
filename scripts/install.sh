@@ -22,6 +22,7 @@ ROOTD_UNIT_FILE="$ROOT/etc/systemd/system/frogbot-rootd.service"
 ROOTD_STATE="$ROOT/etc/frogbot/rootd.json"
 ROOT_HELPER="${ROOT_HELPER:-1}"
 WRAPPER="$ROOT/usr/local/bin/frogbot"
+FROG_BIN="$ROOT/usr/local/bin/frog"
 SVC_USER=""
 SVC_GROUP=""
 SVC_HOME=""
@@ -266,35 +267,9 @@ UNIT
 
 write_wrapper() {
   mkdir -p "$(dirname "$WRAPPER")"
-  cat > "$WRAPPER" <<'WRAP'
-#!/bin/sh
-# 由 frog 安装脚本生成：管理命令（服务本身由 systemd 运行）。
-ENV_FILE="__ENV_FILE__"
-APP="__APP_DIR__/frogbot"
-RUN_USER="__SVC_USER__"
-case "${1:-}" in
-  reset-password)
-    shift
-    DATA_DIR="$(sed -n 's/^DATA_DIR=//p' "$ENV_FILE" 2>/dev/null)"
-    if [ "$(id -u)" = 0 ] && [ "$RUN_USER" != "root" ] && id "$RUN_USER" >/dev/null 2>&1; then
-      runuser -u "$RUN_USER" -- "$APP" reset-password -data "$DATA_DIR" "$@" || exit $?
-    else
-      "$APP" reset-password -data "$DATA_DIR" "$@" || exit $?
-    fi
-    if [ -f /etc/frogbot/rootd.json ] && [ "$(id -u)" = 0 ]; then
-      "$APP" rootd sync-password -data "$DATA_DIR" >/dev/null && systemctl try-restart frogbot-rootd && echo "提权助手的密码也已同步。"
-    fi
-    exit 0 ;;
-  version|-version|--version) exec "$APP" -version ;;
-  *)
-    echo "frog 由 systemd 运行：sudo systemctl status|restart|stop frogbot"
-    echo "查看日志：sudo journalctl -u frogbot -f"
-    echo "重置密码：sudo frogbot reset-password"
-    echo "版本：    frogbot version" ;;
-esac
-WRAP
-  sed -i "s|__ENV_FILE__|$ENV_FILE|; s|__APP_DIR__|$APP_DIR|; s|__SVC_USER__|$SVC_USER|" "$WRAPPER"
-  chmod 755 "$WRAPPER"
+  rm -f "$WRAPPER" "$FROG_BIN"
+  ln -s "$APP_DIR/frogbot" "$WRAPPER"
+  ln -s "$APP_DIR/frogbot" "$FROG_BIN"
 }
 
 setup_caddy() {
@@ -350,7 +325,7 @@ uninstall() {
     systemctl disable --now frogbot frogbot-rootd 2>/dev/null || true
     rm -f "$UNIT_FILE" "$ROOTD_UNIT_FILE"; systemctl daemon-reload || true
   fi
-  rm -rf "$APP_DIR" "$WRAPPER"
+  rm -rf "$APP_DIR" "$WRAPPER" "$FROG_BIN"
   if [ "$purge" = "--purge" ]; then
     warn "删除所有数据：$DATA_ROOT 和 $ETC_DIR"
     rm -rf "$DATA_ROOT" "$ETC_DIR"
@@ -362,7 +337,58 @@ uninstall() {
   say "已卸载"
 }
 
+install_macos() {
+  local arch ver tmpdir name base bin_dir
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64" ;;
+    x86_64|amd64) arch="amd64" ;;
+    *) die "不支持的 macOS 架构：$(uname -m)" ;;
+  esac
+  ver="${VERSION:-$(latest_version)}"
+  name="frogbot_${ver}_darwin_${arch}.tar.gz"
+  say "安装 frog CLI $ver（darwin/$arch）"
+  tmpdir="$(mktemp -d)"; trap 'rm -rf "${tmpdir:-}"' EXIT
+  if [ -n "${FROGBOT_ARTIFACT_DIR:-}" ]; then
+    cp "$FROGBOT_ARTIFACT_DIR/$name" "$FROGBOT_ARTIFACT_DIR/SHA256SUMS" "$tmpdir/" || die "本地目录缺少发布包"
+  else
+    base="https://github.com/$REPO/releases/download/$ver"
+    fetch "$base/$name" "$tmpdir/$name" || die "下载失败：$base/$name"
+    fetch "$base/SHA256SUMS" "$tmpdir/SHA256SUMS" || die "下载校验文件失败"
+  fi
+  say "校验 SHA256"
+  (cd "$tmpdir" && grep " ${name}\$" SHA256SUMS > want.sum && [ -s want.sum ] && shasum -a 256 -c want.sum >/dev/null) \
+    || die "SHA256 校验失败，已停止安装"
+  tar -C "$tmpdir" -xzf "$tmpdir/$name"
+  bin_dir="${INSTALL_DIR:-$HOME/.local/bin}"
+  mkdir -p "$bin_dir"
+  install -m 755 "$tmpdir/frogbot_${ver}_darwin_${arch}/frogbot" "$bin_dir/frogbot"
+  ln -sf "$bin_dir/frogbot" "$bin_dir/frog"
+  xattr -d com.apple.quarantine "$bin_dir/frogbot" 2>/dev/null || true
+  cat <<MACDONE
+
+  🐸 frog CLI $ver 已安装到 $bin_dir/frog（同时兼容 frogbot）
+
+  常用指令：
+    frog                 打开交互式状态面板与快捷菜单
+    frog start           后台启动服务（内置加密穿透，免配公网）
+    frog pair            在终端直接打印二维码给手机扫码
+    frog status          查看运行与远程连接状态
+    frog logs -f         查看实时日志
+    frog service install 开启开机自启（LaunchAgent）
+    frog update          一键升级
+
+MACDONE
+  case ":$PATH:" in
+    *":$bin_dir:"*) ;;
+    *) warn "请将 $bin_dir 加入 PATH（例如写入 ~/.zshrc）：export PATH=\"$bin_dir:\$PATH\"" ;;
+  esac
+}
+
 main() {
+  if [ "$(uname -s)" = "Darwin" ] && ! sandbox; then
+    install_macos
+    exit 0
+  fi
   if [ "${1:-}" = uninstall ]; then shift; uninstall "${1:-}"; exit 0; fi
   need_root
   case "$PORT" in ''|*[!0-9]*) die "PORT 必须是数字";; esac
@@ -454,10 +480,15 @@ DONE
   cat <<DONE
 
 ${rootd_note:+  $rootd_note
-}  忘记密码：sudo frogbot reset-password
-  查看状态：sudo systemctl status frogbot     日志：sudo journalctl -u frogbot -f
+}  快捷 CLI（直接输入 frog 即可打开交互式管理面板，同时兼容 frogbot）：
+    sudo frog              交互式管理面板
+    sudo frog status       查看服务与远程穿透状态
+    sudo frog pair         终端直接打印手机配对二维码
+    sudo frog logs -f      实时查看日志
+    sudo frog restart      重启服务（支持 start / stop / restart）
+    sudo frog update       一键升级（支持 beta / stable / 指定版本）
+    sudo frog passwd       重置登录密码
   数据目录：$DATA_ROOT     配置：$ENV_FILE
-  升级：    再运行一次这条安装命令（保留数据和密码）
   卸载：    curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | sudo bash -s uninstall
 
 DONE

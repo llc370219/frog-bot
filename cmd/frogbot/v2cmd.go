@@ -52,7 +52,8 @@ func v2DoctorMain(args []string) {
 	fix := fs.Bool("fix", false, "自动修复目录权限")
 	_ = fs.Parse(args)
 
-	d, _ := dirs(*dataDir)
+	env := resolveCLIEnv(*dataDir)
+	d := env.dataDir
 	layout := host.NewLayout(d)
 	if *fix {
 		_ = layout.EnsureHostDirs()
@@ -80,8 +81,8 @@ func v2BackupMain(args []string) {
 	out := fs.String("out", fmt.Sprintf("frogbot-backup-%s.frogbak", time.Now().Format("20060102-150405")), "输出路径")
 	pass := fs.String("pass", os.Getenv("FROGBOT_BACKUP_PASS"), "加密口令")
 	_ = fs.Parse(args)
-	d, _ := dirs(*dataDir)
-	man, err := ops.Backup(d, *out, *pass)
+	env := resolveCLIEnv(*dataDir)
+	man, err := ops.Backup(env.dataDir, *out, *pass)
 	if err != nil {
 		fatal("备份失败: %v", err)
 	}
@@ -94,12 +95,12 @@ func v2RestoreMain(args []string) {
 	dataDir := fs.String("data", env("", "DATA_DIR"), "目标恢复目录")
 	pass := fs.String("pass", os.Getenv("FROGBOT_BACKUP_PASS"), "解密口令")
 	_ = fs.Parse(args)
-	d, _ := dirs(*dataDir)
-	man, err := ops.Restore(*in, d, *pass)
+	env := resolveCLIEnv(*dataDir)
+	man, err := ops.Restore(*in, env.dataDir, *pass)
 	if err != nil {
 		fatal("恢复失败: %v", err)
 	}
-	fmt.Printf("已从 %s 恢复 %d 个文件到 %s\n", *in, man.Files, d)
+	fmt.Printf("已从 %s 恢复 %d 个文件到 %s\n", *in, man.Files, env.dataDir)
 }
 
 func v2GCMain(args []string) {
@@ -108,8 +109,8 @@ func v2GCMain(args []string) {
 	days := fs.Int("days", 7, "保留天数")
 	maxMB := fs.Int64("max-mb", 500, "最大日志容量 MB")
 	_ = fs.Parse(args)
-	d, ws := dirs(*dataDir)
-	rep := ops.NewDiskGC(d, ops.GCConfig{LogMaxAge: time.Duration(*days) * 24 * time.Hour, MaxLogBytes: *maxMB << 20}, ws).RunNow()
+	env := resolveCLIEnv(*dataDir)
+	rep := ops.NewDiskGC(env.dataDir, ops.GCConfig{LogMaxAge: time.Duration(*days) * 24 * time.Hour, MaxLogBytes: *maxMB << 20}, env.workspace).RunNow()
 	fmt.Printf("GC 完成：清理过期指针 %d、过期日志 %d、超额日志 %d，回收 %.1f KB\n",
 		rep.PointersRemoved, rep.LogsRemovedByAge, rep.LogsRemovedByCap, float64(rep.BytesReclaimed)/1024)
 }

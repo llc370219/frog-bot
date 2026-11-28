@@ -21,24 +21,33 @@ for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; d
   echo "→ $GOOS/$GOARCH"
   CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath \
     -ldflags "-s -w -X main.version=$VERSION" -o "$stage/$bin" ./cmd/frogbot
+  if [ "$GOOS" != windows ]; then
+    ln -s "$bin" "$stage/frog"
+  fi
   cp LICENSE ATTRIBUTION.md "$stage/"
   mkdir -p "$stage/licenses" && cp licenses/* "$stage/licenses/"
   cat > "$stage/使用说明.txt" <<TXT
 frog ${VERSION}（${CHANNEL}，MIT 许可证）
 
-【本机版】自己电脑上用
-1. 运行 ${bin}（Windows 双击；macOS / Linux 在终端里执行 ./${bin}）。命令行窗口别关，关掉就退出了。
-2. 浏览器会自动打开管理页面（默认 http://127.0.0.1:8080）。
-3. 在「设置 → API 渠道」填模型的接口地址、API Key、模型名，保存后就能聊天。
-本机版只允许从这台电脑访问，没有登录功能。
+【推荐】一键安装到系统 PATH 后直接用 frog 命令：
+- Windows PowerShell：
+    irm https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.ps1 | iex
+- macOS / Linux 服务器：
+    curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | bash
+    （Linux 服务器部署 systemd 请加 sudo：... | sudo bash）
 
-【服务器版】放在 Linux 服务器上，从外网用用户名和密码登录
-一行命令安装（自动下载、校验、创建 systemd 服务，最后打印访问地址、用户名和初始密码）：
-  curl -fsSL https://raw.githubusercontent.com/llc370219/frog-bot/main/scripts/install.sh | sudo bash
-也可以手动运行：./frogbot -server（第一次启动时在终端打印初始密码）。
-HTTP 是明文，强烈建议配域名 + HTTPS：在安装命令里加 DOMAIN=你的域名（自动配置 Caddy）。
+【常用 CLI 指令】（本机与服务器完全统一，同时兼容 ${bin}）
+  frog                 打开交互式状态面板与快捷菜单
+  frog start           后台启动服务（内置端到端加密穿透，关闭终端不退出）
+  frog pair            终端直接打印二维码与连接码，手机扫码即连
+  frog status          查看运行状态、远程穿透与已装 Coding CLI
+  frog logs -f         实时查看日志
+  frog update          一键检查并升级（支持 frog update beta / stable）
+  frog service install 一键开启开机自启
+  frog passwd          重置登录密码
+  frog stop / restart  停止或重启服务
 
-注意：后台 agent 的 shell 工具没有沙箱，有风险的操作默认会先请你确认；服务器版请用专门的 VPS。
+注意：后台 agent 能在宿主机执行命令，高危操作默认会先请你确认；服务器模式请用专门的 VPS。
 macOS 提示无法验证开发者：系统设置 → 隐私与安全性 → 仍要打开，或执行 xattr -d com.apple.quarantine ./frogbot
 Windows SmartScreen 提示：更多信息 → 仍要运行
 项目主页：https://github.com/llc370219/frog-bot

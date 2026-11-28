@@ -17,6 +17,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}"
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git && rm -rf /var/lib/apt/lists/* && groupadd --gid 10001 frogbot && useradd --uid 10001 --gid frogbot --create-home frogbot && mkdir -p /var/lib/frogbot/data /var/lib/frogbot/workspace && chown -R frogbot:frogbot /var/lib/frogbot
 COPY --from=backend /out/frogbot /usr/local/bin/frogbot
+RUN ln -s /usr/local/bin/frogbot /usr/local/bin/frog
 ENV FROGBOT_MODE=server FROGBOT_NO_BROWSER=1 DATA_DIR=/var/lib/frogbot/data WORKSPACE=/var/lib/frogbot/workspace
 USER frogbot
 WORKDIR /var/lib/frogbot

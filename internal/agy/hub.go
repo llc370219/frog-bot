@@ -241,6 +241,7 @@ type Hub struct {
 	defAgent    string
 	projects    []Project
 	meta        map[string]savedSessionMeta
+	nativeCache map[string]nativeSessionInfo
 	sessions    map[string]*sessionRuntime
 	closed      bool
 }
@@ -265,15 +266,16 @@ func NewHub(cfg Config) (*Hub, error) {
 		return nil, err
 	}
 	h := &Hub{
-		cfg:        cfg,
-		dataDir:    dataDir,
-		projRoot:   projRoot,
-		acpClients: map[string]*acpClient{},
-		claudeRuns: map[string]*claudeSessionRunner{},
-		piRuns:     map[string]*piSessionRunner{},
-		agentCaps:  map[string]*agentDynamicCaps{},
-		meta:       map[string]savedSessionMeta{},
-		sessions:   map[string]*sessionRuntime{},
+		cfg:         cfg,
+		dataDir:     dataDir,
+		projRoot:    projRoot,
+		acpClients:  map[string]*acpClient{},
+		claudeRuns:  map[string]*claudeSessionRunner{},
+		piRuns:      map[string]*piSessionRunner{},
+		agentCaps:   map[string]*agentDynamicCaps{},
+		meta:        map[string]savedSessionMeta{},
+		nativeCache: map[string]nativeSessionInfo{},
+		sessions:    map[string]*sessionRuntime{},
 	}
 	for _, sp := range agentCatalog {
 		h.agentCaps[sp.ID] = &agentDynamicCaps{
@@ -390,6 +392,14 @@ func (h *Hub) loadHistory(sessionID string) []ChatMessage {
 		return nil
 	}
 	return msgs
+}
+
+func (h *Hub) historyModTime(sessionID string) time.Time {
+	fi, err := os.Stat(h.historyFilePath(sessionID))
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
 }
 
 func (h *Hub) loadPrefs() error {
@@ -513,8 +523,9 @@ func (h *Hub) CreateProject(name, customPath string) (Project, error) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	targetKey := pathMatchKey(target)
 	for _, existing := range h.projects {
-		if existing.Path == target {
+		if pathMatchKey(existing.Path) == targetKey {
 			return existing, nil
 		}
 	}
@@ -545,8 +556,9 @@ func (h *Hub) DeleteProject(id string, deleteFiles bool) error {
 		agent string
 		id    string
 	}
+	projKey := pathMatchKey(p.Path)
 	for sid, rt := range h.sessions {
-		if rt.projectID == id || rt.cwd == p.Path {
+		if rt.projectID == id || (projKey != "" && pathMatchKey(rt.cwd) == projKey) {
 			acpSessIDs = append(acpSessIDs, struct {
 				agent string
 				id    string
@@ -1101,6 +1113,110 @@ func toCommandOptions(wire []acpCommandWire) []CommandOption {
 	return out
 }
 
+type projMatchEntry struct {
+	id  string
+	key string
+}
+
+func resolveProjectForCwd(cwdKey string, projs []projMatchEntry) string {
+	if cwdKey == "" {
+		return ""
+	}
+	for _, p := range projs {
+		if p.key != "" && p.key == cwdKey {
+			return p.id
+		}
+	}
+	bestID := ""
+	bestLen := 0
+	for _, p := range projs {
+		if p.key == "" {
+			continue
+		}
+		prefix := strings.TrimSuffix(p.key, "/") + "/"
+		if strings.HasPrefix(cwdKey, prefix) && len(p.key) > bestLen {
+			bestID = p.id
+			bestLen = len(p.key)
+		}
+	}
+	return bestID
+}
+
+func (h *Hub) listACPNativeSessions(ctx context.Context, agentID, fallbackCwd string) []nativeSessionInfo {
+	if _, err := ResolveAgentBinary(agentID); err != nil {
+		return nil
+	}
+	c, err := h.ensureACPClient(agentID)
+	if err != nil {
+		return nil
+	}
+	type wireItem struct {
+		SessionID string `json:"sessionId"`
+		Cwd       string `json:"cwd"`
+		Title     string `json:"title"`
+		UpdatedAt string `json:"updatedAt"`
+	}
+	type listPage struct {
+		Sessions   []wireItem `json:"sessions"`
+		NextCursor string     `json:"nextCursor"`
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	// 先不带 cwd 过滤拉取全量原生会话，避免 Windows 盘符大小写 / 斜杠 / URI / 子目录差异被远端过滤掉；
+	// 仅在不支持无参调用时回退带 cwd。
+	useCwdFilter := false
+	var first listPage
+	if err := c.call(callCtx, "session/list", map[string]any{}, &first); err != nil {
+		if fallbackCwd == "" {
+			return nil
+		}
+		if err2 := c.call(callCtx, "session/list", map[string]any{"cwd": fallbackCwd}, &first); err2 != nil {
+			return nil
+		}
+		useCwdFilter = true
+	}
+
+	rawItems := append([]wireItem(nil), first.Sessions...)
+	cursor := strings.TrimSpace(first.NextCursor)
+	seenCursor := map[string]bool{}
+	for page := 1; cursor != "" && page < 10 && !seenCursor[cursor]; page++ {
+		seenCursor[cursor] = true
+		params := map[string]any{"cursor": cursor}
+		if useCwdFilter && fallbackCwd != "" {
+			params["cwd"] = fallbackCwd
+		}
+		var next listPage
+		if c.call(callCtx, "session/list", params, &next) != nil || len(next.Sessions) == 0 {
+			break
+		}
+		rawItems = append(rawItems, next.Sessions...)
+		cursor = strings.TrimSpace(next.NextCursor)
+	}
+
+	out := make([]nativeSessionInfo, 0, len(rawItems))
+	for _, item := range rawItems {
+		if item.SessionID == "" {
+			continue
+		}
+		updated := parseFlexibleTime(item.UpdatedAt)
+		if updated.IsZero() {
+			updated = time.Now()
+		}
+		out = append(out, nativeSessionInfo{
+			ID:        item.SessionID,
+			Agent:     agentID,
+			NativeID:  item.SessionID,
+			Cwd:       cleanNativeCwd(item.Cwd),
+			RawCwd:    item.Cwd,
+			Title:     strings.TrimSpace(item.Title),
+			UpdatedAt: updated,
+		})
+	}
+	return out
+}
+
 func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSummary, error) {
 	var proj *Project
 	if projectID != "" {
@@ -1116,79 +1232,115 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 		cwd = proj.Path
 	}
 
-	// 若本机装有 agy，尝试非阻塞合并 agy 自身的原生会话列表；未安装其他或只装了 claude/codex 时不报错
-	var agyNative []struct {
-		SessionID string `json:"sessionId"`
-		Cwd       string `json:"cwd"`
-		Title     string `json:"title"`
-		UpdatedAt string `json:"updatedAt"`
-	}
-	if _, err := ResolveAgentBinary("agy"); err == nil {
-		if c, cerr := h.ensureACPClient("agy"); cerr == nil {
-			var listRes struct {
-				Sessions []struct {
-					SessionID string `json:"sessionId"`
-					Cwd       string `json:"cwd"`
-					Title     string `json:"title"`
-					UpdatedAt string `json:"updatedAt"`
-				} `json:"sessions"`
-			}
-			callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			if c.call(callCtx, "session/list", map[string]any{"cwd": cwd}, &listRes) == nil {
-				agyNative = listRes.Sessions
-			}
-			cancel()
-		}
-	}
+	// 并行或依次收集各原生 CLI 的历史会话：Antigravity (ACP)、Claude Code (~/.claude/projects)、Codex (~/.codex/sessions)
+	agyNative := h.listACPNativeSessions(ctx, "agy", cwd)
+	claudeNative := discoverNativeClaudeSessions()
+	codexNative := discoverNativeCodexSessions()
+
+	allNative := make([]nativeSessionInfo, 0, len(agyNative)+len(claudeNative)+len(codexNative))
+	allNative = append(allNative, agyNative...)
+	allNative = append(allNative, claudeNative...)
+	allNative = append(allNative, codexNative...)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	byPath := map[string]string{}
+	projKeys := make([]projMatchEntry, 0, len(h.projects))
 	for _, p := range h.projects {
-		byPath[pathMatchKey(p.Path)] = p.ID
+		projKeys = append(projKeys, projMatchEntry{id: p.ID, key: pathMatchKey(p.Path)})
 	}
 	wantPath := ""
 	if proj != nil {
 		wantPath = pathMatchKey(proj.Path)
 	}
 
+	// 将通过 Frog Bot 创建、随后绑定到原生 CLI sessionId/threadId 的记录映射回已有 ID，防止重复列出
+	metaByNative := map[string]string{}
+	for id, m := range h.meta {
+		if m.NativeID != "" && m.Agent != "" {
+			metaByNative[m.Agent+":"+m.NativeID] = id
+		}
+	}
+
+	matchesProject := func(cwdKey, metaProjID string) (bool, string) {
+		pid := resolveProjectForCwd(cwdKey, projKeys)
+		if pid == "" {
+			pid = metaProjID
+		}
+		if proj == nil {
+			return true, pid
+		}
+		if cwdKey != "" {
+			if cwdKey == wantPath || pid == proj.ID {
+				return true, proj.ID
+			}
+			return false, ""
+		}
+		if metaProjID == proj.ID {
+			return true, proj.ID
+		}
+		return false, ""
+	}
+
 	seen := map[string]bool{}
 	out := make([]SessionSummary, 0)
-	for _, item := range agyNative {
-		if item.SessionID == "" {
+	for _, item := range allNative {
+		if item.ID == "" {
 			continue
 		}
-		if m, ok := h.meta[item.SessionID]; ok && m.Deleted {
+		sid := item.ID
+		if item.NativeID != "" {
+			if mapped, ok := metaByNative[item.Agent+":"+item.NativeID]; ok {
+				sid = mapped
+			}
+		}
+		cached := item
+		cached.ID = sid
+		h.nativeCache[sid] = cached
+
+		if seen[sid] {
 			continue
 		}
-		cleanCwd := realOrClean(item.Cwd)
-		cwdKey := pathMatchKey(cleanCwd)
-		if wantPath != "" && cwdKey != wantPath {
+		m, hasMeta := h.meta[sid]
+		if hasMeta && m.Deleted {
 			continue
 		}
-		seen[item.SessionID] = true
-		updated, _ := time.Parse(time.RFC3339, item.UpdatedAt)
+		cwdKey := pathMatchKey(item.Cwd)
+		matched, pid := matchesProject(cwdKey, m.ProjectID)
+		if !matched {
+			continue
+		}
+		seen[sid] = true
+
+		ag := item.Agent
+		if ag == "" {
+			ag = "agy"
+		}
+		var defMode, defModel string
+		if cap := h.agentCaps[ag]; cap != nil {
+			defMode = cap.defMode
+			defModel = cap.defModel
+		}
+		model := item.Model
+		if model == "" {
+			model = defModel
+		}
+		updated := item.UpdatedAt
 		if updated.IsZero() {
 			updated = time.Now()
 		}
-		pid := byPath[cwdKey]
-		if pid == "" && proj != nil {
-			pid = proj.ID
-		}
-		cap := h.agentCaps["agy"]
 		s := SessionSummary{
-			ID:        item.SessionID,
+			ID:        sid,
 			ProjectID: pid,
-			Cwd:       cleanCwd,
-			Agent:     "agy",
-			AgentName: agentDisplayName("agy"),
+			Cwd:       item.Cwd,
+			Agent:     ag,
+			AgentName: agentDisplayName(ag),
 			Title:     strings.TrimSpace(item.Title),
-			Mode:      cap.defMode,
-			Model:     cap.defModel,
+			Mode:      defMode,
+			Model:     model,
 			UpdatedAt: updated,
 		}
-		if m, ok := h.meta[item.SessionID]; ok {
-			if m.Title != "" {
+		if hasMeta {
+			if m.Title != "" && m.Title != "新对话" {
 				s.Title = m.Title
 			}
 			if m.Mode != "" {
@@ -1201,7 +1353,7 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 				s.UpdatedAt = m.UpdatedAt
 			}
 		}
-		if rt := h.sessions[item.SessionID]; rt != nil {
+		if rt := h.sessions[sid]; rt != nil {
 			s = h.summaryFromRuntimeLocked(rt)
 		}
 		if s.Title == "" {
@@ -1214,7 +1366,9 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 		if m.Deleted || seen[id] {
 			continue
 		}
-		if wantPath != "" && pathMatchKey(m.Cwd) != wantPath {
+		cwdKey := pathMatchKey(m.Cwd)
+		matched, pid := matchesProject(cwdKey, m.ProjectID)
+		if !matched {
 			continue
 		}
 		if rt := h.sessions[id]; rt != nil {
@@ -1236,7 +1390,7 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 			}
 			out = append(out, SessionSummary{
 				ID:        m.ID,
-				ProjectID: m.ProjectID,
+				ProjectID: pid,
 				Cwd:       m.Cwd,
 				Agent:     ag,
 				AgentName: agentDisplayName(ag),
@@ -1458,6 +1612,14 @@ func (h *Hub) getOrCreateRuntimeLocked(id, projectID, cwd, agentID string) *sess
 			agentID = m.Agent
 		}
 	}
+	if ni, ok := h.nativeCache[id]; ok {
+		if cwd == "" && ni.Cwd != "" {
+			cwd = ni.Cwd
+		}
+		if agentID == "" && ni.Agent != "" {
+			agentID = ni.Agent
+		}
+	}
 	if agentID == "" {
 		if strings.HasPrefix(id, "claude_") {
 			agentID = "claude"
@@ -1497,8 +1659,24 @@ func (h *Hub) getOrCreateRuntimeLocked(id, projectID, cwd, agentID string) *sess
 		updatedAt: time.Now(),
 		subs:      map[chan StreamEvent]struct{}{},
 	}
+	if ni, ok := h.nativeCache[id]; ok {
+		if ni.NativeID != "" {
+			rt.nativeID = ni.NativeID
+		}
+		if ni.Title != "" {
+			rt.title = ni.Title
+		}
+		if ni.Model != "" {
+			rt.model = ni.Model
+		}
+		if !ni.UpdatedAt.IsZero() {
+			rt.updatedAt = ni.UpdatedAt
+		}
+	}
 	if m, ok := h.meta[id]; ok {
-		rt.nativeID = m.NativeID
+		if m.NativeID != "" {
+			rt.nativeID = m.NativeID
+		}
 		if m.Title != "" {
 			rt.title = m.Title
 		}
@@ -1510,6 +1688,15 @@ func (h *Hub) getOrCreateRuntimeLocked(id, projectID, cwd, agentID string) *sess
 		}
 		if !m.UpdatedAt.IsZero() {
 			rt.updatedAt = m.UpdatedAt
+		}
+	}
+	if rt.nativeID == "" {
+		if agentID == "codex" && strings.HasPrefix(id, "codex_") {
+			rt.nativeID = strings.TrimPrefix(id, "codex_")
+		} else if agentID == "claude" && strings.HasPrefix(id, "claude_") {
+			if cand := strings.TrimPrefix(id, "claude_"); isUUIDLike(cand) {
+				rt.nativeID = cand
+			}
 		}
 	}
 	h.sessions[id] = rt
@@ -1528,6 +1715,7 @@ func (h *Hub) ensureLoaded(ctx context.Context, sessionID, projectID string) (*s
 	savedMode := rt.mode
 	savedModel := rt.model
 	nativeID := rt.nativeID
+	nativeInfo, hasNative := h.nativeCache[sessionID]
 	h.mu.Unlock()
 
 	spec, ok := findAgentSpec(agentID)
@@ -1541,23 +1729,38 @@ func (h *Hub) ensureLoaded(ctx context.Context, sessionID, projectID string) (*s
 		if err != nil {
 			return nil, err
 		}
-		h.mu.Lock()
-		rt.replaying = true
-		rt.msgs = nil
-		rt.replayUser.Reset()
-		rt.replayAsst.Reset()
-		rt.replayThk.Reset()
-		rt.replayTls = nil
-		h.mu.Unlock()
+		resetReplay := func() {
+			h.mu.Lock()
+			rt.replaying = true
+			rt.msgs = nil
+			rt.replayUser.Reset()
+			rt.replayAsst.Reset()
+			rt.replayThk.Reset()
+			rt.replayTls = nil
+			h.mu.Unlock()
+		}
+		resetReplay()
 
 		loadCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
+		loadCwd := cwd
+		if hasNative && nativeInfo.RawCwd != "" {
+			loadCwd = nativeInfo.RawCwd
+		}
 		var res acpSessionMetaResp
 		err = c.call(loadCtx, "session/load", map[string]any{
 			"sessionId":  sessionID,
-			"cwd":        cwd,
+			"cwd":        loadCwd,
 			"mcpServers": []any{},
 		}, &res)
+		if err != nil && cwd != "" && loadCwd != cwd {
+			resetReplay()
+			err = c.call(loadCtx, "session/load", map[string]any{
+				"sessionId":  sessionID,
+				"cwd":        cwd,
+				"mcpServers": []any{},
+			}, &res)
+		}
 
 		h.mu.Lock()
 		h.flushReplayTurnLocked(rt, true)
@@ -1577,6 +1780,9 @@ func (h *Hub) ensureLoaded(ctx context.Context, sessionID, projectID string) (*s
 			if disk := h.loadHistory(sessionID); len(disk) > 0 {
 				rt.msgs = disk
 			}
+		}
+		if (rt.title == "" || rt.title == "新对话") && hasNative && nativeInfo.Title != "" {
+			rt.title = nativeInfo.Title
 		}
 		h.captureCapabilitiesLocked(agentID, res)
 		rt.loaded = true
@@ -1605,36 +1811,143 @@ func (h *Hub) ensureLoaded(ctx context.Context, sessionID, projectID string) (*s
 		return rt, nil
 
 	case "codex":
-		c, err := h.ensureCodexClient()
-		if err != nil {
-			return nil, err
-		}
-		callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		defer cancel()
 		if nativeID == "" && strings.HasPrefix(sessionID, "codex_") {
 			nativeID = strings.TrimPrefix(sessionID, "codex_")
 		}
-		if nativeID != "" {
-			if c.call(callCtx, "thread/resume", map[string]any{"threadId": nativeID}, nil) != nil {
-				// 若旧线程已清理，自动新开一个底层 thread
-				approval, sb := codexModeParams(savedMode)
-				var res struct {
-					Thread struct {
-						ID string `json:"id"`
-					} `json:"thread"`
-				}
-				if err := c.call(callCtx, "thread/start", map[string]any{
-					"cwd":            cwd,
-					"approvalPolicy": approval,
-					"sandbox":        sb,
-				}, &res); err == nil && res.Thread.ID != "" {
-					nativeID = res.Thread.ID
+		if (!hasNative || nativeInfo.SourcePath == "") && nativeID != "" {
+			if found, ok := findNativeCodexSession(nativeID); ok {
+				nativeInfo = found
+				hasNative = true
+			}
+		}
+		if hasNative && nativeInfo.Cwd != "" && (cwd == "" || pathMatchKey(cwd) != pathMatchKey(nativeInfo.Cwd)) {
+			cwd = nativeInfo.Cwd
+		}
+
+		disk := h.loadHistory(sessionID)
+		diskMod := h.historyModTime(sessionID)
+		if hasNative && nativeInfo.SourcePath != "" {
+			if fi, serr := os.Stat(nativeInfo.SourcePath); serr == nil {
+				if len(disk) == 0 || fi.ModTime().After(diskMod) {
+					if nativeMsgs := loadNativeCodexHistory(nativeInfo.SourcePath); len(nativeMsgs) > 0 {
+						disk = nativeMsgs
+					}
 				}
 			}
 		}
-		disk := h.loadHistory(sessionID)
+
+		codexReady := false
+		c, err := h.ensureCodexClient()
+		if err != nil {
+			if len(disk) == 0 {
+				return nil, err
+			}
+		} else {
+			codexReady = true
+			if nativeID != "" {
+				callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				if c.call(callCtx, "thread/resume", map[string]any{"threadId": nativeID}, nil) != nil {
+					// 若旧线程已清理，自动新开一个底层 thread
+					approval, sb := codexModeParams(savedMode)
+					var res struct {
+						Thread struct {
+							ID string `json:"id"`
+						} `json:"thread"`
+					}
+					if err := c.call(callCtx, "thread/start", map[string]any{
+						"cwd":            cwd,
+						"approvalPolicy": approval,
+						"sandbox":        sb,
+					}, &res); err == nil && res.Thread.ID != "" {
+						nativeID = res.Thread.ID
+					}
+				}
+				cancel()
+			}
+		}
+
 		h.mu.Lock()
 		rt.nativeID = nativeID
+		if cwd != "" {
+			rt.cwd = cwd
+		}
+		if hasNative {
+			cached := nativeInfo
+			cached.ID = sessionID
+			h.nativeCache[sessionID] = cached
+			if (rt.title == "" || rt.title == "新对话") && nativeInfo.Title != "" {
+				rt.title = nativeInfo.Title
+			}
+			if (rt.model == "" || rt.model == "default") && nativeInfo.Model != "" {
+				rt.model = nativeInfo.Model
+			}
+			if nativeInfo.UpdatedAt.After(rt.updatedAt) {
+				rt.updatedAt = nativeInfo.UpdatedAt
+			}
+		}
+		if len(rt.msgs) == 0 && len(disk) > 0 {
+			rt.msgs = disk
+		}
+		if codexReady {
+			rt.loaded = true
+		}
+		h.mu.Unlock()
+		return rt, nil
+
+	case "claude":
+		if nativeID == "" && strings.HasPrefix(sessionID, "claude_") {
+			if cand := strings.TrimPrefix(sessionID, "claude_"); isUUIDLike(cand) {
+				nativeID = cand
+			}
+		}
+		if (!hasNative || nativeInfo.SourcePath == "") && nativeID != "" {
+			if found, ok := findNativeClaudeSession(nativeID); ok {
+				nativeInfo = found
+				hasNative = true
+			}
+		}
+		if hasNative && nativeInfo.Cwd != "" && (cwd == "" || pathMatchKey(cwd) != pathMatchKey(nativeInfo.Cwd)) {
+			cwd = nativeInfo.Cwd
+		}
+
+		disk := h.loadHistory(sessionID)
+		diskMod := h.historyModTime(sessionID)
+		if hasNative && nativeInfo.SourcePath != "" {
+			if fi, serr := os.Stat(nativeInfo.SourcePath); serr == nil {
+				if len(disk) == 0 || fi.ModTime().After(diskMod) {
+					if nativeMsgs := loadNativeClaudeHistory(nativeInfo.SourcePath); len(nativeMsgs) > 0 {
+						disk = nativeMsgs
+					}
+				}
+			}
+		}
+		if !hasNative && len(disk) == 0 {
+			if _, err := ResolveAgentBinary(agentID); err != nil {
+				return nil, err
+			}
+		}
+
+		h.mu.Lock()
+		if nativeID != "" {
+			rt.nativeID = nativeID
+		}
+		if cwd != "" {
+			rt.cwd = cwd
+		}
+		if hasNative {
+			cached := nativeInfo
+			cached.ID = sessionID
+			h.nativeCache[sessionID] = cached
+			if (rt.title == "" || rt.title == "新对话") && nativeInfo.Title != "" {
+				rt.title = nativeInfo.Title
+			}
+			if (rt.model == "" || rt.model == "default") && nativeInfo.Model != "" {
+				rt.model = nativeInfo.Model
+			}
+			if nativeInfo.UpdatedAt.After(rt.updatedAt) {
+				rt.updatedAt = nativeInfo.UpdatedAt
+			}
+		}
 		if len(rt.msgs) == 0 && len(disk) > 0 {
 			rt.msgs = disk
 		}
@@ -2914,11 +3227,14 @@ func realOrClean(p string) string {
 }
 
 func pathMatchKey(p string) string {
-	cleaned := realOrClean(p)
-	if runtime.GOOS == "windows" {
-		return strings.ToLower(filepath.ToSlash(cleaned))
+	s := stripPathDecorators(p)
+	if s == "" {
+		return ""
 	}
-	return cleaned
+	if runtime.GOOS == "windows" || !looksLikeWindowsPath(s) {
+		s = realOrClean(s)
+	}
+	return normalizePathMatchKey(s, runtime.GOOS == "windows")
 }
 
 func isWithinDir(p, dir string) bool {
