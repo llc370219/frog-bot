@@ -63,10 +63,34 @@ latest_version() {
   if [ "$channel" = "stable" ]; then
     fetch "https://api.github.com/repos/$REPO/releases/latest" "$tmp" || die "无法从 GitHub 读取正式版信息"
   else
-    fetch "https://api.github.com/repos/$REPO/releases?per_page=20" "$tmp" || die "无法从 GitHub 读取发布列表"
+    fetch "https://api.github.com/repos/$REPO/releases?per_page=30" "$tmp" || die "无法从 GitHub 读取发布列表"
   fi
   local v
-  v="$(grep -o '"tag_name": *"[^"]*"' "$tmp" | sed 's/.*"\([^"]*\)"$/\1/' | grep '^v[0-9]' | head -n1)"
+  v="$(grep -o '"tag_name": *"[^"]*"' "$tmp" | sed 's/.*"\([^"]*\)"$/\1/' | grep '^v[0-9]' | awk '
+    function pad(s,   out, i, n, parts, p) {
+      n = split(s, parts, ".")
+      out = ""
+      for (i = 1; i <= n; i++) {
+        p = parts[i]
+        if (p ~ /^[0-9]+$/) p = sprintf("%08d", p + 0)
+        out = out (i > 1 ? "." : "") p
+      }
+      return out
+    }
+    {
+      t = $0
+      sub(/^v/, "", t)
+      idx = index(t, "-")
+      if (idx == 0) {
+        key = pad(t) ".1"
+      } else {
+        base = substr(t, 1, idx - 1)
+        pre = substr(t, idx + 1)
+        key = pad(base) ".0." pad(pre)
+      }
+      print key "\t" $0
+    }
+  ' | LC_ALL=C sort -r | head -n1 | cut -f2)"
   rm -f "$tmp"
   [ -n "$v" ] || die "GitHub 上还没有可用的发布"
   echo "$v"

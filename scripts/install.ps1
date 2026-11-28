@@ -10,6 +10,20 @@ $Repo = "llc370219/frog-bot"
 $Channel = if ($env:CHANNEL) { $env:CHANNEL.ToLower() } else { "beta" }
 $InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "frog\bin" }
 
+function Convert-TagSortKey([string]$tag) {
+  if ($tag -notmatch '^v(\d+)\.(\d+)\.(\d+)(?:-(.+))?$') { return "" }
+  $maj = $Matches[1].PadLeft(8, '0')
+  $min = $Matches[2].PadLeft(8, '0')
+  $pat = $Matches[3].PadLeft(8, '0')
+  if (-not $Matches[4]) {
+    return "$maj.$min.$pat.1"
+  }
+  $preParts = ($Matches[4] -split '\.') | ForEach-Object {
+    if ($_ -match '^\d+$') { $_.PadLeft(8, '0') } else { $_ }
+  }
+  return "$maj.$min.$pat.0." + ($preParts -join '.')
+}
+
 function Get-FrogLatestTag {
   if ($env:VERSION) { return $env:VERSION.Trim() }
   $headers = @{ Accept = "application/vnd.github+json"; "User-Agent" = "frog-installer" }
@@ -17,12 +31,18 @@ function Get-FrogLatestTag {
     $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $headers
     return $rel.tag_name
   }
-  $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=20" -Headers $headers
+  $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=30" -Headers $headers
+  $bestTag = ""
+  $bestKey = ""
   foreach ($r in $rels) {
-    if (-not $r.draft -and $r.tag_name -match '^v[0-9]') {
-      return $r.tag_name
+    if ($r.draft) { continue }
+    $k = Convert-TagSortKey $r.tag_name
+    if ($k -and ([string]::CompareOrdinal($k, $bestKey) -gt 0)) {
+      $bestKey = $k
+      $bestTag = $r.tag_name
     }
   }
+  if ($bestTag) { return $bestTag }
   throw "No published release found on GitHub"
 }
 
