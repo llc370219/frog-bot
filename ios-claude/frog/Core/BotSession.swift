@@ -28,6 +28,7 @@ final class BotSession {
 
     var ready = false
     var connected = false
+    var loadError: String? = nil
     var info: BotInfo?
 
     // 输入框状态按 Bot 保留：切走再回来，草稿和附件还在
@@ -123,8 +124,12 @@ final class BotSession {
         do {
             let (statusCode, lines) = try await client.streamLines(for: req)
             if statusCode == 401 { return .unauthorized }
-            guard statusCode == 200 else { return .dropped }
+            guard statusCode == 200 else {
+                if !ready { loadError = "同步历史失败（HTTP \(statusCode)）" }
+                return .dropped
+            }
             connected = true
+            loadError = nil
             busy = false
             resetTurn()
             // 重放历史时先攒着，收到 replay.done 一次性合并，避免逐条刷新界面
@@ -147,7 +152,10 @@ final class BotSession {
                 }
             }
             for e in batch { handle(e) }
+        } catch where error.isCancellation {
+            return .dropped
         } catch {
+            if !ready { loadError = error.localizedDescription }
             // 断线：外层循环会重连
         }
         return .dropped

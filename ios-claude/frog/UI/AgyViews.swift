@@ -372,7 +372,22 @@ struct AgyChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if !chat.ready {
-                        HStack { Spacer(); TypingDots(); Spacer() }.padding(.top, 100)
+                        if let loadErr = chat.loadError {
+                            VStack(spacing: 10) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 26))
+                                    .foregroundStyle(Theme.warn)
+                                Text(loadErr)
+                                    .font(.footnote)
+                                    .foregroundStyle(Theme.fg3)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 24)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 90)
+                        } else {
+                            HStack { Spacer(); TypingDots(); Spacer() }.padding(.top, 100)
+                        }
                     } else if chat.messages.isEmpty && !chat.busy {
                         emptyPromptView
                     }

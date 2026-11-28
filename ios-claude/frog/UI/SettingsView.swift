@@ -366,9 +366,13 @@ struct ServerSettingsView: View {
                     .onSubmit { model.rename(server, to: name) }
                 if let badge = server.config.tunnelBadge {
                     LabeledContent("协议") {
-                        Label(badge, systemImage: "lock.shield.fill")
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.accent)
+                        HStack(spacing: 5) {
+                            Image(systemName: "lock.shield.fill")
+                                .font(.caption)
+                            Text(badge)
+                                .font(.subheadline)
+                        }
+                        .foregroundStyle(Theme.accent)
                     }
                 }
                 LabeledContent("节点") {

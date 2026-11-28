@@ -384,8 +384,15 @@ func (e *e2eeInbound) handleHTTPRequest(connCtx context.Context, devID, peerID s
 	rw.finish()
 }
 
+// e2eeMaxChunkBytes caps each encrypted inner frame payload so:
+//  1. SSE history replays coalesce hundreds of tiny writes into a handful of 48 KiB frames
+//     instead of flooding relays with thousands of 10-byte frames.
+//  2. Huge responses (large Coding snapshots, file downloads) never exceed the 16 MiB WS frame limit
+//     after base64 + AES-GCM + JSON envelope expansion.
+const e2eeMaxChunkBytes = 48 << 10
+
 // e2eeResponseWriter implements http.ResponseWriter + http.Flusher so both standard JSON
-// responses (single frame) and live SSE streams (real-time flushed encrypted chunks) work seamlessly.
+// responses and live SSE streams (coalesced on Flush / 48 KiB boundaries) work seamlessly.
 type e2eeResponseWriter struct {
 	streamID    string
 	hdr         http.Header
@@ -420,31 +427,58 @@ func (w *e2eeResponseWriter) WriteHeader(code int) {
 	}
 }
 
+func (w *e2eeResponseWriter) flushChunks() error {
+	if w.buf.Len() == 0 {
+		return nil
+	}
+	raw := w.buf.Bytes()
+	for len(raw) > 0 {
+		n := len(raw)
+		if n > e2eeMaxChunkBytes {
+			n = e2eeMaxChunkBytes
+		}
+		if err := w.send(E2EEInnerFrame{
+			Type:    "chunk",
+			Stream:  w.streamID,
+			BodyB64: base64.StdEncoding.EncodeToString(raw[:n]),
+		}); err != nil {
+			w.buf.Reset()
+			w.cancel()
+			return err
+		}
+		raw = raw[n:]
+	}
+	w.buf.Reset()
+	return nil
+}
+
 func (w *e2eeResponseWriter) Write(p []byte) (int, error) {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
-	if w.streaming {
-		if len(p) > 0 {
-			if err := w.send(E2EEInnerFrame{
-				Type:    "chunk",
-				Stream:  w.streamID,
-				BodyB64: base64.StdEncoding.EncodeToString(p),
-			}); err != nil {
-				w.cancel()
-				return 0, err
-			}
-		}
-		return len(p), nil
+	if len(p) == 0 {
+		return 0, nil
 	}
-	return w.buf.Write(p)
+	n, err := w.buf.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if w.streaming && w.buf.Len() >= e2eeMaxChunkBytes {
+		if err := w.flushChunks(); err != nil {
+			return 0, err
+		}
+	}
+	return n, nil
 }
 
 func (w *e2eeResponseWriter) Flush() {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
-	if !w.streaming && w.buf.Len() > 0 {
+	if !w.streaming {
+		if w.buf.Len() == 0 {
+			return
+		}
 		// Explicit Flush on a non-SSE streaming response -> promote to chunked streaming
 		w.streaming = true
 		if err := w.send(E2EEInnerFrame{
@@ -452,13 +486,14 @@ func (w *e2eeResponseWriter) Flush() {
 			Stream:  w.streamID,
 			Status:  w.status,
 			Headers: flattenHeaders(w.hdr),
-			BodyB64: base64.StdEncoding.EncodeToString(w.buf.Bytes()),
 			EOF:     false,
 		}); err != nil {
+			w.buf.Reset()
 			w.cancel()
+			return
 		}
-		w.buf.Reset()
 	}
+	_ = w.flushChunks()
 }
 
 func (w *e2eeResponseWriter) finish() {
@@ -466,17 +501,37 @@ func (w *e2eeResponseWriter) finish() {
 		w.status = http.StatusOK
 	}
 	if w.streaming {
+		_ = w.flushChunks()
 		_ = w.send(E2EEInnerFrame{Type: "end", Stream: w.streamID, EOF: true})
 		return
 	}
-	_ = w.send(E2EEInnerFrame{
+	if w.buf.Len() <= e2eeMaxChunkBytes {
+		_ = w.send(E2EEInnerFrame{
+			Type:    "resp",
+			Stream:  w.streamID,
+			Status:  w.status,
+			Headers: flattenHeaders(w.hdr),
+			BodyB64: base64.StdEncoding.EncodeToString(w.buf.Bytes()),
+			EOF:     true,
+		})
+		w.buf.Reset()
+		return
+	}
+	// Large non-SSE response (e.g. file download / big JSON): stream in safe 48 KiB chunks.
+	if err := w.send(E2EEInnerFrame{
 		Type:    "resp",
 		Stream:  w.streamID,
 		Status:  w.status,
 		Headers: flattenHeaders(w.hdr),
-		BodyB64: base64.StdEncoding.EncodeToString(w.buf.Bytes()),
-		EOF:     true,
-	})
+		EOF:     false,
+	}); err != nil {
+		w.buf.Reset()
+		return
+	}
+	if err := w.flushChunks(); err != nil {
+		return
+	}
+	_ = w.send(E2EEInnerFrame{Type: "end", Stream: w.streamID, EOF: true})
 }
 
 func flattenHeaders(h http.Header) map[string]string {

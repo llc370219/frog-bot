@@ -22,7 +22,7 @@ func v2RelayWSMain(args []string) {
 	listen := fs.String("listen", env(":18443", "RELAY_LISTEN"), "监听地址（建议挂在 Caddy/Nginx 443 反代后）")
 	token := fs.String("token", env("", "RELAY_TOKEN", "FROGBOT_RELAY_TOKEN"), "可选访问令牌（公网开箱即用中继留空即可）")
 	maxConnsPerIP := fs.Int("max-conns-per-ip", 64, "单 IP 最大并发连接数")
-	maxMBPerMin := fs.Int64("max-mb-per-min", 64, "单连接每分钟最大转发流量（MB）")
+	maxMBPerMin := fs.Int64("max-mb-per-min", 128, "单连接每分钟最大转发流量（MB）")
 	_ = fs.Parse(args)
 
 	limits := remote.DefaultWSSRelayLimits()

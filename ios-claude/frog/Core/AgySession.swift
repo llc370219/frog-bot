@@ -337,6 +337,7 @@ final class AgyChatSession {
     var busy = false
     var ready = false
     var connected = false
+    var loadError: String? = nil
 
     var messages: [AgyMessage] = []
     var permissions: [AgyPermission] = []
@@ -401,8 +402,18 @@ final class AgyChatSession {
         do {
             let (statusCode, lines) = try await client.streamLines(for: req)
             if statusCode == 401 { return true }
-            guard statusCode == 200 else { return false }
+            guard statusCode == 200 else {
+                var errBody = ""
+                for try await line in lines { errBody += line }
+                if let j = JSON.parse(Data(errBody.utf8)), let msg = j["error"].string, !msg.isEmpty {
+                    loadError = msg
+                } else {
+                    loadError = "加载会话失败（HTTP \(statusCode)）"
+                }
+                return false
+            }
             connected = true
+            loadError = nil
             for try await line in lines {
                 guard line.hasPrefix("data:") else { continue }
                 var payload = line.dropFirst(5)
@@ -410,7 +421,10 @@ final class AgyChatSession {
                 guard let ev = JSON.parse(Data(payload.utf8)) else { continue }
                 apply(ev)
             }
+        } catch where error.isCancellation {
+            return false
         } catch {
+            if !ready { loadError = error.localizedDescription }
             // 外层自动重连
         }
         return false

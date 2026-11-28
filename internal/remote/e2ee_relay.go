@@ -32,9 +32,9 @@ func DefaultWSSRelayLimits() WSSRelayLimits {
 		MaxRooms:          10000,
 		MaxClientsPerRoom: 16,
 		MaxMessageBytes:   16 << 20, // 16 MiB max frame for uploads/screenshots
-		MaxMsgsPerSec:     120,
-		BurstMsgs:         240,
-		MaxBytesPerMin:    64 << 20, // 64 MiB/min per socket (plenty for uploads, stops abuse)
+		MaxMsgsPerSec:     1000,
+		BurstMsgs:         5000,
+		MaxBytesPerMin:    128 << 20, // 128 MiB/min per socket (plenty for history replay & uploads, stops abuse)
 		IdleTimeout:       90 * time.Second,
 	}
 }

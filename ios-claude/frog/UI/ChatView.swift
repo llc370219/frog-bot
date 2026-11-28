@@ -41,7 +41,22 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if !session.ready {
-                        HStack { Spacer(); TypingDots(); Spacer() }.padding(.top, 120)
+                        if let loadErr = session.loadError {
+                            VStack(spacing: 10) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 26))
+                                    .foregroundStyle(Theme.warn)
+                                Text(loadErr)
+                                    .font(.footnote)
+                                    .foregroundStyle(Theme.fg3)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 24)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 100)
+                        } else {
+                            HStack { Spacer(); TypingDots(); Spacer() }.padding(.top, 120)
+                        }
                     } else if session.items.isEmpty {
                         WelcomeView(session: session) { quickSend($0) }
                     }

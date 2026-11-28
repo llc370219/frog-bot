@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -1144,11 +1145,11 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 	defer h.mu.Unlock()
 	byPath := map[string]string{}
 	for _, p := range h.projects {
-		byPath[realOrClean(p.Path)] = p.ID
+		byPath[pathMatchKey(p.Path)] = p.ID
 	}
 	wantPath := ""
 	if proj != nil {
-		wantPath = realOrClean(proj.Path)
+		wantPath = pathMatchKey(proj.Path)
 	}
 
 	seen := map[string]bool{}
@@ -1161,7 +1162,8 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 			continue
 		}
 		cleanCwd := realOrClean(item.Cwd)
-		if wantPath != "" && cleanCwd != wantPath {
+		cwdKey := pathMatchKey(cleanCwd)
+		if wantPath != "" && cwdKey != wantPath {
 			continue
 		}
 		seen[item.SessionID] = true
@@ -1169,7 +1171,7 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 		if updated.IsZero() {
 			updated = time.Now()
 		}
-		pid := byPath[cleanCwd]
+		pid := byPath[cwdKey]
 		if pid == "" && proj != nil {
 			pid = proj.ID
 		}
@@ -1212,7 +1214,7 @@ func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSumm
 		if m.Deleted || seen[id] {
 			continue
 		}
-		if wantPath != "" && realOrClean(m.Cwd) != wantPath {
+		if wantPath != "" && pathMatchKey(m.Cwd) != wantPath {
 			continue
 		}
 		if rt := h.sessions[id]; rt != nil {
@@ -2909,6 +2911,14 @@ func realOrClean(p string) string {
 		return r
 	}
 	return filepath.Clean(p)
+}
+
+func pathMatchKey(p string) string {
+	cleaned := realOrClean(p)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(filepath.ToSlash(cleaned))
+	}
+	return cleaned
 }
 
 func isWithinDir(p, dir string) bool {

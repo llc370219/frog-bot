@@ -293,6 +293,93 @@ func TestWSSBlindRelayPerIPLimit(t *testing.T) {
 	}
 }
 
+func TestE2EELargeSSEReplayCoalescingAndReplayDone(t *testing.T) {
+	// Simulates a home PC with 400 historical SSE events (800 Write calls -> previously dropped replay.done!)
+	relay := NewWSSBlindRelay("")
+	ln := newPipeListener()
+	defer ln.Close()
+	srv := &http.Server{Handler: http.HandlerFunc(relay.ServeWS)}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	pipeDialer := &websocket.Dialer{
+		NetDialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		NetDialTLSContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return ln.Dial()
+		},
+	}
+
+	const totalEvents = 400
+	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/bots/main/stream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fl, _ := w.(http.Flusher)
+			for i := 1; i <= totalEvents; i++ {
+				_, _ = fmt.Fprintf(w, "id: %d\n", i)
+				_, _ = fmt.Fprintf(w, "data: {\"seq\":%d,\"kind\":\"message\",\"data\":{\"id\":\"m%d\",\"text\":\"history-msg-%d\"}}\n\n", i, i, i)
+			}
+			_, _ = fmt.Fprint(w, "data: {\"seq\":0,\"kind\":\"replay.done\",\"data\":{\"busy\":false}}\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+		case "/api/big":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(strings.Repeat("A", 140<<10)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mgr, err := NewManagerWithOptions(t.TempDir(), app, Options{
+		AutoEnableE2EE:  true,
+		DefaultRelayURL: "wss://relay.632219.xyz/ws",
+		E2EEDialer:      pipeDialer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if mgr.Status().RelayConnected {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !mgr.Status().RelayConnected {
+		t.Fatalf("host not connected: %+v", mgr.Status())
+	}
+
+	pair, err := mgr.CreatePair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := DialE2EEClient(context.Background(), pair.PairCode, pipeDialer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	code, sseBody, err := client.DoRequest(context.Background(), "GET", "/api/bots/main/stream", nil)
+	if err != nil || code != 200 {
+		t.Fatalf("large SSE replay failed: code=%d err=%v", code, err)
+	}
+	s := string(sseBody)
+	if !strings.Contains(s, "history-msg-1") || !strings.Contains(s, "history-msg-400") || !strings.Contains(s, `"replay.done"`) {
+		t.Fatalf("large SSE replay incomplete (len=%d)", len(s))
+	}
+
+	// Verify chunked large non-SSE response (>48 KiB) reassembles cleanly
+	codeBig, bigBody, err := client.DoRequest(context.Background(), "GET", "/api/big", nil)
+	if err != nil || codeBig != 200 || len(bigBody) != 140<<10 {
+		t.Fatalf("large chunked GET failed: code=%d len=%d err=%v", codeBig, len(bigBody), err)
+	}
+}
+
 type pipeListener struct {
 	ch     chan net.Conn
 	closed chan struct{}

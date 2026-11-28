@@ -332,11 +332,31 @@ actor E2EETunnel {
             throw APIError.network("加密隧道发送失败")
         }
 
-        // 等待首帧响应头以确认 HTTP 状态码（200 / 401 等）
+        // 等待首帧响应头以确认 HTTP 状态码（200 / 401 等），防止半开连接永久挂死
+        let firstFrameDeadline = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 35_000_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.timeoutStream(sid: sid, conn: active)
+        }
         var iterator = frameStream.makeAsyncIterator()
-        guard let first = try await iterator.next() else {
+        let first: E2EEInnerFrame
+        do {
+            guard let got = try await iterator.next() else {
+                firstFrameDeadline.cancel()
+                streams.removeValue(forKey: sid)
+                throw APIError.network("事件流已关闭")
+            }
+            first = got
+            firstFrameDeadline.cancel()
+        } catch {
+            firstFrameDeadline.cancel()
             streams.removeValue(forKey: sid)
-            throw APIError.network("事件流已关闭")
+            resetCurrentConnection()
+            throw error
+        }
+        if let errMsg = first.err, !errMsg.isEmpty {
+            streams.removeValue(forKey: sid)
+            throw APIError.server(status: first.st ?? 502, message: errMsg)
         }
         let status = first.st ?? 200
         let initialData = (first.b.flatMap { Data(base64Encoded: $0) }) ?? Data()
