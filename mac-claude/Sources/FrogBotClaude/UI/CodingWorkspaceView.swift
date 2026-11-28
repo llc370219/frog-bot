@@ -62,7 +62,7 @@ struct CodingEmptyView: View {
 
             HStack(spacing: 10) {
                 if let server, let store {
-                    if store.activeProject != nil {
+                    if store.defaultTargetProject != nil {
                         Button {
                             startQuickSession(server: server, store: store)
                         } label: {

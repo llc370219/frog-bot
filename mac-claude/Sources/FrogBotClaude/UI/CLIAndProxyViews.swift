@@ -34,7 +34,7 @@ struct MacCLIAuthItem: Codable, Hashable, Identifiable {
     let active_session: MacCLIAuthSession?
 }
 
-// MARK: - 官方 CLI 登录面板（Codex / Claude Code / Gemini CLI / Grok CLI）
+// MARK: - 官方 CLI 登录面板（Antigravity / Codex / Claude Code / Gemini CLI / Grok CLI）
 
 @MainActor
 struct CLIAuthPane: View {
@@ -49,7 +49,7 @@ struct CLIAuthPane: View {
         VStack(alignment: .leading, spacing: 0) {
             PaneTitle(
                 title: "官方 CLI 账号登录",
-                desc: "直接登录这台主机上的官方 Coding CLI（Codex / Claude Code / Gemini / Grok）。凭证仅写入官方原生目录或主机加密密钥库，与前置 Bot 账号反代完全独立。"
+                desc: "本处仅支持以下远程登录，其他工具请自行登录，支持识别使用。直接登录这台主机上的官方 Coding CLI（Antigravity (agy) / Codex / Claude Code / Gemini CLI / Grok CLI），Frog Bot 直接复用您本机外部安装的官方 CLI，与前置 Bot 账号反代完全独立。"
             )
 
             HStack {
@@ -205,6 +205,20 @@ private struct MacCLIAuthDetailSheet: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.fg3)
 
+            if let p = item.path, !p.isEmpty {
+                HStack(spacing: 6) {
+                    Text("程序路径：")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.fg4)
+                    Text(p)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(Theme.fg3)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            }
+
             if !item.installed {
                 HStack(spacing: 8) {
                     Text(item.install_hint)
@@ -290,7 +304,7 @@ private struct MacCLIAuthDetailSheet: View {
                                     .disabled(busy)
                             }
                             if item.supports_oauth_bridge {
-                                Button("启动浏览器 OAuth 桥接登录") { startAuth(mode: "oauth_bridge") }
+                                Button("启动浏览器 OAuth 桥接登录") { startAuth(mode: "oauth") }
                                     .buttonStyle(PillButtonStyle(kind: item.supports_device_auth ? .secondary : .primary))
                                     .disabled(busy)
                             }
@@ -298,27 +312,29 @@ private struct MacCLIAuthDetailSheet: View {
                     }
 
                     // Token / API Key 加密写入
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("直接写入官方 Token / API Key（加密存储于主机）")
-                            .font(.system(size: 12.5, weight: .semibold))
-                        if item.supports_oauth_token {
-                            Picker("", selection: $credKind) {
-                                Text("OAuth Token (\(item.oauth_token_env ?? ""))").tag("oauth_token")
-                                Text("API Key (\(item.api_key_env))").tag("api_key")
+                    if !item.api_key_env.isEmpty || item.supports_oauth_token {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("直接写入官方 Token / API Key（加密存储于主机）")
+                                .font(.system(size: 12.5, weight: .semibold))
+                            if item.supports_oauth_token {
+                                Picker("", selection: $credKind) {
+                                    Text("OAuth Token (\(item.oauth_token_env ?? ""))").tag("oauth_token")
+                                    Text("API Key (\(item.api_key_env))").tag("api_key")
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
                             }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
+                            HStack(spacing: 8) {
+                                SecureField("粘贴 \(credKind == "oauth_token" ? (item.oauth_token_env ?? "Token") : item.api_key_env)", text: $credValue)
+                                    .textFieldStyle(.roundedBorder)
+                                Button("加密保存") { saveCredential() }
+                                    .buttonStyle(PillButtonStyle(kind: .primary))
+                                    .disabled(busy || credValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
                         }
-                        HStack(spacing: 8) {
-                            SecureField("粘贴 \(credKind == "oauth_token" ? (item.oauth_token_env ?? "Token") : item.api_key_env)", text: $credValue)
-                                .textFieldStyle(.roundedBorder)
-                            Button("加密保存") { saveCredential() }
-                                .buttonStyle(PillButtonStyle(kind: .primary))
-                                .disabled(busy || credValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
+                        .padding(12)
+                        .card(fill: Theme.s2, border: Theme.line, radius: 10)
                     }
-                    .padding(12)
-                    .card(fill: Theme.s2, border: Theme.line, radius: 10)
 
                     if item.logged_in {
                         HStack {
@@ -384,7 +400,7 @@ private struct MacCLIAuthDetailSheet: View {
         busy = true
         Task {
             do {
-                try await server.client.post("/api/v2/cli/auth/sessions/\(sessionID)/input", body: ["value": val])
+                try await server.client.post("/api/v2/cli/auth/sessions/\(sessionID)/input", body: ["input": val])
                 pasteInput = ""
                 notice = ("已回传给主机 CLI，正在完成授权…", false)
             } catch {
@@ -424,7 +440,7 @@ private struct MacCLIAuthDetailSheet: View {
         busy = true
         Task {
             do {
-                try await server.client.post("/api/v2/cli/auth/\(item.id)/logout")
+                try await server.client.post("/api/v2/cli/auth/\(item.id)/logout", body: ["clear_native": true])
                 notice = ("已清除登录凭证。", false)
                 onChanged()
             } catch {

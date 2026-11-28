@@ -422,7 +422,7 @@ struct ServerSettingsView: View {
                 } header: {
                     Text("Coding CLI")
                 } footer: {
-                    Text("直接在手机上完成 VPS 官方 Codex / Claude / Gemini / Grok CLI 登录（非反代）。")
+                    Text("本处仅支持 Antigravity / Codex / Claude / Gemini / Grok 远程登录（非反代）；其他工具请自行登录，支持识别使用。")
                 }
             }
 

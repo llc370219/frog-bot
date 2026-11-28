@@ -103,6 +103,17 @@ type CLIAuthManager struct {
 
 var officialCLISpecs = []CLIAuthSpec{
 	{
+		ID:                  "agy",
+		Name:                "Antigravity (agy)",
+		BinNames:            []string{"agy", "antigravity"},
+		SupportsDeviceAuth:  false,
+		SupportsOAuthBridge: true,
+		SupportsOAuthToken:  false,
+		APIKeyEnv:           "",
+		LoginHint:           "自动识别并使用您本机外部安装的 Antigravity (agy)，共享原生账号与聊天记录。点「OAuth 链接登录」完成 Google 授权后，若跳转到打不开的 http://localhost:xxxx/... 页面，复制地址栏完整链接粘贴回来由主机自动完成回调。",
+		InstallHint:         "请按官方指引将 Antigravity CLI 安装到系统默认路径（全系统可直接运行 agy）",
+	},
+	{
 		ID:                  "codex",
 		Name:                "OpenAI Codex",
 		BinNames:            []string{"codex"},
@@ -221,7 +232,7 @@ func (m *CLIAuthManager) EnvOverrides() map[string]string {
 	return out
 }
 
-// ListStatuses inspects all 4 supported official CLIs and returns installation & auth state.
+// ListStatuses inspects all supported official CLIs and returns installation & auth state.
 func (m *CLIAuthManager) ListStatuses() []CLIAuthStatus {
 	out := make([]CLIAuthStatus, 0, len(officialCLISpecs))
 	for _, spec := range officialCLISpecs {
@@ -280,6 +291,30 @@ func (m *CLIAuthManager) detectNativeAuth(spec CLIAuthSpec) (bool, string, strin
 
 	// 1. Check native official CLI auth files first
 	switch spec.ID {
+	case "agy":
+		for _, rel := range []string{
+			filepath.Join(".gemini", "antigravity-cli", "oauth_creds.json"),
+			filepath.Join(".gemini", "antigravity-cli", "google_accounts.json"),
+			filepath.Join(".gemini", "antigravity-cli", "credentials.json"),
+			filepath.Join(".gemini", "antigravity-cli", "auth.json"),
+			filepath.Join(".gemini", "antigravity", "oauth_creds.json"),
+			filepath.Join(".gemini", "antigravity", "credentials.json"),
+		} {
+			p := filepath.Join(home, rel)
+			if ok, hint := inspectJSONAuthFile(p, []string{"access_token", "refresh_token", "active", "token", "oauth_token", "email", "account"}); ok {
+				return true, "oauth", firstNonEmpty(hint, "~/"+filepath.ToSlash(rel))
+			}
+		}
+		for _, rel := range []string{
+			filepath.Join(".gemini", "antigravity-cli", "jetski_state.pbtxt"),
+			filepath.Join(".gemini", "antigravity-cli", "oauth_token"),
+			filepath.Join(".gemini", "antigravity-cli", "user_settings.pb"),
+		} {
+			p := filepath.Join(home, rel)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				return true, "oauth", "~/" + filepath.ToSlash(rel)
+			}
+		}
 	case "codex":
 		p := filepath.Join(home, ".codex", "auth.json")
 		if ok, hint := inspectJSONAuthFile(p, []string{"tokens", "access_token", "OPENAI_API_KEY", "auth_mode"}); ok {
@@ -390,7 +425,7 @@ func inspectJSONAuthFile(path string, keys []string) (bool, string) {
 func (m *CLIAuthManager) StartLogin(ctx context.Context, cliID, mode string) (*CLIAuthSessionView, error) {
 	spec, ok := findCLIAuthSpec(cliID)
 	if !ok {
-		return nil, fmt.Errorf("不支持的官方 CLI：%s（支持 codex / claude / gemini / grok）", cliID)
+		return nil, fmt.Errorf("不支持的官方 CLI：%s（支持 agy / codex / claude / gemini / grok）", cliID)
 	}
 	exe, err := m.resolveBinary(spec)
 	if err != nil {
@@ -531,6 +566,8 @@ func (m *CLIAuthManager) StartLogin(ctx context.Context, cliID, mode string) (*C
 
 func buildLoginCommand(cliID, mode string) ([]string, string) {
 	switch cliID {
+	case "agy":
+		return []string{}, "在手机/浏览器完成 Antigravity (Google) 登录后，如果页面跳转到无法打开的 http://localhost:xxxx/... 回调页面，复制地址栏完整 URL 粘贴到下方即可由主机本机自动回放完成登录。"
 	case "codex":
 		if mode == "device" {
 			return []string{"login", "--device-auth"}, ""
@@ -908,6 +945,9 @@ func (m *CLIAuthManager) SaveCredential(cliID, kind, value string) (*CLIAuthStat
 		vaultKey = spec.VaultTokenKey
 		desc = fmt.Sprintf("%s 官方长效 OAuth Token（%s）", spec.Name, spec.OAuthTokenEnv)
 	case "api_key":
+		if spec.VaultAPIKeyKey == "" || spec.APIKeyEnv == "" {
+			return nil, fmt.Errorf("%s 不支持 API Key 登录，请使用官方 OAuth 链接登录或在本机终端自行完成登录", spec.Name)
+		}
 		vaultKey = spec.VaultAPIKeyKey
 		desc = fmt.Sprintf("%s 官方 API Key（%s）", spec.Name, spec.APIKeyEnv)
 	default:
@@ -955,6 +995,11 @@ func (m *CLIAuthManager) Logout(cliID string, clearNative bool) (*CLIAuthStatus,
 			home, _ = os.UserHomeDir()
 		}
 		switch spec.ID {
+		case "agy":
+			_ = os.Remove(filepath.Join(home, ".gemini", "antigravity-cli", "oauth_creds.json"))
+			_ = os.Remove(filepath.Join(home, ".gemini", "antigravity-cli", "google_accounts.json"))
+			_ = os.Remove(filepath.Join(home, ".gemini", "antigravity-cli", "credentials.json"))
+			_ = os.Remove(filepath.Join(home, ".gemini", "antigravity-cli", "auth.json"))
 		case "codex":
 			_ = os.Remove(filepath.Join(home, ".codex", "auth.json"))
 		case "claude":

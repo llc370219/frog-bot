@@ -1218,8 +1218,9 @@ func (h *Hub) listACPNativeSessions(ctx context.Context, agentID, fallbackCwd st
 }
 
 func (h *Hub) ListSessions(ctx context.Context, projectID string) ([]SessionSummary, error) {
+	projectID = strings.TrimSpace(projectID)
 	var proj *Project
-	if projectID != "" {
+	if projectID != "" && !strings.EqualFold(projectID, "all") {
 		p, ok := h.FindProject(projectID)
 		if !ok {
 			return nil, errors.New("项目不存在")
@@ -1589,6 +1590,9 @@ func (h *Hub) CreateSession(ctx context.Context, projectID, agentID, mode, model
 }
 
 func (h *Hub) getOrCreateRuntimeLocked(id, projectID, cwd, agentID string) *sessionRuntime {
+	if strings.EqualFold(strings.TrimSpace(projectID), "all") {
+		projectID = ""
+	}
 	if rt := h.sessions[id]; rt != nil {
 		if projectID != "" {
 			rt.projectID = projectID
@@ -1728,6 +1732,26 @@ func (h *Hub) ensureLoaded(ctx context.Context, sessionID, projectID string) (*s
 		c, err := h.ensureACPClient(agentID)
 		if err != nil {
 			return nil, err
+		}
+		if !hasNative {
+			for _, item := range h.listACPNativeSessions(ctx, agentID, cwd) {
+				if item.ID == sessionID || item.NativeID == sessionID {
+					nativeInfo = item
+					hasNative = true
+					if item.Cwd != "" {
+						cwd = item.Cwd
+					}
+					h.mu.Lock()
+					cached := item
+					cached.ID = sessionID
+					h.nativeCache[sessionID] = cached
+					if cwd != "" {
+						rt.cwd = cwd
+					}
+					h.mu.Unlock()
+					break
+				}
+			}
 		}
 		resetReplay := func() {
 			h.mu.Lock()

@@ -23,6 +23,9 @@ func TestNormalizePathMatchKeyWindowsAndURI(t *testing.T) {
 		{`\\?\c:\Users\llc37\Desktop\grouting\`, false, `c:/users/llc37/desktop/grouting`},
 		{`file:///c:/Users/llc37/Desktop/grouting`, true, `c:/users/llc37/desktop/grouting`},
 		{`file:///C%3A/Users/llc37/Desktop/grouting/`, false, `c:/users/llc37/desktop/grouting`},
+		{`/C:/Users/llc37/Desktop/my%20project`, false, `c:/users/llc37/desktop/my project`},
+		{`C%3A/Users/llc37/Desktop/%E6%B3%A8%E6%B5%86`, false, `c:/users/llc37/desktop/注浆`},
+		{`/Users/ll/Library/Mobile%20Documents/Obsidian`, false, `/Users/ll/Library/Mobile Documents/Obsidian`},
 		{`\\?\UNC\server\share\repo\`, true, `//server/share/repo`},
 		{`file:///Users/ll/frog-bot/`, false, `/Users/ll/frog-bot`},
 		{`/Users/ll/frog-bot`, false, `/Users/ll/frog-bot`},
@@ -520,5 +523,85 @@ for line in sys.stdin:
 	}
 	if strings.TrimSpace(string(rawResume)) != codexUUID {
 		t.Fatalf("expected codex thread/resume %s, got %q", codexUUID, string(rawResume))
+	}
+}
+
+func TestParseClaudeSessionMetaLargeLeadingSnapshotAndAllProjects(t *testing.T) {
+	root := t.TempDir()
+	projDir := filepath.Join(root, "grouting")
+	unregisteredDir := filepath.Join(root, "external-repo")
+	for _, d := range []string{projDir, unregisteredDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	claudeCfg := filepath.Join(root, "claude-cfg")
+	claudeProj := filepath.Join(claudeCfg, "projects", "-tmp-large")
+	if err := os.MkdirAll(claudeProj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 首行构造超过 300 KiB 的 file-history-snapshot（不含 cwd/sessionId），验证不会截断漏读真实会话
+	bigPayload := strings.Repeat("a", 320*1024)
+	bigUUID := "44444444-5555-6666-7777-888888888888"
+	bigJSONL := strings.Join([]string{
+		fmt.Sprintf(`{"type":"file-history-snapshot","snapshot":{"blob":%q}}`, bigPayload),
+		fmt.Sprintf(`{"type":"user","sessionId":%q,"cwd":%q,"timestamp":"2026-11-28T01:00:00Z","message":{"role":"user","content":"超大快照后的真实提问"}}`, bigUUID, unregisteredDir),
+		fmt.Sprintf(`{"type":"assistant","sessionId":%q,"cwd":%q,"timestamp":"2026-11-28T01:00:05Z","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"成功读取完整历史"}]}}`, bigUUID, unregisteredDir),
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(claudeProj, bigUUID+".jsonl"), []byte(bigJSONL), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeCfg)
+	t.Setenv("CODEX_HOME", filepath.Join(root, "empty-codex"))
+	t.Setenv("FROGBOT_AGY_BIN", filepath.Join(root, "no-agy"))
+	t.Setenv("FROGBOT_CLAUDE_BIN", filepath.Join(root, "no-claude"))
+	t.Setenv("FROGBOT_CODEX_BIN", filepath.Join(root, "no-codex"))
+
+	hub, err := NewHub(Config{
+		DataDir:      filepath.Join(root, "data"),
+		ProjectsRoot: filepath.Join(root, "projects"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+
+	proj, err := hub.CreateProject("grouting", projDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 在 grouting 项目下不应出现 external-repo 的会话
+	projList, err := hub.ListSessions(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projList) != 0 {
+		t.Fatalf("expected 0 sessions in grouting, got %+v", projList)
+	}
+
+	// 在 project_id="all" 下应能发现未注册目录的超大首行快照会话
+	allList, err := hub.ListSessions(context.Background(), "all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allList) != 1 || allList[0].ID != "claude_"+bigUUID || allList[0].Title != "超大快照后的真实提问" {
+		t.Fatalf("expected large-snapshot session in all projects, got %+v", allList)
+	}
+
+	// 直接以 project_id="all" 打开该会话，应正确读取历史并保持真实外部目录
+	snap, _, unsub, err := hub.Subscribe(context.Background(), allList[0].ID, "all")
+	if err != nil {
+		t.Fatalf("Subscribe session from all: %v", err)
+	}
+	unsub()
+	if len(snap.Messages) != 2 || snap.Messages[0].Text != "超大快照后的真实提问" {
+		t.Fatalf("unexpected history loaded from all: %+v", snap.Messages)
+	}
+	if pathMatchKey(snap.Session.Cwd) != pathMatchKey(unregisteredDir) {
+		t.Fatalf("expected real cwd %q, got %q", unregisteredDir, snap.Session.Cwd)
 	}
 }

@@ -50,7 +50,7 @@ private struct InAppSafariView: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }
 
-// MARK: - 主列表：VPS / 本机官方 CLI 账号登录（Codex / Claude / Gemini / Grok）
+// MARK: - 主列表：VPS / 本机官方 CLI 账号登录（Antigravity / Codex / Claude / Gemini / Grok）
 
 /// 专门用于登录远端 VPS 或本机上的官方 Coding CLI（非前置 Bot 反代）。
 struct CLIAuthView: View {
@@ -64,9 +64,14 @@ struct CLIAuthView: View {
     var body: some View {
         List {
             Section {
-                Text("在这里直接完成远端主机上的官方 CLI 登录（Codex / Claude Code / Gemini CLI / Grok CLI）。登录凭证直接保存在官方 CLI 原生目录或宿主加密密钥库，与前置 Bot 账号反代完全独立。")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.fg3)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("本处仅支持以下远程登录，其他工具请自行登录，支持识别使用")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Theme.fg2)
+                    Text("在这里直接完成远端主机上的官方 CLI 登录（Antigravity (agy) / Codex / Claude Code / Gemini CLI / Grok CLI）。Frog Bot 直接识别并复用您本机外部安装的官方 CLI，登录凭证保存在官方原生目录或宿主加密密钥库，与前置 Bot 账号反代完全独立。")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.fg3)
+                }
             }
 
             if let error {
@@ -121,7 +126,9 @@ struct CLIAuthView: View {
                                             .foregroundStyle(Theme.fg4)
                                             .lineLimit(1)
                                     } else {
-                                        Text("点击进行设备码 / OAuth 或密钥登录")
+                                        Text(item.api_key_env.isEmpty && !item.supports_oauth_token
+                                             ? "点击进行官方 OAuth 链接登录"
+                                             : "点击进行设备码 / OAuth 或密钥登录")
                                             .font(.caption)
                                             .foregroundStyle(Theme.fg3)
                                     }
@@ -211,6 +218,16 @@ private struct CLIAuthDetailSheet: View {
                     LabeledContent("状态") {
                         Text(item.logged_in ? "已登录 (\(item.auth_method ?? "oauth"))" : (item.installed ? "未登录" : "主机未安装"))
                             .foregroundStyle(item.logged_in ? Theme.ok : Theme.warn)
+                    }
+                    if let p = item.path, !p.isEmpty {
+                        LabeledContent("程序路径") {
+                            Text(p)
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(Theme.fg3)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                        }
                     }
                     if let hint = item.account_hint, !hint.isEmpty {
                         LabeledContent("凭证") {
@@ -374,35 +391,37 @@ private struct CLIAuthDetailSheet: View {
                 }
 
                 // 方式二：直接导入官方 Token / API Key
-                Section {
-                    if item.supports_oauth_token {
-                        Picker("凭证类型", selection: $credKind) {
-                            Text("\(item.oauth_token_env ?? "OAuth Token") (setup-token)").tag("oauth_token")
-                            Text(item.api_key_env).tag("api_key")
+                if !item.api_key_env.isEmpty || item.supports_oauth_token {
+                    Section {
+                        if item.supports_oauth_token {
+                            Picker("凭证类型", selection: $credKind) {
+                                Text("\(item.oauth_token_env ?? "OAuth Token") (setup-token)").tag("oauth_token")
+                                Text(item.api_key_env).tag("api_key")
+                            }
+                            .pickerStyle(.segmented)
                         }
-                        .pickerStyle(.segmented)
-                    }
-                    SecureField(
-                        "粘贴 \(credKind == "oauth_token" ? (item.oauth_token_env ?? "OAuth Token") : item.api_key_env)",
-                        text: $credValue
-                    )
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                        SecureField(
+                            "粘贴 \(credKind == "oauth_token" ? (item.oauth_token_env ?? "OAuth Token") : item.api_key_env)",
+                            text: $credValue
+                        )
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
 
-                    Button {
-                        saveCredential()
-                    } label: {
-                        HStack {
-                            Label("加密保存到主机", systemImage: "lock.fill")
-                            Spacer()
-                            if busy { ProgressView() }
+                        Button {
+                            saveCredential()
+                        } label: {
+                            HStack {
+                                Label("加密保存到主机", systemImage: "lock.fill")
+                                Spacer()
+                                if busy { ProgressView() }
+                            }
                         }
+                        .disabled(credValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy)
+                    } header: {
+                        Text("方式二：官方 Token / API Key")
+                    } footer: {
+                        Text("保存后由宿主密钥库加密托管，运行该官方 CLI 时自动注入环境变量，不会暴露给对话上下文。")
                     }
-                    .disabled(credValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy)
-                } header: {
-                    Text("方式二：官方 Token / API Key")
-                } footer: {
-                    Text("保存后由宿主密钥库加密托管，运行该官方 CLI 时自动注入环境变量，不会暴露给对话上下文。")
                 }
 
                 if item.logged_in {

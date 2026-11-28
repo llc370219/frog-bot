@@ -147,8 +147,11 @@ export default function CLIAuthSettings() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 id="settings-cli-title">官方 CLI 账户登录</h3>
+          <p className="text-xs font-medium text-fg-2 mt-1">
+            本处仅支持以下远程登录，其他工具请自行登录，支持识别使用
+          </p>
           <p className="text-xs text-fg-3 mt-0.5">
-            在无桌面 VPS / 本机上直接完成 Codex、Claude Code、Gemini CLI、Grok CLI 的官方登录（与前置 Bot 反代无关）。
+            在无桌面 VPS / 本机上直接完成 Antigravity (agy)、Codex、Claude Code、Gemini CLI、Grok CLI 的官方登录；Frog Bot 直接复用您本机外部安装的官方 CLI（与前置 Bot 反代无关）。
           </p>
         </div>
         <button type="button" onClick={() => void load()} className="settings-button">
@@ -259,6 +262,11 @@ export default function CLIAuthSettings() {
               </div>
 
               <p className="text-xs text-fg-3">{item.login_hint}</p>
+              {item.installed && item.path && (
+                <p className="text-[11px] text-fg-3">
+                  已识别程序：<code className="rounded bg-muted px-1.5 py-0.5 break-all">{item.path}</code>
+                </p>
+              )}
               {!item.installed && (
                 <p className="text-[11px] text-fg-3">
                   安装命令：<code className="rounded bg-muted px-1.5 py-0.5">{item.install_hint}</code>
@@ -287,22 +295,24 @@ export default function CLIAuthSettings() {
                     OAuth 链接登录
                   </button>
                 )}
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    if (editingCred) {
-                      setCredCLI('');
-                    } else {
-                      setCredCLI(item.id);
-                      setCredKind(item.supports_oauth_token ? 'oauth_token' : 'api_key');
-                      setCredValue('');
-                    }
-                  }}
-                  className="settings-button"
-                >
-                  <KeyRound size={13} /> {item.supports_oauth_token ? 'Token / API Key' : '填 API Key'}
-                </button>
+                {(item.api_key_env || item.supports_oauth_token) && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      if (editingCred) {
+                        setCredCLI('');
+                      } else {
+                        setCredCLI(item.id);
+                        setCredKind(item.supports_oauth_token ? 'oauth_token' : 'api_key');
+                        setCredValue('');
+                      }
+                    }}
+                    className="settings-button"
+                  >
+                    <KeyRound size={13} /> {item.supports_oauth_token ? 'Token / API Key' : '填 API Key'}
+                  </button>
+                )}
                 {item.logged_in && (
                   <button
                     type="button"

@@ -422,12 +422,26 @@ private struct CodingServerSidebar: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                // CLI 引擎快捷切换条
+                // CLI 引擎快捷切换与筛选条
                 if !store.installedAgents.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 5) {
+                            if store.installedAgents.count > 1 {
+                                let allActive = store.effectiveAgentFilter == AgyStore.allAgentsID
+                                Button {
+                                    store.setAgentFilter(AgyStore.allAgentsID)
+                                } label: {
+                                    Text("全部")
+                                        .font(.system(size: 11, weight: allActive ? .semibold : .regular))
+                                        .foregroundStyle(allActive ? Theme.accent : Theme.fg3)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3.5)
+                                        .background(allActive ? Theme.accentSoft : Theme.s2, in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
                             ForEach(store.installedAgents) { cli in
-                                let active = cli.id == store.activeAgentID
+                                let active = cli.id == store.effectiveAgentFilter
                                 Button {
                                     Task { await store.selectAgent(cli.id) }
                                 } label: {
@@ -450,12 +464,23 @@ private struct CodingServerSidebar: View {
                 // 项目目录切换条
                 HStack(spacing: 6) {
                     Menu {
+                        Button {
+                            store.selectProject(AgyStore.allProjectsID)
+                            Task { await store.refreshSessions() }
+                        } label: {
+                            if store.isAllProjects {
+                                Label("全部目录", systemImage: "checkmark")
+                            } else {
+                                Text("全部目录")
+                            }
+                        }
+                        if !store.projects.isEmpty { Divider() }
                         ForEach(store.projects) { p in
                             Button {
                                 store.selectProject(p.id)
                                 Task { await store.refreshSessions() }
                             } label: {
-                                if store.activeProject?.id == p.id {
+                                if !store.isAllProjects && store.activeProject?.id == p.id {
                                     Label(p.name, systemImage: "checkmark")
                                 } else {
                                     Text(p.name)
@@ -483,10 +508,10 @@ private struct CodingServerSidebar: View {
                         }
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "folder.fill")
+                            Image(systemName: store.isAllProjects ? "tray.full" : "folder.fill")
                                 .font(.system(size: 11.5))
                                 .foregroundStyle(Theme.accent)
-                            Text(store.activeProject?.name ?? "选择项目目录")
+                            Text(store.isAllProjects ? "全部目录" : (store.activeProject?.name ?? "选择项目目录"))
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(Theme.fg)
                                 .lineLimit(1)
@@ -516,6 +541,7 @@ private struct CodingServerSidebar: View {
                 .padding(.vertical, 8)
 
                 // 会话列表
+                let visibleSessions = store.filteredSessions
                 List {
                     Section {
                         Button {
@@ -537,20 +563,32 @@ private struct CodingServerSidebar: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(creatingSession || store.activeProject == nil)
+                        .disabled(creatingSession || store.defaultTargetProject == nil)
 
                         if store.loading && store.sessions.isEmpty {
                             HStack(spacing: 6) {
                                 ProgressView().controlSize(.small)
                                 Text("加载会话…").font(.system(size: 12)).foregroundStyle(Theme.fg3)
                             }
-                        } else if store.sessions.isEmpty {
-                            Text(store.activeProject == nil ? "先添加项目文件夹" : "暂无会话，点击上方新建")
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(Theme.fg4)
+                        } else if visibleSessions.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(store.defaultTargetProject == nil
+                                     ? "先添加项目文件夹"
+                                     : (!store.sessions.isEmpty && store.effectiveAgentFilter != AgyStore.allAgentsID
+                                        ? "当前 CLI 暂无会话（其他 CLI 共 \(store.sessions.count) 条）"
+                                        : "暂无会话，点击上方新建"))
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(Theme.fg4)
+                                if !store.sessions.isEmpty && store.effectiveAgentFilter != AgyStore.allAgentsID {
+                                    Button("查看全部 CLI") {
+                                        store.setAgentFilter(AgyStore.allAgentsID)
+                                    }
+                                    .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
+                                }
+                            }
                         }
 
-                        ForEach(store.sessions) { s in
+                        ForEach(visibleSessions) { s in
                             let selected = model.codingSelection?.server == server.id && model.codingSelection?.sessionID == s.id
                             Button {
                                 model.selectCodingSession(server: server, summary: s)
@@ -571,6 +609,14 @@ private struct CodingServerSidebar: View {
                                             .foregroundStyle(Theme.fg)
                                             .lineLimit(1)
                                         HStack(spacing: 4) {
+                                            if store.isAllProjects {
+                                                let dirName = s.cwd.trimmingCharacters(in: CharacterSet(charactersIn: "/\\ "))
+                                                    .split(whereSeparator: { $0 == "/" || $0 == "\\" })
+                                                    .last.map(String.init) ?? ""
+                                                if !dirName.isEmpty {
+                                                    Text(dirName)
+                                                }
+                                            }
                                             if let an = s.agent_name ?? s.agent, !an.isEmpty {
                                                 Text(an)
                                             }
@@ -619,7 +665,7 @@ private struct CodingServerSidebar: View {
             guard server.isOnline else { return }
             await store.loadAll()
             if model.codingSelection == nil || model.codingSelection?.server != server.id,
-               let first = store.sessions.first {
+               let first = store.filteredSessions.first ?? store.sessions.first {
                 model.selectCodingSession(server: server, summary: first)
             }
         }

@@ -50,11 +50,11 @@ type codexTitleCacheEntry struct {
 }
 
 const (
-	nativeMetaHeadLimit = 256 * 1024 // 元数据扫描读取文件头上限
-	nativeMetaTailLimit = 64 * 1024  // 元数据扫描读取文件尾上限（用于 custom-title / summary）
-	nativeMetaMaxLines  = 400
-	nativeLineScanLimit = 4 << 20    // 元数据扫描单行上限 4 MiB（超长行跳过不中断）
-	nativeFullLineLimit = 32 << 20   // 完整历史加载单行上限 32 MiB
+	nativeMetaHeadLimit = 4 << 20   // 元数据扫描读取文件头上限（4 MiB，避免首行大快照截断）
+	nativeMetaTailLimit = 64 * 1024 // 元数据扫描读取文件尾上限（用于 custom-title / summary）
+	nativeMetaMaxLines  = 1200
+	nativeLineScanLimit = 4 << 20   // 元数据扫描单行上限 4 MiB（超长行跳过不中断）
+	nativeFullLineLimit = 32 << 20  // 完整历史加载单行上限 32 MiB
 	maxCodexScanFiles   = 500
 	maxHistoryMessages  = 200
 )
@@ -81,7 +81,9 @@ func stripPathDecorators(p string) string {
 		return ""
 	}
 	// 处理 file:///C:/... 或 file:///c%3A/... 或 file://localhost/...
+	hadFileScheme := false
 	if len(s) >= 7 && strings.EqualFold(s[:7], "file://") {
+		hadFileScheme = true
 		rest := s[7:]
 		if len(rest) >= 10 && strings.EqualFold(rest[:10], "localhost/") {
 			rest = rest[9:]
@@ -89,10 +91,19 @@ func stripPathDecorators(p string) string {
 		if unesc, err := url.PathUnescape(rest); err == nil {
 			rest = unesc
 		}
-		if len(rest) >= 3 && rest[0] == '/' && isASCIIAlpha(rest[1]) && rest[2] == ':' {
-			rest = rest[1:]
-		}
 		s = rest
+	}
+	// 部分 ACP/CLI（如 Antigravity agy session/list）即使不带 file:// 前缀也会返回 URL 编码路径
+	// （例如 Mobile%20Documents、中文 %E4%B8%AD%E6%96%87、C%3A/...）。若字面路径不在磁盘上则解码。
+	if !hadFileScheme && strings.Contains(s, "%") {
+		if unesc, err := url.PathUnescape(s); err == nil && unesc != s {
+			if _, statErr := os.Stat(s); statErr != nil {
+				s = unesc
+			}
+		}
+	}
+	if len(s) >= 3 && s[0] == '/' && isASCIIAlpha(s[1]) && s[2] == ':' {
+		s = s[1:]
 	}
 	// 处理 Rust/Windows canonicalize 常见的扩展路径前缀 \\?\ 与 \\?\UNC\
 	if len(s) >= 8 && (strings.EqualFold(s[:8], `\\?\UNC\`) || strings.EqualFold(s[:8], `//?/UNC/`)) {
@@ -464,10 +475,11 @@ func parseClaudeSessionMeta(filePath string, size int64, modTime time.Time, hint
 	}
 
 	// 1) 读文件头提取 cwd / sessionId / 首条用户消息 / model
+	// 若首行包含超大 file-history-snapshot，必须继续向后扫描直到拿到 cwd 与真实对话记录（受最大行数保护）。
 	br := bufio.NewReaderSize(f, 32*1024)
 	bytesRead := 0
 	reachedEOF := false
-	for lines := 0; lines < nativeMetaMaxLines && bytesRead < nativeMetaHeadLimit; lines++ {
+	for lines := 0; lines < nativeMetaMaxLines && (bytesRead < nativeMetaHeadLimit || cwd == "" || !hasConversation); lines++ {
 		line, skipped, rerr := readJSONLLine(br, nativeLineScanLimit)
 		bytesRead += len(line) + 1
 		if !skipped && len(line) > 0 {
@@ -479,10 +491,13 @@ func parseClaudeSessionMeta(filePath string, size int64, modTime time.Time, hint
 			}
 			break
 		}
+		if cwd != "" && hasConversation && firstUser != "" && model != "" && bytesRead >= 256*1024 {
+			break
+		}
 	}
 
 	// 2) 若 head 未读到文件末尾，额外读文件尾获取最新的 custom-title / summary / timestamp
-	if !reachedEOF && size > int64(bytesRead) {
+	if !reachedEOF && size > 0 {
 		seekOff := size - nativeMetaTailLimit
 		if seekOff < 0 {
 			seekOff = 0
@@ -995,7 +1010,7 @@ func parseCodexSessionMeta(filePath string, modTime time.Time) (nativeSessionInf
 
 	br := bufio.NewReaderSize(f, 32*1024)
 	bytesRead := 0
-	for lines := 0; lines < nativeMetaMaxLines && bytesRead < nativeMetaHeadLimit; lines++ {
+	for lines := 0; lines < nativeMetaMaxLines && (bytesRead < nativeMetaHeadLimit || nativeID == "" || cwd == "" || !hasConversation); lines++ {
 		line, skipped, rerr := readJSONLLine(br, nativeLineScanLimit)
 		bytesRead += len(line) + 1
 		if !skipped && len(line) > 0 {

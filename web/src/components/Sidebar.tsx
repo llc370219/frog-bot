@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { botKey, type BotProfile, type DeviceGroup } from '../api';
-import { type CodingController } from './AgyWorkspace';
+import { ALL_AGENTS_ID, ALL_PROJECTS_ID, type CodingController } from './AgyWorkspace';
 import { BotAvatar } from './BotAvatar';
 
 const foldedKey = 'frogbot-folded-devices';
@@ -205,7 +205,7 @@ export default function Sidebar({
               <button
                 type="button"
                 onClick={() => void coding.newSession()}
-                disabled={!coding.activeProject || coding.status?.installed === false}
+                disabled={!coding.defaultTargetProject || coding.status?.installed === false}
                 title="新建 Coding 对话"
                 aria-label="新建 Coding 对话"
                 className="grid size-10 place-items-center rounded-xl text-accent transition hover:bg-sidebar-hover disabled:opacity-40"
@@ -235,39 +235,76 @@ export default function Sidebar({
             </div>
           ) : (
             <>
-              {/* 项目文件夹切换 */}
-              <div className="border-b border-line pb-2.5">
-                <div className="mb-1 flex items-center justify-between px-0.5">
-                  <span className="text-[11px] font-medium text-fg4">项目文件夹</span>
-                  <div className="flex items-center gap-0.5">
-                    {coding.activeProject && (
-                      <button type="button" onClick={coding.openFiles} title="浏览项目文件"
-                        className="rounded-md p-1 text-fg3 transition hover:bg-sidebar-hover hover:text-fg">
-                        <FolderOpen size={13} />
+              {/* 项目文件夹与 CLI 筛选 */}
+              <div className="border-b border-line pb-2.5 space-y-2">
+                {(coding.status?.agents || []).filter((a) => a.installed).length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {(coding.status?.agents || []).filter((a) => a.installed).length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => coding.setAgentFilter(ALL_AGENTS_ID)}
+                        className={`rounded-full px-2 py-0.5 text-[11px] transition ${
+                          coding.agentFilter === ALL_AGENTS_ID
+                            ? 'bg-accent/15 font-medium text-accent'
+                            : 'bg-s2 text-fg3 hover:text-fg'
+                        }`}
+                      >
+                        全部
                       </button>
                     )}
-                    <button type="button" onClick={coding.openNewProject} title="新建或关联项目文件夹"
-                      className="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11.5px] text-accent transition hover:bg-sidebar-hover">
-                      <FolderPlus size={12} />新建
-                    </button>
+                    {(coding.status?.agents || []).filter((a) => a.installed).map((a) => {
+                      const active = coding.agentFilter === a.id;
+                      return (
+                        <button
+                          key={a.id}
+                          type="button"
+                          onClick={() => void coding.selectAgent(a.id)}
+                          className={`rounded-full px-2 py-0.5 text-[11px] transition ${
+                            active
+                              ? 'bg-accent/15 font-medium text-accent'
+                              : 'bg-s2 text-fg3 hover:text-fg'
+                          }`}
+                        >
+                          {a.name}
+                        </button>
+                      );
+                    })}
                   </div>
-                </div>
-                <div className="flex items-center gap-1">
-                  <select value={coding.activeProject?.id || ''}
-                    onChange={(e) => coding.selectProject(e.target.value)}
-                    aria-label="当前项目"
-                    className="min-w-0 flex-1 truncate rounded-xl border border-line bg-canvas px-2 py-1.5 text-[12.5px] font-medium text-fg focus:outline-none">
-                    {coding.projects.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}{p.managed ? '' : ' (外)'}</option>
-                    ))}
-                  </select>
-                  {coding.activeProject && coding.projects.length > 1 && (
-                    <button type="button" title="移除该项目"
-                      onClick={() => coding.activeProject && void coding.deleteProject(coding.activeProject)}
-                      className="rounded-lg p-1.5 text-fg4 transition hover:bg-sidebar-hover hover:text-danger">
-                      <Trash2 size={13} />
-                    </button>
-                  )}
+                )}
+                <div>
+                  <div className="mb-1 flex items-center justify-between px-0.5">
+                    <span className="text-[11px] font-medium text-fg4">项目文件夹</span>
+                    <div className="flex items-center gap-0.5">
+                      {coding.activeProject && (
+                        <button type="button" onClick={coding.openFiles} title="浏览项目文件"
+                          className="rounded-md p-1 text-fg3 transition hover:bg-sidebar-hover hover:text-fg">
+                          <FolderOpen size={13} />
+                        </button>
+                      )}
+                      <button type="button" onClick={coding.openNewProject} title="新建或关联项目文件夹"
+                        className="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11.5px] text-accent transition hover:bg-sidebar-hover">
+                        <FolderPlus size={12} />新建
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <select value={coding.selectedProjectId}
+                      onChange={(e) => coding.selectProject(e.target.value)}
+                      aria-label="当前项目"
+                      className="min-w-0 flex-1 truncate rounded-xl border border-line bg-canvas px-2 py-1.5 text-[12.5px] font-medium text-fg focus:outline-none">
+                      <option value={ALL_PROJECTS_ID}>全部目录（汇总历史）</option>
+                      {coding.projects.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}{p.managed ? '' : ' (外)'}</option>
+                      ))}
+                    </select>
+                    {coding.activeProject && coding.projects.length > 1 && (
+                      <button type="button" title="移除该项目"
+                        onClick={() => coding.activeProject && void coding.deleteProject(coding.activeProject)}
+                        className="rounded-lg p-1.5 text-fg4 transition hover:bg-sidebar-hover hover:text-danger">
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -275,7 +312,7 @@ export default function Sidebar({
               <div className="flex items-center justify-between px-0.5 pb-1 pt-2.5">
                 <span className="text-[11px] font-medium text-fg4">对话列表</span>
                 <button type="button" onClick={() => void coding.newSession()}
-                  disabled={!coding.activeProject || coding.status?.installed === false}
+                  disabled={!coding.defaultTargetProject || coding.status?.installed === false}
                   className="inline-flex items-center gap-1 rounded-lg bg-accent px-2 py-1 text-[11.5px] font-medium text-on-accent transition hover:opacity-90 disabled:opacity-40">
                   <MessageSquarePlus size={12} />新建
                 </button>
@@ -285,13 +322,29 @@ export default function Sidebar({
                 {coding.loadingSessions && coding.sessions.length === 0 && (
                   <p className="px-2 py-4 text-center text-xs text-fg4">正在读取对话…</p>
                 )}
-                {!coding.loadingSessions && coding.sessions.length === 0 && (
-                  <p className="px-2 py-5 text-center text-xs leading-relaxed text-fg4">
-                    还没有对话，点「新建」或右侧直接提问即可开始。
-                  </p>
+                {!coding.loadingSessions && coding.filteredSessions.length === 0 && (
+                  <div className="px-2 py-5 text-center text-xs leading-relaxed text-fg4 space-y-2">
+                    <p>
+                      {coding.sessions.length > 0 && coding.agentFilter !== ALL_AGENTS_ID
+                        ? `当前 CLI 暂无对话（其他 CLI 共 ${coding.sessions.length} 条）`
+                        : '还没有对话，点「新建」或右侧直接提问即可开始。'}
+                    </p>
+                    {coding.sessions.length > 0 && coding.agentFilter !== ALL_AGENTS_ID && (
+                      <button
+                        type="button"
+                        onClick={() => coding.setAgentFilter(ALL_AGENTS_ID)}
+                        className="rounded-lg bg-s2 px-2.5 py-1 text-[11.5px] text-fg2 hover:bg-sidebar-hover"
+                      >
+                        查看全部 CLI
+                      </button>
+                    )}
+                  </div>
                 )}
-                {coding.sessions.map((s) => {
+                {coding.filteredSessions.map((s) => {
                   const selected = s.id === coding.sessionId;
+                  const dirBase = coding.isAllProjects && s.cwd
+                    ? s.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+                    : '';
                   return (
                     <div key={s.id} className={`group flex items-center gap-1 rounded-xl px-2 py-1.5 transition ${
                       selected ? 'bg-sidebar-selected text-fg shadow-2xs' : 'text-fg2 hover:bg-sidebar-hover'
@@ -303,6 +356,7 @@ export default function Sidebar({
                           <span className={`truncate text-[13px] ${selected ? 'font-medium' : ''}`}>{s.title || '新对话'}</span>
                         </div>
                         <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-fg4">
+                          {dirBase && <><span className="truncate">{dirBase}</span><span>·</span></>}
                           <span className="truncate">{s.agent_name || s.mode}</span>
                           <span>·</span>
                           <span>{new Date(s.updated_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>

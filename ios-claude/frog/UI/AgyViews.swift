@@ -23,13 +23,29 @@ struct CodingWorkspaceView: View {
     }
 
     private var filteredSessions: [AgySessionSummary] {
+        let filterAgent = store.effectiveAgentFilter.lowercased()
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return store.sessions }
         return store.sessions.filter { s in
-            s.title.lowercased().contains(q)
+            if filterAgent != AgyStore.allAgentsID {
+                let sAgent = (s.agent?.isEmpty == false ? s.agent! : "agy").lowercased()
+                if sAgent != filterAgent {
+                    return false
+                }
+            }
+            guard !q.isEmpty else { return true }
+            return s.title.lowercased().contains(q)
                 || s.mode.lowercased().contains(q)
+                || s.cwd.lowercased().contains(q)
+                || (s.agent_name?.lowercased().contains(q) == true)
                 || (s.model?.lowercased().contains(q) == true)
         }
+    }
+
+    private func folderBasename(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/\\ "))
+        guard !trimmed.isEmpty else { return "" }
+        let parts = trimmed.split(whereSeparator: { $0 == "/" || $0 == "\\" })
+        return parts.last.map(String.init) ?? trimmed
     }
 
     var body: some View {
@@ -68,12 +84,30 @@ struct CodingWorkspaceView: View {
                         .padding(.horizontal, 20).padding(.bottom, 10)
                 }
 
-                // 本机已检测到的 Coding CLI 切换条
+                // 本机已检测到的 Coding CLI 切换与筛选条
                 if !store.installedAgents.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
+                            if store.installedAgents.count > 1 {
+                                let allSelected = store.effectiveAgentFilter == AgyStore.allAgentsID
+                                Button {
+                                    Haptics.tap()
+                                    store.setAgentFilter(AgyStore.allAgentsID)
+                                } label: {
+                                    Text("全部")
+                                        .font(.system(size: 13, weight: allSelected ? .semibold : .medium))
+                                        .foregroundStyle(allSelected ? Theme.accent : Theme.fg3)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(allSelected ? Theme.accentSoft : Theme.s2, in: Capsule())
+                                        .overlay(
+                                            Capsule().strokeBorder(allSelected ? Theme.accent.opacity(0.45) : Color.clear, lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
                             ForEach(store.installedAgents) { ag in
-                                let selected = ag.id == store.activeAgentID
+                                let selected = store.effectiveAgentFilter == ag.id
                                 Button {
                                     Haptics.tap()
                                     Task { await store.selectAgent(ag.id) }
@@ -120,7 +154,7 @@ struct CodingWorkspaceView: View {
                             Haptics.tap()
                             path.append(.cliAuth(server.id))
                         } label: {
-                            Label("管理官方 CLI 登录（Codex / Claude / Gemini / Grok）", systemImage: "person.badge.key")
+                            Label("管理官方 CLI 登录（Antigravity / Codex / Claude / Gemini / Grok）", systemImage: "person.badge.key")
                                 .font(.system(size: 13, weight: .medium))
                         }
                         .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
@@ -130,12 +164,30 @@ struct CodingWorkspaceView: View {
                     .padding(.bottom, 8)
                 }
 
-                // 顶部项目胶囊条
+                // 顶部项目胶囊条（含「全部」汇总本机所有目录的历史会话）
                 VStack(alignment: .leading, spacing: 8) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
+                            let allProjActive = store.isAllProjects
+                            Button {
+                                Haptics.tap()
+                                store.selectProject(AgyStore.allProjectsID)
+                                Task { await store.refreshSessions() }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "tray.full")
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text("全部").lineLimit(1)
+                                }
+                                .font(.system(size: 14, weight: allProjActive ? .semibold : .medium))
+                                .foregroundStyle(allProjActive ? Theme.onAccent : Theme.fg2)
+                                .padding(.horizontal, 13).padding(.vertical, 8)
+                                .background(allProjActive ? Theme.accent : Theme.s2, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+
                             ForEach(store.projects) { p in
-                                let active = p.id == store.activeProject?.id
+                                let active = !store.isAllProjects && p.id == store.activeProject?.id
                                 Button {
                                     Haptics.tap()
                                     store.selectProject(p.id)
@@ -198,6 +250,11 @@ struct CodingWorkspaceView: View {
                             .buttonStyle(.plain)
                         }
                         .padding(.horizontal, 20)
+                    } else if store.isAllProjects {
+                        Text("汇总主机全部目录的历史会话")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.fg4)
+                            .padding(.horizontal, 20)
                     }
                 }
                 .padding(.bottom, 10)
@@ -213,15 +270,32 @@ struct CodingWorkspaceView: View {
                 let list = filteredSessions
                 if list.isEmpty && !store.loading {
                     VStack(spacing: 14) {
-                        Text(searchText.isEmpty ? "暂无对话" : "无匹配对话")
-                            .font(.system(size: 16, weight: .medium))
+                        Text(searchText.isEmpty
+                             ? (!store.sessions.isEmpty && store.effectiveAgentFilter != AgyStore.allAgentsID
+                                ? "当前筛选 CLI 暂无对话（其他 CLI 共 \(store.sessions.count) 条）"
+                                : "暂无对话")
+                             : "无匹配对话")
+                            .font(.system(size: 15.5, weight: .medium))
                             .foregroundStyle(Theme.fg3)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
                         if searchText.isEmpty {
-                            Button { startNewConversation() } label: {
-                                Label("新建对话", systemImage: "plus")
+                            HStack(spacing: 10) {
+                                if !store.sessions.isEmpty && store.effectiveAgentFilter != AgyStore.allAgentsID {
+                                    Button {
+                                        Haptics.tap()
+                                        store.setAgentFilter(AgyStore.allAgentsID)
+                                    } label: {
+                                        Text("查看全部 CLI")
+                                    }
+                                    .buttonStyle(PillButtonStyle(kind: .secondary, compact: true))
+                                }
+                                Button { startNewConversation() } label: {
+                                    Label("新建对话", systemImage: "plus")
+                                }
+                                .buttonStyle(PillButtonStyle(kind: .primary, compact: true))
+                                .disabled(store.defaultTargetProject == nil || store.status?.installed == false)
                             }
-                            .buttonStyle(PillButtonStyle(kind: .primary, compact: true))
-                            .disabled(store.activeProject == nil || store.status?.installed == false)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -269,7 +343,14 @@ struct CodingWorkspaceView: View {
                                             .foregroundStyle(Theme.fg4)
                                     }
                                     HStack(spacing: 6) {
-                                        Text(((s.agent_name?.isEmpty == false) ? "\(s.agent_name!) · " : "") + s.mode + ((s.model?.isEmpty == false) ? " · \(s.model!)" : ""))
+                                        let dirTag = store.isAllProjects ? folderBasename(s.cwd) : ""
+                                        let parts = [
+                                            dirTag,
+                                            (s.agent_name?.isEmpty == false ? s.agent_name! : ""),
+                                            s.mode,
+                                            (s.model?.isEmpty == false ? s.model! : "")
+                                        ].filter { !$0.isEmpty }
+                                        Text(parts.joined(separator: " · "))
                                             .font(.system(size: 15))
                                             .foregroundStyle(s.pending_permissions > 0 ? Theme.warn : Theme.fg3)
                                             .lineLimit(1)
@@ -315,7 +396,7 @@ struct CodingWorkspaceView: View {
     }
 
     private func startNewConversation() {
-        guard store.activeProject != nil, store.status?.installed != false else { return }
+        guard store.defaultTargetProject != nil, store.status?.installed != false else { return }
         Haptics.tap()
         Task {
             do {

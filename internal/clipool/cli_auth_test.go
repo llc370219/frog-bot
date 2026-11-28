@@ -34,10 +34,13 @@ func TestCLIAuthManager_StatusDeviceCodeCallbackAndCredentials(t *testing.T) {
 		return "/usr/local/bin/" + id, nil
 	}
 
-	// 1. Initially all 4 official CLIs (codex, claude, gemini, grok) should report installed & logged out
+	// 1. Initially all 5 official CLIs (agy, codex, claude, gemini, grok) should report installed & logged out
 	statuses := mgr.ListStatuses()
-	if len(statuses) != 4 {
-		t.Fatalf("expected 4 official CLIs, got %d", len(statuses))
+	if len(statuses) != 5 {
+		t.Fatalf("expected 5 official CLIs, got %d", len(statuses))
+	}
+	if statuses[0].ID != "agy" || statuses[1].ID != "codex" {
+		t.Fatalf("unexpected CLI order: [0]=%s [1]=%s", statuses[0].ID, statuses[1].ID)
 	}
 	for _, st := range statuses {
 		if !st.Installed {
@@ -48,13 +51,25 @@ func TestCLIAuthManager_StatusDeviceCodeCallbackAndCredentials(t *testing.T) {
 		}
 	}
 
-	// 2. Native ~/.codex/auth.json detection
+	// 2. Native ~/.gemini/antigravity-cli & ~/.codex/auth.json detection
+	if err := os.MkdirAll(filepath.Join(home, ".gemini", "antigravity-cli"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".gemini", "antigravity-cli", "google_accounts.json"), []byte(`{"active":"agy@example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte(`{"tokens":{"access_token":"tok123"},"email":"dev@example.com"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	statuses = mgr.ListStatuses()
-	if !statuses[0].LoggedIn || statuses[0].AuthMethod != "oauth" || statuses[0].AccountHint != "dev@example.com" {
-		t.Fatalf("unexpected codex native auth status: %+v", statuses[0])
+	if !statuses[0].LoggedIn || statuses[0].AuthMethod != "oauth" || statuses[0].AccountHint != "agy@example.com" {
+		t.Fatalf("unexpected agy native auth status: %+v", statuses[0])
+	}
+	if !statuses[1].LoggedIn || statuses[1].AuthMethod != "oauth" || statuses[1].AccountHint != "dev@example.com" {
+		t.Fatalf("unexpected codex native auth status: %+v", statuses[1])
+	}
+	if _, err := mgr.SaveCredential("agy", "api_key", "not-supported"); err == nil {
+		t.Fatalf("expected SaveCredential for agy api_key to be rejected")
 	}
 
 	// 3. Parse ANSI-colored device code + URL

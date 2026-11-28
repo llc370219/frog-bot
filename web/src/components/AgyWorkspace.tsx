@@ -12,6 +12,9 @@ import ThinkingBlock from './ThinkingBlock';
 
 const ACTIVE_PROJ_KEY = 'frogbot-agy-project';
 const ACTIVE_SESS_KEY = 'frogbot-agy-session';
+const AGENT_FILTER_KEY = 'frogbot-agy-agent-filter';
+export const ALL_PROJECTS_ID = 'all';
+export const ALL_AGENTS_ID = 'all';
 
 type LiveState = {
   ready: boolean;
@@ -41,10 +44,16 @@ const emptyLive = (): LiveState => ({
 export type CodingController = {
   status: AgyStatus | null;
   activeAgent: string;
+  agentFilter: string;
+  setAgentFilter: (id: string) => void;
   selectAgent: (agentId: string) => Promise<void>;
   projects: AgyProject[];
+  selectedProjectId: string;
+  isAllProjects: boolean;
   activeProject: AgyProject | null;
+  defaultTargetProject: AgyProject | null;
   sessions: AgySessionSummary[];
+  filteredSessions: AgySessionSummary[];
   sessionId: string;
   loadingSessions: boolean;
   error: string;
@@ -68,7 +77,8 @@ export type CodingController = {
 export function useCodingWorkspace(enabled: boolean): CodingController {
   const [status, setStatus] = useState<AgyStatus | null>(null);
   const [projects, setProjects] = useState<AgyProject[]>([]);
-  const [projectId, setProjectId] = useState(() => localStorage.getItem(ACTIVE_PROJ_KEY) || '');
+  const [projectId, setProjectId] = useState(() => localStorage.getItem(ACTIVE_PROJ_KEY) || ALL_PROJECTS_ID);
+  const [agentFilterState, setAgentFilterState] = useState(() => localStorage.getItem(AGENT_FILTER_KEY) || '');
   const [sessions, setSessions] = useState<AgySessionSummary[]>([]);
   const [sessionId, setSessionId] = useState(() => localStorage.getItem(ACTIVE_SESS_KEY) || '');
   const [loadingSessions, setLoadingSessions] = useState(false);
@@ -76,16 +86,29 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
   const [newProjModal, setNewProjModal] = useState(false);
   const [filesModal, setFilesModal] = useState(false);
 
-  const activeProject = projects.find((p) => p.id === projectId) ?? projects[0] ?? null;
+  const activeAgent = status?.default_agent || 'agy';
+  const agentFilter = agentFilterState === ALL_AGENTS_ID ? ALL_AGENTS_ID : (agentFilterState || activeAgent);
+  const isAllProjects = !projectId || projectId === ALL_PROJECTS_ID;
+  const activeProject = isAllProjects ? null : (projects.find((p) => p.id === projectId) ?? null);
+  const defaultTargetProject = activeProject ?? projects[0] ?? null;
+
+  const filteredSessions = agentFilter === ALL_AGENTS_ID
+    ? sessions
+    : sessions.filter((s) => (s.agent || 'agy').toLowerCase() === agentFilter.toLowerCase());
+
+  const setAgentFilter = useCallback((id: string) => {
+    setAgentFilterState(id);
+    localStorage.setItem(AGENT_FILTER_KEY, id);
+  }, []);
 
   const refreshProjects = useCallback(async () => {
     try {
       const [st, projs] = await Promise.all([agyAPI.status(), agyAPI.projects()]);
       setStatus(st);
       setProjects(projs);
-      if (projs.length > 0 && !projs.some((p) => p.id === projectId)) {
-        setProjectId(projs[0].id);
-        localStorage.setItem(ACTIVE_PROJ_KEY, projs[0].id);
+      if (projectId && projectId !== ALL_PROJECTS_ID && !projs.some((p) => p.id === projectId)) {
+        setProjectId(ALL_PROJECTS_ID);
+        localStorage.setItem(ACTIVE_PROJ_KEY, ALL_PROJECTS_ID);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -118,14 +141,17 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
   }, []);
 
   useEffect(() => {
-    if (enabled && activeProject?.id) {
-      localStorage.setItem(ACTIVE_PROJ_KEY, activeProject.id);
-      void refreshSessions(activeProject.id, true);
+    if (!enabled) return;
+    const pid = isAllProjects ? ALL_PROJECTS_ID : (activeProject?.id || '');
+    if (pid) {
+      localStorage.setItem(ACTIVE_PROJ_KEY, pid);
+      void refreshSessions(pid, true);
     }
-  }, [enabled, activeProject?.id, refreshSessions]);
+  }, [enabled, isAllProjects, activeProject?.id, refreshSessions]);
 
   const selectProject = useCallback((id: string) => {
-    setProjectId(id);
+    const next = id || ALL_PROJECTS_ID;
+    setProjectId(next);
     setSessionId('');
   }, []);
 
@@ -136,22 +162,22 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
 
   const selectAgent = useCallback(async (agentId: string) => {
     setError('');
+    setAgentFilter(agentId);
     try {
       const st = await agyAPI.setDefaultAgent(agentId);
       setStatus(st);
-      setSessionId('');
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [setAgentFilter]);
 
   const newSession = useCallback(async (mode?: string, model?: string, agent?: string) => {
-    if (!activeProject) return;
+    if (!defaultTargetProject) return;
     setError('');
     const targetAgent = agent || status?.default_agent || '';
     try {
       const snap = await agyAPI.createSession(
-        activeProject.id,
+        defaultTargetProject.id,
         mode ?? status?.default_mode ?? '',
         model ?? status?.default_model ?? '',
         targetAgent,
@@ -162,13 +188,13 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [activeProject, status]);
+  }, [defaultTargetProject, status]);
 
   const ensureSession = useCallback(async (mode?: string, model?: string) => {
     if (sessionId) return sessionId;
-    if (!activeProject) return '';
+    if (!defaultTargetProject) return '';
     const snap = await agyAPI.createSession(
-      activeProject.id,
+      defaultTargetProject.id,
       mode ?? status?.default_mode ?? '',
       model ?? status?.default_model ?? '',
       status?.default_agent || '',
@@ -177,7 +203,7 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
     setSessionId(snap.session.id);
     localStorage.setItem(ACTIVE_SESS_KEY, snap.session.id);
     return snap.session.id;
-  }, [sessionId, activeProject, status]);
+  }, [sessionId, defaultTargetProject, status]);
 
   const deleteSession = useCallback(async (id: string) => {
     try {
@@ -212,11 +238,17 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
 
   return {
     status,
-    activeAgent: status?.default_agent || 'agy',
+    activeAgent,
+    agentFilter,
+    setAgentFilter,
     selectAgent,
     projects,
+    selectedProjectId: isAllProjects ? ALL_PROJECTS_ID : (activeProject?.id || ALL_PROJECTS_ID),
+    isAllProjects,
     activeProject,
+    defaultTargetProject,
     sessions,
+    filteredSessions,
     sessionId,
     loadingSessions,
     error,
@@ -240,7 +272,7 @@ export function useCodingWorkspace(enabled: boolean): CodingController {
 
 export default function AgyWorkspace({ coding }: { coding: CodingController }) {
   const {
-    status, activeAgent, selectAgent, activeProject, sessionId, error, setError,
+    status, activeAgent, selectAgent, activeProject, defaultTargetProject, sessions, sessionId, error, setError,
     newProjModal, setNewProjModal, filesModal, setFilesModal,
     onProjectCreated, syncSessionUpdate, ensureSession,
   } = coding;
@@ -252,18 +284,21 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
   const [, bump] = useState(0);
   const rerender = useCallback(() => bump((n) => n + 1), []);
 
+  const currentSummary = sessions.find((s) => s.id === sessionId);
+  const streamProjectId = currentSummary?.project_id || activeProject?.id || ALL_PROJECTS_ID;
+
   // 连接当前对话的 SSE 事件流
   useEffect(() => {
     liveRef.current = emptyLive();
     rerender();
-    if (!sessionId || !activeProject?.id) return;
+    if (!sessionId) return;
 
     let es: EventSource | null = null;
     let retry = 0;
     let closed = false;
 
     const connect = () => {
-      const url = `/api/agy/sessions/${encodeURIComponent(sessionId)}/stream?project_id=${encodeURIComponent(activeProject.id)}`;
+      const url = `/api/agy/sessions/${encodeURIComponent(sessionId)}/stream?project_id=${encodeURIComponent(streamProjectId)}`;
       es = new EventSource(url);
       es.onopen = () => {
         liveRef.current.connected = true;
@@ -387,7 +422,7 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
       es?.close();
       window.clearTimeout(retry);
     };
-  }, [sessionId, activeProject?.id, rerender, syncSessionUpdate]);
+  }, [sessionId, streamProjectId, rerender, syncSessionUpdate]);
 
   const live = liveRef.current;
   const sessionAgent = live.session?.agent || activeAgent;
@@ -409,7 +444,7 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
 
   const handleSend = async (textOverride?: string, behavior?: 'follow_up' | 'steer') => {
     const text = (textOverride ?? draft).trim();
-    if (!text || !activeProject || sending) return;
+    if (!text || (!sessionId && !defaultTargetProject) || sending) return;
     setError('');
     setSending(true);
     setCmdOpen(false);
@@ -418,7 +453,7 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
       if (!targetSession) return;
       if (textOverride === undefined) setDraft('');
       stick.current = true;
-      await agyAPI.send(targetSession, activeProject.id, text, behavior);
+      await agyAPI.send(targetSession, live.session?.project_id || activeProject?.id || '', text, behavior);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -458,8 +493,8 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
             <div className="truncate text-[14.5px] font-semibold text-fg">
               {live.session?.title || activeProject?.name || 'Coding'}
             </div>
-            {activeProject && (
-              <div className="truncate font-mono text-[11px] text-fg4">{activeProject.path}</div>
+            {(live.session?.cwd || activeProject?.path) && (
+              <div className="truncate font-mono text-[11px] text-fg4">{live.session?.cwd || activeProject?.path}</div>
             )}
           </div>
         </div>
@@ -633,8 +668,10 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
                 void agyAPI.stop(sessionId);
               }
             }}
-            placeholder={activeProject
-              ? (busy ? '执行中，发送将自动排队，或点击右侧闪电打断插话' : `在 ${activeProject.name} 中输入 Coding 指令…（Enter 发送，Shift+Enter 换行）`)
+            placeholder={sessionId || defaultTargetProject
+              ? (busy
+                ? '执行中，发送将自动排队，或点击右侧闪电打断插话'
+                : `在 ${activeProject?.name || live.session?.title || defaultTargetProject?.name || '默认项目'} 中输入 Coding 指令…（Enter 发送，Shift+Enter 换行）`)
               : '请先新建或选择一个项目文件夹'}
             className="max-h-40 min-h-[26px] flex-1 resize-none bg-transparent py-1 text-[14.5px] leading-relaxed text-fg placeholder:text-fg4 focus:outline-none"
           />
@@ -646,13 +683,13 @@ export default function AgyWorkspace({ coding }: { coding: CodingController }) {
           ) : (
             <div className="flex shrink-0 items-center gap-1.5">
               {busy && draft.trim() && (
-                <button type="button" onClick={() => void handleSend(undefined, 'steer')} disabled={sending || !activeProject}
+                <button type="button" onClick={() => void handleSend(undefined, 'steer')} disabled={sending || (!sessionId && !defaultTargetProject)}
                   title="打断当前步骤并立刻执行这条指令 (Steer)"
                   className="grid size-8 place-items-center rounded-full border border-warn/40 bg-warn/15 text-warn transition hover:bg-warn/25 disabled:opacity-35">
                   <Zap size={14} />
                 </button>
               )}
-              <button type="button" onClick={() => void handleSend(undefined, busy ? 'follow_up' : undefined)} disabled={!draft.trim() || sending || !activeProject}
+              <button type="button" onClick={() => void handleSend(undefined, busy ? 'follow_up' : undefined)} disabled={!draft.trim() || sending || (!sessionId && !defaultTargetProject)}
                 title={busy ? '排队：等本轮完成后继续发送' : '发送'}
                 className="grid size-8 place-items-center rounded-full bg-accent text-on-accent transition hover:opacity-90 disabled:opacity-35">
                 {busy ? <Clock size={14} /> : <Play size={14} fill="currentColor" />}

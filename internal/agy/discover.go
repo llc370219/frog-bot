@@ -265,6 +265,7 @@ func hostSearchDirs() []string {
 		for _, rel := range []string{
 			filepath.Join(".local", "bin"),
 			"bin",
+			filepath.Join(".gemini", "antigravity-cli", "bin"),
 			filepath.Join(".antigravity", "bin"),
 			filepath.Join(".npm-global", "bin"),
 			filepath.Join(".yarn", "bin"),

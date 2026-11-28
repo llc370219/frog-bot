@@ -69,6 +69,17 @@ func (h *Hub) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/agy/sessions", func(w http.ResponseWriter, r *http.Request) {
 		list, err := h.ListSessions(r.Context(), r.URL.Query().Get("project_id"))
+		if err == nil {
+			if wantAgent := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("agent"))); wantAgent != "" && wantAgent != "all" {
+				filtered := make([]SessionSummary, 0, len(list))
+				for _, s := range list {
+					if strings.EqualFold(s.Agent, wantAgent) {
+						filtered = append(filtered, s)
+					}
+				}
+				list = filtered
+			}
+		}
 		writeJSON(w, list, err)
 	})
 

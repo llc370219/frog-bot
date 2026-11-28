@@ -188,23 +188,38 @@ struct AgyPermission: Hashable, Identifiable {
 @MainActor
 @Observable
 final class AgyStore {
+    static let allProjectsID = "all"
+    static let allAgentsID = "all"
+
     let server: ServerEntry
     var status: AgyStatus?
     var projects: [AgyProject] = []
     var selectedProjectID: String = ""
+    var selectedAgentFilter: String = ""
     var sessions: [AgySessionSummary] = []
     var loading = false
     var error: String?
 
     init(server: ServerEntry) {
         self.server = server
-        self.selectedProjectID = UserDefaults.standard.string(forKey: "mac.agy.project.\(server.id)") ?? ""
+        let saved = UserDefaults.standard.string(forKey: "mac.agy.project.\(server.id)") ?? ""
+        self.selectedProjectID = saved.isEmpty ? Self.allProjectsID : saved
+        self.selectedAgentFilter = UserDefaults.standard.string(forKey: "mac.agy.agentFilter.\(server.id)") ?? ""
     }
 
     var client: ServerClient { server.client }
 
+    var isAllProjects: Bool {
+        selectedProjectID.isEmpty || selectedProjectID == Self.allProjectsID
+    }
+
     var activeProject: AgyProject? {
-        projects.first(where: { $0.id == selectedProjectID }) ?? projects.first
+        guard !isAllProjects else { return nil }
+        return projects.first(where: { $0.id == selectedProjectID })
+    }
+
+    var defaultTargetProject: AgyProject? {
+        activeProject ?? projects.first
     }
 
     var installedAgents: [AgyAgentCLI] {
@@ -215,7 +230,32 @@ final class AgyStore {
         status?.default_agent ?? installedAgents.first?.id ?? "agy"
     }
 
+    var effectiveAgentFilter: String {
+        if selectedAgentFilter == Self.allAgentsID {
+            return Self.allAgentsID
+        }
+        if !selectedAgentFilter.isEmpty {
+            return selectedAgentFilter
+        }
+        return activeAgentID
+    }
+
+    var filteredSessions: [AgySessionSummary] {
+        let filterAgent = effectiveAgentFilter.lowercased()
+        guard filterAgent != Self.allAgentsID else { return sessions }
+        return sessions.filter { s in
+            let sAgent = (s.agent?.isEmpty == false ? s.agent! : "agy").lowercased()
+            return sAgent == filterAgent
+        }
+    }
+
+    func setAgentFilter(_ id: String) {
+        selectedAgentFilter = id
+        UserDefaults.standard.set(id, forKey: "mac.agy.agentFilter.\(server.id)")
+    }
+
     func selectAgent(_ agentID: String) async {
+        setAgentFilter(agentID)
         do {
             let st: AgyStatus = try await client.send("POST", "/api/agy/agent", body: ["agent": agentID])
             status = st
@@ -236,14 +276,11 @@ final class AgyStore {
             let (st, projs) = try await (stReq, prReq)
             status = st
             projects = projs
-            if let first = projs.first, !projs.contains(where: { $0.id == selectedProjectID }) {
-                selectProject(first.id)
+            if !isAllProjects && !projs.contains(where: { $0.id == selectedProjectID }) {
+                selectProject(Self.allProjectsID)
             }
-            if let pid = activeProject?.id {
-                sessions = (try? await client.get("/api/agy/sessions", query: [URLQueryItem(name: "project_id", value: pid)])) ?? []
-            } else {
-                sessions = []
-            }
+            let pid = isAllProjects ? Self.allProjectsID : (activeProject?.id ?? Self.allProjectsID)
+            sessions = (try? await client.get("/api/agy/sessions", query: [URLQueryItem(name: "project_id", value: pid)])) ?? []
         } catch where error.isCancellation {
             loading = false
             return
@@ -254,15 +291,13 @@ final class AgyStore {
     }
 
     func selectProject(_ id: String) {
-        selectedProjectID = id
-        UserDefaults.standard.set(id, forKey: "mac.agy.project.\(server.id)")
+        let next = id.isEmpty ? Self.allProjectsID : id
+        selectedProjectID = next
+        UserDefaults.standard.set(next, forKey: "mac.agy.project.\(server.id)")
     }
 
     func refreshSessions() async {
-        guard let pid = activeProject?.id else {
-            sessions = []
-            return
-        }
+        let pid = isAllProjects ? Self.allProjectsID : (activeProject?.id ?? Self.allProjectsID)
         do {
             sessions = try await client.get("/api/agy/sessions", query: [URLQueryItem(name: "project_id", value: pid)])
             error = nil
@@ -289,13 +324,13 @@ final class AgyStore {
         try await client.post("/api/agy/projects/\(p.id)", method: "DELETE", query: q)
         projects.removeAll { $0.id == p.id }
         if selectedProjectID == p.id {
-            selectedProjectID = projects.first?.id ?? ""
+            selectProject(Self.allProjectsID)
         }
         await refreshSessions()
     }
 
     func createSession(mode: String = "", model: String = "", agent: String = "") async throws -> AgySessionSummary {
-        guard let pid = activeProject?.id else {
+        guard let pid = defaultTargetProject?.id else {
             throw APIError.invalid("请先新建或关联一个项目文件夹")
         }
         let targetAgent = agent.isEmpty ? activeAgentID : agent
